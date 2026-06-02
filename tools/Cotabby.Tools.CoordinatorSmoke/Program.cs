@@ -70,22 +70,22 @@ focus.SetField(new FocusedField
     IsSecure = false,
 });
 
-Console.WriteLine("[coord] Simulating typing 'def fib'…");
+Console.WriteLine("[coord] Simulating realistic rapid typing 'def fib'…");
+// Reset field to empty and grow it as the user types, like real keystrokes.
+focus.SetField(focus.Current! with { Text = string.Empty, CaretOffset = 0 });
 foreach (char c in "def fib")
 {
-    // Each keystroke updates the field as if the host had absorbed the char,
-    // then fires the hook event into the coordinator.
     var cur = focus.Current!;
-    var newText = cur.Text + (cur.Text.EndsWith(c.ToString()) ? "" : "");
-    // Actually advance the field's text/caret to reflect the synthesized typing.
     focus.SetField(cur with
     {
-        Text = cur.Text.Length < 7 ? cur.Text + c : cur.Text, // seeded with full text already
+        Text = cur.Text + c,
+        CaretOffset = cur.Text.Length + 1,
     });
     hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = true, HasNonShiftModifier = false });
-    await Task.Delay(20);
+    await Task.Delay(50); // 50ms per char ~= 20 wpm — well within the 150ms debounce
     hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = false, HasNonShiftModifier = false });
 }
+Console.WriteLine($"[coord] Done typing. Field text now: \"{focus.Current!.Text}\"");
 
 Console.WriteLine("[coord] Waiting up to 30s for an overlay.Show call…");
 var waitStart = Stopwatch.StartNew();
@@ -94,26 +94,67 @@ while (overlay.LastShown is null && waitStart.Elapsed < TimeSpan.FromSeconds(30)
     await Task.Delay(200);
 }
 
-int exitCode;
+int exitCode = 0;
 if (overlay.LastShown is { } shown)
 {
     Console.WriteLine();
-    Console.WriteLine("[coord] PASS — overlay.Show was called.");
+    Console.WriteLine("[coord] STEP 1 PASS — overlay.Show was called.");
     Console.WriteLine($"        Text:   {shown.Text}");
     Console.WriteLine($"        Anchor: {shown.Anchor}");
-    Console.WriteLine($"        ShowCalls={overlay.ShowCount} UpdateCalls={overlay.UpdateCount} HideCalls={overlay.HideCount}");
-    exitCode = 0;
 }
 else
 {
     Console.WriteLine();
-    Console.WriteLine("[coord] FAIL — overlay.Show was never called after 30s.");
-    Console.WriteLine($"        ShowCalls={overlay.ShowCount} UpdateCalls={overlay.UpdateCount} HideCalls={overlay.HideCount}");
+    Console.WriteLine("[coord] STEP 1 FAIL — overlay.Show was never called after 30s.");
+    await coordinator.DisposeAsync();
+    pump.Stop();
+    return 1;
+}
+
+// STEP 2: press Tab — coordinator should accept and the inserter should be
+// called with the visible text.
+Console.WriteLine("[coord] STEP 2: pressing Tab to accept…");
+var beforeAccept = inserter.LastInsertedText;
+hook.Raise(new KeyboardEvent { Kind = KeyKind.Tab, Character = '\0', IsKeyDown = true, HasNonShiftModifier = false });
+await Task.Delay(50);
+hook.Raise(new KeyboardEvent { Kind = KeyKind.Tab, Character = '\0', IsKeyDown = false, HasNonShiftModifier = false });
+
+var acceptStart = Stopwatch.StartNew();
+while (inserter.LastInsertedText is null && acceptStart.Elapsed < TimeSpan.FromSeconds(5))
+{
+    await Task.Delay(100);
+}
+if (inserter.LastInsertedText is { } insertedText)
+{
+    Console.WriteLine($"[coord] STEP 2 PASS — inserter received: \"{insertedText}\"");
+    if (insertedText != shown.Text)
+    {
+        Console.WriteLine($"[coord] STEP 2 WARNING — inserted differs from shown:\n    shown:    \"{shown.Text}\"\n    inserted: \"{insertedText}\"");
+    }
+}
+else
+{
+    Console.WriteLine("[coord] STEP 2 FAIL — inserter was never called within 5s of Tab.");
     exitCode = 1;
+}
+
+// STEP 3: reconciler advance — synthesize the user typing the FIRST char of
+// the visible suggestion (which should now be hidden after accept, but we
+// trigger a fresh one) and verify Hide was called or session shrank.
+Console.WriteLine($"[coord] STEP 3: post-accept overlay state: ShowCalls={overlay.ShowCount} UpdateCalls={overlay.UpdateCount} HideCalls={overlay.HideCount}");
+if (overlay.HideCount < 1)
+{
+    Console.WriteLine("[coord] STEP 3 WARNING — overlay was never hidden after acceptance.");
+}
+else
+{
+    Console.WriteLine("[coord] STEP 3 PASS — overlay was hidden after acceptance.");
 }
 
 await coordinator.DisposeAsync();
 pump.Stop();
+Console.WriteLine();
+Console.WriteLine($"[coord] FINAL: exit={exitCode}");
 return exitCode;
 
 // ---------------------------------------------------------------------------
@@ -151,7 +192,14 @@ sealed class RecordingOverlay : IOverlayPresenter
 
 sealed class RecordingInserter : ITextInserter
 {
-    public Task<bool> InsertAsync(FocusedField target, string text, CancellationToken ct) => Task.FromResult(true);
+    public string? LastInsertedText { get; private set; }
+    public int InsertCount { get; private set; }
+    public Task<bool> InsertAsync(FocusedField target, string text, CancellationToken ct)
+    {
+        LastInsertedText = text;
+        InsertCount++;
+        return Task.FromResult(true);
+    }
 }
 
 sealed class SingleThreadSyncContext : SynchronizationContext

@@ -114,20 +114,46 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     {
         if (!_enabled) return;
 
+        // Cross-thread read: Volatile.Read forces a memory fence so we observe
+        // the pump-thread's most recent _session assignment. Without this the
+        // hook thread can read a stale null on x64 even though writes are
+        // serialized on the pump, and Tab acceptance fails because the
+        // reconciler decides Ignore on what looks like an empty session.
+        var snap = Volatile.Read(ref _session);
+
         _logger.LogDebug("Key kind={Kind} char={Char} down={Down} mod={Mod} session={HasSession}",
             args.Event.Kind, (int)args.Event.Character, args.Event.IsKeyDown,
-            args.Event.HasNonShiftModifier, _session is not null);
+            args.Event.HasNonShiftModifier, snap is not null);
 
         // Tab acceptance must be decided synchronously on the hook thread —
         // returning true here is the only way to eat the keystroke before the
-        // host app sees it. We read the session reference into a local so we
-        // don't race against a concurrent UI-thread mutation.
-        var snap = _session;
+        // host app sees it.
         var outcome = SuggestionSessionReconciler.Apply(snap, args.Event);
         if (outcome.Outcome == SuggestionSessionReconciler.Outcome.Accept)
         {
             args.Suppress = true;
             Post(() => AcceptAsync().ContinueWith(LogFault, TaskScheduler.Default));
+            return;
+        }
+
+        // Even if the sync reconciler said Ignore, a session might have been
+        // created right after our snap-read. If this is Tab and there's a fresh
+        // session by the time the pump processes the event, treat it as Accept
+        // — the cost is one Tab that already reached the host (no suppress).
+        if (args.Event.Kind == KeyKind.Tab && args.Event.IsKeyDown)
+        {
+            Post(() =>
+            {
+                var late = _session;
+                if (late is not null && late.VisibleText.Length > 0)
+                {
+                    AcceptAsync().ContinueWith(LogFault, TaskScheduler.Default);
+                }
+                else
+                {
+                    HandleEvent(args.Event);
+                }
+            });
             return;
         }
 
@@ -193,20 +219,36 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         TriggerGeneration(field);
     }
 
-    private void TriggerGeneration(FocusedField field)
+    private void TriggerGeneration(FocusedField fieldAtTrigger)
     {
         var reqId = "req_" + Guid.NewGuid().ToString("N")[..8];
-        var request = SuggestionRequestFactory.Build(field, reqId);
-        var anchor = field.CaretRect;
-        var element = field.ElementHandle;
+        var pid = fieldAtTrigger.ProcessId;
 
-        _logger.LogInformation("Trigger request {ReqId} prefix={Len} host={Host} anchor={X},{Y} {W}x{H}",
-            reqId, request.Prefix.Length, request.HostApp,
-            (int)anchor.X, (int)anchor.Y, (int)anchor.Width, (int)anchor.Height);
+        _logger.LogInformation("Scheduled request {ReqId} pid={Pid}", reqId, pid);
 
         _generationInFlight = true;
         _ = _work.Submit(async ct =>
         {
+            // Inside the work, the debounce has expired. Re-read the live field so
+            // the model sees the prefix the user is at *now*, not the one as it
+            // was when the first keystroke landed. Bail if focus has moved.
+            FocusedField? liveAtRequest = null;
+            await PostAsync(() => liveAtRequest = _focus.Refresh()).ConfigureAwait(false);
+            if (liveAtRequest is null || liveAtRequest.ProcessId != pid)
+            {
+                _logger.LogInformation("Request {ReqId} aborted: focus moved away pre-fire.", reqId);
+                return;
+            }
+            var request = SuggestionRequestFactory.Build(liveAtRequest, reqId);
+            var anchor = liveAtRequest.CaretRect.IsEmpty
+                ? fieldAtTrigger.CaretRect : liveAtRequest.CaretRect;
+            var element = liveAtRequest.ElementHandle;
+            var field = liveAtRequest;
+            _logger.LogInformation(
+                "Firing request {ReqId} prefix={Len} host={Host} anchor={X},{Y}",
+                reqId, request.Prefix.Length, request.HostApp,
+                (int)anchor.X, (int)anchor.Y);
+
             try
             {
                 if (!_engine.IsReady)
@@ -218,6 +260,12 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 var sw = Stopwatch.StartNew();
                 string accumulated = string.Empty;
                 bool overlayShown = false;
+                // Throttle chunk-update Posts so a fast engine can't fill the
+                // UI message queue ahead of a Tab-accept Post. Without this,
+                // Tab queued after 96 pending updates only runs *after* every
+                // update — pushing acceptance latency past 5 seconds.
+                var lastPosted = DateTime.MinValue;
+                var minInterval = TimeSpan.FromMilliseconds(50);
 
             await foreach (var chunk in _engine.GenerateAsync(request, ct).ConfigureAwait(false))
             {
@@ -225,6 +273,21 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 accumulated += chunk.Text;
 
                 if (!chunk.IsFinal && string.IsNullOrEmpty(chunk.Text)) continue;
+
+                // Always Post the first chunk (so overlay appears ASAP) and the
+                // final chunk (so trailing text isn't dropped). Throttle the
+                // middle.
+                bool isFirstShow = !overlayShown;
+                if (!isFirstShow && !chunk.IsFinal)
+                {
+                    var now = DateTime.UtcNow;
+                    if (now - lastPosted < minInterval) continue;
+                    lastPosted = now;
+                }
+                else
+                {
+                    lastPosted = DateTime.UtcNow;
+                }
 
                 Post(() =>
                 {
@@ -307,16 +370,34 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private async Task AcceptAsync()
     {
         var session = _session;
-        if (session is null || session.VisibleText.Length == 0) return;
+        if (session is null)
+        {
+            _logger.LogInformation("AcceptAsync: session null, nothing to insert.");
+            return;
+        }
+        if (session.VisibleText.Length == 0)
+        {
+            _logger.LogInformation("AcceptAsync: session VisibleText empty (req={ReqId}), skip insert.",
+                session.RequestId);
+            return;
+        }
 
         var field = _focus.Refresh();
-        if (field is null) { CancelSession("no field at accept"); return; }
+        if (field is null)
+        {
+            _logger.LogInformation("AcceptAsync: no focused field at accept time, cancel.");
+            CancelSession("no field at accept");
+            return;
+        }
 
         var text = session.VisibleText;
+        _logger.LogInformation("AcceptAsync: inserting {Len} chars: \"{Preview}\"",
+            text.Length, Preview(text));
         CancelSession("accepted");
         try
         {
-            await _inserter.InsertAsync(field, text, CancellationToken.None).ConfigureAwait(false);
+            var ok = await _inserter.InsertAsync(field, text, CancellationToken.None).ConfigureAwait(false);
+            _logger.LogInformation("AcceptAsync: inserter returned ok={Ok}", ok);
         }
         catch (Exception ex)
         {
@@ -341,6 +422,22 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     {
         if (SynchronizationContext.Current == _ui) action();
         else _ui.Post(_ => action(), null);
+    }
+
+    private Task PostAsync(Action action)
+    {
+        if (SynchronizationContext.Current == _ui)
+        {
+            try { action(); return Task.CompletedTask; }
+            catch (Exception ex) { return Task.FromException(ex); }
+        }
+        var tcs = new TaskCompletionSource();
+        _ui.Post(_ =>
+        {
+            try { action(); tcs.SetResult(); }
+            catch (Exception ex) { tcs.SetException(ex); }
+        }, null);
+        return tcs.Task;
     }
 
     private void LogFault(Task t)

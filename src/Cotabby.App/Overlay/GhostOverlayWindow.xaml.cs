@@ -220,4 +220,20 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         IntPtr hWnd, IntPtr hWndInsertAfter,
         int X, int Y, int cx, int cy,
         uint uFlags);
+
+    // Test helper — read the actual HWND rect for verification.
+    internal static void GetWindowRectForTest(IntPtr hwnd, out int x, out int y, out int w, out int h)
+    {
+        x = y = w = h = 0;
+        if (GetWindowRectNative(hwnd, out RECT r))
+        {
+            x = r.left; y = r.top;
+            w = r.right - r.left;
+            h = r.bottom - r.top;
+        }
+    }
+
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowRect")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetWindowRectNative(IntPtr hwnd, out RECT lpRect);
 }

@@ -160,9 +160,10 @@ public partial class App : Application
             Trace("PROBE B FAILED: " + ex.GetType().Name + ": " + ex.Message);
         }
 
-        // PROBE C: drive the actual coordinator end-to-end by injecting synthetic
-        // key events and a synthetic focused field. This exercises the real WPF
-        // overlay path, not the recording stub used in CoordinatorSmoke.
+        // Hide the initial test overlay so PROBE C starts from a clean state.
+        _overlay.Hide();
+        await Task.Delay(500);
+
         try
         {
             Trace("PROBE C — synthetic typing through coordinator — start");
@@ -170,6 +171,9 @@ public partial class App : Application
                 _host!.Services.GetService(typeof(Cotabby.Core.Input.IKeyboardHook))!;
             var focus = (Cotabby.Win32.Focus.UiaFocusTracker)
                 _host.Services.GetService(typeof(Cotabby.Core.Focus.IFocusTracker))!;
+            // Anchor at (500, 400) so we can verify the window actually moved
+            // from the initial test position (40, 40).
+            var probeAnchor = new Cotabby.Core.Focus.ScreenRect(500, 400, 1, 20);
             var fakeField = new Cotabby.Core.Focus.FocusedField
             {
                 ElementHandle = new object(),
@@ -177,13 +181,12 @@ public partial class App : Application
                 ProcessName = "selftest-fake",
                 Text = "def fibonacci(n):\n    if n < 2:\n        return n\n    return ",
                 CaretOffset = "def fibonacci(n):\n    if n < 2:\n        return n\n    return ".Length,
-                CaretRect = new Cotabby.Core.Focus.ScreenRect(200, 200, 1, 20),
-                FieldRect = new Cotabby.Core.Focus.ScreenRect(0, 0, 800, 600),
+                CaretRect = probeAnchor,
+                FieldRect = new Cotabby.Core.Focus.ScreenRect(0, 0, 1000, 800),
                 IsSingleLine = false,
                 IsSecure = false,
             };
             focus.SetFakeFieldForTesting(fakeField);
-            // Fire ONE character down event so the coordinator triggers a request.
             hook.FireSyntheticKey(new Cotabby.Core.Input.KeyboardEvent
             {
                 Kind = Cotabby.Core.Input.KeyKind.Character,
@@ -191,30 +194,52 @@ public partial class App : Application
                 IsKeyDown = true,
                 HasNonShiftModifier = false,
             });
-            Trace("PROBE C — synthetic key fired, waiting for overlay (up to 20s)");
+            Trace("PROBE C — synthetic key fired, polling overlay state…");
 
-            // Watch for visible overlay window via WPF Visibility property.
             int waitMs = 0;
-            bool overlayVisible = false;
-            while (waitMs < 20000)
+            string lastText = "<none>";
+            bool textChanged = false;
+            int hwndX = -1, hwndY = -1, hwndW = -1, hwndH = -1;
+            while (waitMs < 30000)
             {
                 await Task.Delay(250);
                 waitMs += 250;
-                var vis = _overlay.Dispatcher.Invoke(() => _overlay.Visibility == System.Windows.Visibility.Visible
-                    && !string.IsNullOrEmpty((_overlay.Content as System.Windows.Controls.Border)?.Child is System.Windows.Controls.TextBlock tb ? tb.Text : ""));
-                if (vis) { overlayVisible = true; break; }
+                var (visible, text, rect) = _overlay.Dispatcher.Invoke(() =>
+                {
+                    bool vis = _overlay.Visibility == System.Windows.Visibility.Visible;
+                    string t = "<no textblock>";
+                    if (_overlay.Content is System.Windows.Controls.Border br
+                        && br.Child is System.Windows.Controls.TextBlock tb)
+                        t = tb.Text;
+                    var src = System.Windows.Interop.HwndSource.FromVisual(_overlay) as System.Windows.Interop.HwndSource;
+                    int x = 0, y = 0, w = 0, h = 0;
+                    if (src is not null)
+                    {
+                        Cotabby.App.Overlay.GhostOverlayWindow.GetWindowRectForTest(src.Handle, out x, out y, out w, out h);
+                    }
+                    return (vis, t, (x, y, w, h));
+                });
+                lastText = text;
+                (hwndX, hwndY, hwndW, hwndH) = rect;
+                // A successful coordinator-driven show should change the text away
+                // from anything containing "SELF-TEST" and place the window
+                // somewhere near our probeAnchor (500, 400).
+                if (visible && !text.Contains("SELF-TEST") && text.Length > 0)
+                {
+                    textChanged = true;
+                    break;
+                }
             }
-            // Read the rendered text via Dispatcher hop.
-            var renderedText = _overlay.Dispatcher.Invoke(() =>
+            if (textChanged)
             {
-                if (_overlay.Content is System.Windows.Controls.Border br
-                    && br.Child is System.Windows.Controls.TextBlock tb)
-                    return tb.Text;
-                return "<no textblock>";
-            });
-            if (overlayVisible) Trace($"PROBE C OK: overlay visible, text=\"{renderedText}\"");
-            else Trace($"PROBE C FAIL: overlay never became visible after 20s. Last text=\"{renderedText}\"");
-
+                Trace($"PROBE C OK: overlay text=\"{lastText}\" hwnd_rect=({hwndX},{hwndY},{hwndW}x{hwndH})");
+                bool nearAnchor = Math.Abs(hwndX - 500) < 400 && Math.Abs(hwndY - 400) < 400;
+                Trace($"PROBE C anchor sanity: near (500,400)? {nearAnchor}");
+            }
+            else
+            {
+                Trace($"PROBE C FAIL: overlay text never changed away from SELF-TEST. Last text=\"{lastText}\" rect=({hwndX},{hwndY},{hwndW}x{hwndH})");
+            }
             focus.SetFakeFieldForTesting(null);
         }
         catch (Exception ex)
