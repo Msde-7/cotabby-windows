@@ -9,6 +9,7 @@
     <RootNamespace>Cotabby.Win32</RootNamespace>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>false</UseWindowsForms>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
