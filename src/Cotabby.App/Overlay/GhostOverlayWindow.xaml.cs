@@ -199,7 +199,12 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     [LibraryImport("user32.dll")]
     private static partial IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
 
-    [LibraryImport("user32.dll")]
+    // Win32 ANSI/Unicode entry-point convention: the public name in user32.dll is
+    // `GetMonitorInfoW` (Unicode) — there is no plain `GetMonitorInfo` symbol on
+    // x64 builds of Windows even though DllImport's CharSet would normally handle
+    // that. LibraryImport doesn't do the suffix auto-resolution that DllImport
+    // does, so we must spell it out.
+    [LibraryImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
 

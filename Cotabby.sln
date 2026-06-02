@@ -23,6 +23,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cotabby.Tools.InferenceSmok
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cotabby.Tools.AppSmoke", "tools\Cotabby.Tools.AppSmoke\Cotabby.Tools.AppSmoke.csproj", "{E4E2ACCA-5674-4AF1-8091-C0EC72290146}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cotabby.Tools.CoordinatorSmoke", "tools\Cotabby.Tools.CoordinatorSmoke\Cotabby.Tools.CoordinatorSmoke.csproj", "{4E022224-DD3D-4ED9-ADF1-816AABC50746}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -117,6 +119,18 @@ Global
 		{E4E2ACCA-5674-4AF1-8091-C0EC72290146}.Release|x64.Build.0 = Release|Any CPU
 		{E4E2ACCA-5674-4AF1-8091-C0EC72290146}.Release|x86.ActiveCfg = Release|Any CPU
 		{E4E2ACCA-5674-4AF1-8091-C0EC72290146}.Release|x86.Build.0 = Release|Any CPU
+		{4E022224-DD3D-4ED9-ADF1-816AABC50746}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4E022224-DD3D-4ED9-ADF1-816AABC50746}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4E022224-DD3D-4ED9-ADF1-816AABC50746}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{4E022224-DD3D-4ED9-ADF1-816AABC50746}.Debug|x64.Build.0 = Debug|Any CPU
+		{4E022224-DD3D-4ED9-ADF1-816AABC50746}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{4E022224-DD3D-4ED9-ADF1-816AABC50746}.Debug|x86.Build.0 = Debug|Any CPU
+		{4E022224-DD3D-4ED9-ADF1-816AABC50746}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4E022224-DD3D-4ED9-ADF1-816AABC50746}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4E022224-DD3D-4ED9-ADF1-816AABC50746}.Release|x64.ActiveCfg = Release|Any CPU
+		{4E022224-DD3D-4ED9-ADF1-816AABC50746}.Release|x64.Build.0 = Release|Any CPU
+		{4E022224-DD3D-4ED9-ADF1-816AABC50746}.Release|x86.ActiveCfg = Release|Any CPU
+		{4E022224-DD3D-4ED9-ADF1-816AABC50746}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -129,5 +143,6 @@ Global
 		{A41AA628-A7F0-4246-ACDA-31CFFC49068E} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{1B6C574E-63C7-4403-AB9B-843EC381154D} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 		{E4E2ACCA-5674-4AF1-8091-C0EC72290146} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
+		{4E022224-DD3D-4ED9-ADF1-816AABC50746} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 	EndGlobalSection
 EndGlobal

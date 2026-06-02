@@ -5,7 +5,9 @@ using System.Windows.Controls;
 using System.Windows.Media.Imaging;
 using Cotabby.App.Hosting;
 using Cotabby.App.UI;
+using Cotabby.Core.Focus;
 using Cotabby.Core.Models;
+using Cotabby.Core.Suggestions;
 using H.NotifyIcon;
 
 namespace Cotabby.App.Tray;
@@ -64,6 +66,23 @@ public sealed class TrayController : IDisposable
         var openSettingsItem = new MenuItem { Header = "Settings…" };
         openSettingsItem.Click += (_, _) => SettingsWindow.ShowOrFocus(host);
 
+        // Diagnostic submenu — used to isolate which subsystem is broken when
+        // the live typing flow fails to surface a suggestion. Each item
+        // exercises one piece in isolation:
+        //   - Overlay rendering only (no inference, no UIA)
+        //   - Inference only (no overlay, prints to a message box)
+        //   - Inference + overlay (synthetic anchor, fixed prompt)
+        var diagMenu = new MenuItem { Header = "Diagnostics" };
+        var testOverlay = new MenuItem { Header = "Show test overlay (5s)" };
+        testOverlay.Click += async (_, _) => await ShowTestOverlay();
+        var testGenerate = new MenuItem { Header = "Run test generation" };
+        testGenerate.Click += async (_, _) => await RunTestGeneration();
+        var testFull = new MenuItem { Header = "Full pipeline: generate + show overlay" };
+        testFull.Click += async (_, _) => await RunFullPipelineTest();
+        diagMenu.Items.Add(testOverlay);
+        diagMenu.Items.Add(testGenerate);
+        diagMenu.Items.Add(testFull);
+
         var quitItem = new MenuItem { Header = "Quit Cotabby" };
         quitItem.Click += (_, _) => Application.Current.Shutdown();
 
@@ -73,9 +92,91 @@ public sealed class TrayController : IDisposable
         menu.Items.Add(_enabledItem);
         menu.Items.Add(_modelMenu);
         menu.Items.Add(openSettingsItem);
+        menu.Items.Add(diagMenu);
         menu.Items.Add(new Separator());
         menu.Items.Add(quitItem);
         _tray.ContextMenu = menu;
+    }
+
+    private async Task ShowTestOverlay()
+    {
+        var overlay = (Cotabby.App.Overlay.GhostOverlayWindow)_host.Overlay;
+        // Place at logical (100,100) of primary monitor. Use Win32 work-area
+        // so it lands in physical-pixel space the way real usage does.
+        var anchor = new ScreenRect(100, 100, 1, 24);
+        SetStatus("Test overlay should appear at (100,100) for 5s.");
+        overlay.Show("=== COTABBY TEST OVERLAY — if you see this, rendering works ===", anchor);
+        await Task.Delay(5000);
+        overlay.Hide();
+        SetStatus("Test overlay done.");
+    }
+
+    private async Task RunTestGeneration()
+    {
+        if (!_host.Runtime.IsReady)
+        {
+            MessageBox.Show("Model not loaded yet. Wait for the status to say Ready first.",
+                "Cotabby diagnostic", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        SetStatus("Generating test completion…");
+        var engine = (ISuggestionEngine)_host.Services.GetService(typeof(ISuggestionEngine))!;
+        var request = new SuggestionRequest
+        {
+            RequestId = "diag",
+            Prefix = "def fibonacci(n):\n    if n < 2:\n        return n\n    return ",
+            Suffix = string.Empty,
+            HostApp = "diag",
+            SingleLine = false,
+            MaxTokens = 64,
+        };
+        var sb = new System.Text.StringBuilder();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        await foreach (var chunk in engine.GenerateAsync(request, CancellationToken.None))
+        {
+            if (chunk.IsFinal) break;
+            sb.Append(chunk.Text);
+        }
+        sw.Stop();
+        SetStatus($"Test generation done in {sw.ElapsedMilliseconds} ms.");
+        MessageBox.Show($"Engine returned in {sw.ElapsedMilliseconds} ms:\n\n{sb}",
+            "Cotabby diagnostic", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private async Task RunFullPipelineTest()
+    {
+        if (!_host.Runtime.IsReady)
+        {
+            MessageBox.Show("Model not loaded yet. Wait for the status to say Ready first.",
+                "Cotabby diagnostic", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        SetStatus("Full pipeline test in progress…");
+        var engine = (ISuggestionEngine)_host.Services.GetService(typeof(ISuggestionEngine))!;
+        var overlay = (Cotabby.App.Overlay.GhostOverlayWindow)_host.Overlay;
+        var request = new SuggestionRequest
+        {
+            RequestId = "diag-full",
+            Prefix = "def fibonacci(n):\n    if n < 2:\n        return n\n    return ",
+            Suffix = string.Empty,
+            HostApp = "diag",
+            SingleLine = false,
+            MaxTokens = 32,
+        };
+        var anchor = new ScreenRect(100, 100, 1, 24);
+        string accumulated = string.Empty;
+        bool shown = false;
+        await foreach (var chunk in engine.GenerateAsync(request, CancellationToken.None))
+        {
+            if (chunk.IsFinal) break;
+            accumulated += chunk.Text;
+            if (string.IsNullOrEmpty(accumulated)) continue;
+            if (!shown) { overlay.Show(accumulated, anchor); shown = true; }
+            else { overlay.Update(accumulated); }
+        }
+        await Task.Delay(5000);
+        overlay.Hide();
+        SetStatus("Full pipeline test done.");
     }
 
     public void SetStatus(string text) =>

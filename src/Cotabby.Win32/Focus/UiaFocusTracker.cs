@@ -32,9 +32,23 @@ public sealed class UiaFocusTracker : IFocusTracker
 
     public UiaFocusTracker(ILogger<UiaFocusTracker> logger) => _logger = logger;
 
-    public FocusedField? Current => _current;
+    public FocusedField? Current => _fakeField ?? _current;
 
     public event EventHandler<FocusedField?>? FocusChanged;
+
+    private FocusedField? _fakeField;
+
+    /// <summary>
+    /// Test backdoor: when non-null, <see cref="Current"/> and <see cref="Refresh"/>
+    /// return this synthetic field instead of consulting UIA. Used by the App's
+    /// self-test to exercise the coordinator without depending on real Windows
+    /// focus behavior. Never set from production code paths.
+    /// </summary>
+    public void SetFakeFieldForTesting(FocusedField? fake)
+    {
+        _fakeField = fake;
+        FocusChanged?.Invoke(this, fake);
+    }
 
     public void Start()
     {
@@ -74,6 +88,7 @@ public sealed class UiaFocusTracker : IFocusTracker
 
     public FocusedField? Refresh()
     {
+        if (_fakeField is not null) return _fakeField;
         TryCaptureFocused(out var snap);
         _current = snap;
         return snap;

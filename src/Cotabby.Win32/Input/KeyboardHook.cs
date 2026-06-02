@@ -144,6 +144,18 @@ public sealed class KeyboardHook : IKeyboardHook
         Stop();
     }
 
+    /// <summary>
+    /// Test backdoor: raise a synthetic <see cref="IKeyboardHook.KeyEvent"/> as if
+    /// the OS hook had fired. Used by the App's self-test when the sandbox blocks
+    /// SendInput so we can still exercise the coordinator end-to-end. Never call
+    /// from production code paths.
+    /// </summary>
+    public void FireSyntheticKey(KeyboardEvent ev)
+    {
+        var args = new KeyEventArgs(ev);
+        KeyEvent?.Invoke(this, args);
+    }
+
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode < 0) return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);

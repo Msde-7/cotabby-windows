@@ -37,6 +37,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private int _sessionPid;
     private bool _enabled = true;
     private bool _disposed;
+    /// <summary>True while a generation is past its debounce and the engine is producing tokens.</summary>
+    private bool _generationInFlight;
 
     public SuggestionCoordinator(
         IKeyboardHook hook,
@@ -175,6 +177,17 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             return;
         }
 
+        // One-at-a-time generation: if the engine is already producing tokens,
+        // don't cancel and restart — that's why fast typing produced zero
+        // suggestions before. Let the in-flight generation finish; the chunk
+        // handler re-reads the live field and fast-forwards through whatever
+        // the user typed in the meantime.
+        if (_generationInFlight)
+        {
+            _logger.LogDebug("Skip trigger: generation already in flight.");
+            return;
+        }
+
         _logger.LogInformation("Triggering suggestion: host={Host} textLen={Len} caret={Caret}",
             field.ProcessName, field.Text.Length, field.CaretOffset);
         TriggerGeneration(field);
@@ -191,17 +204,20 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             reqId, request.Prefix.Length, request.HostApp,
             (int)anchor.X, (int)anchor.Y, (int)anchor.Width, (int)anchor.Height);
 
+        _generationInFlight = true;
         _ = _work.Submit(async ct =>
         {
-            if (!_engine.IsReady)
+            try
             {
-                _logger.LogWarning("Engine not ready when work fired for {ReqId}.", reqId);
-                return;
-            }
+                if (!_engine.IsReady)
+                {
+                    _logger.LogWarning("Engine not ready when work fired for {ReqId}.", reqId);
+                    return;
+                }
 
-            var sw = Stopwatch.StartNew();
-            string accumulated = string.Empty;
-            bool overlayShown = false;
+                var sw = Stopwatch.StartNew();
+                string accumulated = string.Empty;
+                bool overlayShown = false;
 
             await foreach (var chunk in _engine.GenerateAsync(request, ct).ConfigureAwait(false))
             {
@@ -212,56 +228,58 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
                 Post(() =>
                 {
-                    // If the session was cancelled (focus moved, user typed
-                    // a mismatching char) drop the chunk.
                     if (_session is not null && _session.RequestId != reqId)
                     {
+                        _logger.LogDebug("Chunk for stale req {ReqId} (current session is {Cur}); dropping.",
+                            reqId, _session.RequestId);
                         return;
                     }
 
                     if (_session is null)
                     {
-                        if (string.IsNullOrEmpty(accumulated)) return;
+                        if (string.IsNullOrEmpty(accumulated))
+                        {
+                            _logger.LogDebug("First chunk empty for {ReqId}; skipping show.", reqId);
+                            return;
+                        }
 
-                        // CPU inference is slow enough (~1s) that by the time the
-                        // first chunk arrives the user has typed several more
-                        // characters. If those characters happen to match the
-                        // start of our suggestion, fast-forward through them;
-                        // otherwise drop instead of flashing for one frame.
+                        // Re-read the live caret so the overlay anchors to where
+                        // the user *is*, not where they were ~1s ago when the
+                        // request fired. We deliberately do NOT try to verify
+                        // the user typed something matching — just show the
+                        // suggestion; the reconciler advances or cancels on the
+                        // next keystroke based on whether it matches.
                         var live = _focus.Refresh();
-                        if (live is null || live.ProcessId != field.ProcessId) return;
-                        int extra = live.CaretOffset - field.CaretOffset;
-                        string toShow = accumulated;
-                        if (extra > 0)
+                        ScreenRect liveAnchor;
+                        int livePid;
+                        if (live is not null && !live.CaretRect.IsEmpty
+                            && live.ProcessId == field.ProcessId)
                         {
-                            if (extra >= toShow.Length) return;
-                            var typedSince = live.Text.Substring(
-                                field.CaretOffset, Math.Min(extra, live.Text.Length - field.CaretOffset));
-                            if (!toShow.StartsWith(typedSince)) return;
-                            toShow = toShow[extra..];
+                            liveAnchor = live.CaretRect;
+                            livePid = live.ProcessId;
                         }
-                        else if (extra < 0)
+                        else
                         {
-                            return; // backspaced past request anchor
+                            liveAnchor = anchor;
+                            livePid = field.ProcessId;
                         }
-                        if (string.IsNullOrEmpty(toShow)) return;
-                        var liveAnchor = live.CaretRect.IsEmpty ? anchor : live.CaretRect;
 
                         _session = new SuggestionSession
                         {
                             RequestId = reqId,
                             ElementHandle = element,
                             OriginalPrefix = request.Prefix,
-                            ConsumedChars = Math.Max(0, extra),
-                            VisibleText = toShow,
+                            ConsumedChars = 0,
+                            VisibleText = accumulated,
                             IsComplete = chunk.IsFinal,
                             AnchorRect = liveAnchor,
                         };
-                        _sessionPid = field.ProcessId;
-                        _overlay.Show(toShow, liveAnchor);
+                        _sessionPid = livePid;
+                        _overlay.Show(accumulated, liveAnchor);
                         overlayShown = true;
-                        _logger.LogInformation("Overlay shown req={ReqId} text=\"{Preview}\" anchor={X},{Y} fastFwd={Extra}",
-                            reqId, Preview(toShow), (int)liveAnchor.X, (int)liveAnchor.Y, extra);
+                        _logger.LogInformation(
+                            "Overlay shown req={ReqId} text=\"{Preview}\" anchor={X},{Y}",
+                            reqId, Preview(accumulated), (int)liveAnchor.X, (int)liveAnchor.Y);
                     }
                     else
                     {
@@ -271,13 +289,18 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                             IsComplete = chunk.IsFinal,
                         };
                         if (overlayShown) _overlay.Update(accumulated);
-                        else { _overlay.Show(accumulated, anchor); overlayShown = true; }
+                        else { _overlay.Show(accumulated, _session.AnchorRect); overlayShown = true; }
                     }
                 });
             }
 
-            sw.Stop();
-            _logger.LogDebug("Request {ReqId} finished in {Ms} ms.", reqId, sw.ElapsedMilliseconds);
+                sw.Stop();
+                _logger.LogInformation("Request {ReqId} finished in {Ms} ms.", reqId, sw.ElapsedMilliseconds);
+            }
+            finally
+            {
+                Post(() => _generationInFlight = false);
+            }
         });
     }
 
@@ -303,10 +326,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
     private void CancelSession(string reason)
     {
-        if (_session is null) return;
+        if (_session is null && !_generationInFlight) return;
         _logger.LogInformation("Cancel session ({Reason}).", reason);
         _session = null;
         _sessionPid = 0;
+        _generationInFlight = false;
         _overlay.Hide();
         _work.Cancel();
     }
