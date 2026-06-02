@@ -1,0 +1,68 @@
+# Build artifacts
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+[Bb]uild/
+[Dd]ist/
+[Oo]ut/
+artifacts/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# Rider
+.idea/
+*.DotSettings.user
+
+# VS Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Test results
+TestResults/
+*.coverage
+*.coveragexml
+coverage*.json
+coverage*.xml
+coverage*.info
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+**/packages/*
+!**/packages/build/
+*.nuget.props
+*.nuget.targets
+
+# Rebuild caches
+project.lock.json
+project.fragment.lock.json
+.dotnet/
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Models — these are large GGUF files the user downloads at runtime
+models/
+*.gguf
+
+# Local secrets / dev
+*.env
+*.env.*
+appsettings.Local.json
+
+# Memory dumps & crash logs
+*.dmp
+*.mdmp
