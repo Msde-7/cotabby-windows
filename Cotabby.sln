@@ -17,6 +17,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cotabby.Core.Tests", "tests\Cotabby.Core.Tests\Cotabby.Core.Tests.csproj", "{A41AA628-A7F0-4246-ACDA-31CFFC49068E}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{07C2787E-EAC7-C090-1BA3-A61EC2A24D84}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cotabby.Tools.InferenceSmoke", "tools\Cotabby.Tools.InferenceSmoke\Cotabby.Tools.InferenceSmoke.csproj", "{1B6C574E-63C7-4403-AB9B-843EC381154D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -87,6 +91,18 @@ Global
 		{A41AA628-A7F0-4246-ACDA-31CFFC49068E}.Release|x64.Build.0 = Release|Any CPU
 		{A41AA628-A7F0-4246-ACDA-31CFFC49068E}.Release|x86.ActiveCfg = Release|Any CPU
 		{A41AA628-A7F0-4246-ACDA-31CFFC49068E}.Release|x86.Build.0 = Release|Any CPU
+		{1B6C574E-63C7-4403-AB9B-843EC381154D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1B6C574E-63C7-4403-AB9B-843EC381154D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1B6C574E-63C7-4403-AB9B-843EC381154D}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{1B6C574E-63C7-4403-AB9B-843EC381154D}.Debug|x64.Build.0 = Debug|Any CPU
+		{1B6C574E-63C7-4403-AB9B-843EC381154D}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{1B6C574E-63C7-4403-AB9B-843EC381154D}.Debug|x86.Build.0 = Debug|Any CPU
+		{1B6C574E-63C7-4403-AB9B-843EC381154D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1B6C574E-63C7-4403-AB9B-843EC381154D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1B6C574E-63C7-4403-AB9B-843EC381154D}.Release|x64.ActiveCfg = Release|Any CPU
+		{1B6C574E-63C7-4403-AB9B-843EC381154D}.Release|x64.Build.0 = Release|Any CPU
+		{1B6C574E-63C7-4403-AB9B-843EC381154D}.Release|x86.ActiveCfg = Release|Any CPU
+		{1B6C574E-63C7-4403-AB9B-843EC381154D}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -97,5 +113,6 @@ Global
 		{1660188A-7223-4DE8-963E-C1BA4EE2E747} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{D8D5285B-2F31-4683-89D3-FFE89A7B3A61} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{A41AA628-A7F0-4246-ACDA-31CFFC49068E} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{1B6C574E-63C7-4403-AB9B-843EC381154D} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 	EndGlobalSection
 EndGlobal
