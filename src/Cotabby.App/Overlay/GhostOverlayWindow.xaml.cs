@@ -56,6 +56,14 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
             ex | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
     }
 
+    /// <summary>
+    /// When set, the overlay ignores the caret anchor and pins itself to the
+    /// top-left of the primary monitor. Used purely for "is the overlay window
+    /// even rendering?" debugging — set COTABBY_DEBUG_OVERLAY=1 to enable.
+    /// </summary>
+    private static readonly bool DebugFixedPosition =
+        Environment.GetEnvironmentVariable("COTABBY_DEBUG_OVERLAY") == "1";
+
     public void Show(string text, ScreenRect anchor)
     {
         if (!Dispatcher.CheckAccess())
@@ -70,7 +78,26 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
             base.Show();
         }
         UpdateLayout();
-        PositionAt(anchor);
+        if (DebugFixedPosition)
+        {
+            PositionAtFixed();
+        }
+        else
+        {
+            PositionAt(anchor);
+        }
+    }
+
+    private void PositionAtFixed()
+    {
+        if (_source is null) return;
+        var matrix = _source.CompositionTarget!.TransformToDevice;
+        int pxW = (int)(ActualWidth * matrix.M11);
+        int pxH = (int)(ActualHeight * matrix.M22);
+        var primary = GetPrimaryWorkArea();
+        SetWindowPos(_source.Handle, HWND_TOPMOST,
+            (int)primary.Left + 40, (int)primary.Top + 40,
+            pxW, pxH, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
 
     public void Update(string text)
@@ -98,25 +125,83 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     private void PositionAt(ScreenRect anchor)
     {
         if (_source is null) return;
-        // Anchor at the right edge of the caret rect (caret rect from UIA is
-        // typically a thin vertical line for text patterns). Drop the overlay
-        // baseline-aligned with the caret bottom so it lives where ghost text
-        // would naturally appear.
-        double x = anchor.Right;
-        double y = anchor.Y;
 
-        // Win32 SetWindowPos size argument must also be in physical pixels.
-        // PresentationSource.CompositionTarget gives the W -> DIP transform for
-        // the monitor this HWND currently lives on; invert to get DIP -> px.
         var matrix = _source.CompositionTarget!.TransformToDevice;
         double pxW = ActualWidth * matrix.M11;
         double pxH = ActualHeight * matrix.M22;
+
+        // Default: right of caret, same vertical baseline.
+        double x = anchor.Right + 2;
+        double y = anchor.Y;
+
+        // Avoid clipping against monitor edges. Pick the monitor under the
+        // caret (the work area excludes the taskbar) and clamp the overlay
+        // so all of it stays visible. Flip above the caret if there isn't
+        // room below.
+        var monitor = GetMonitorBounds(anchor);
+        if (x + pxW > monitor.Right) x = monitor.Right - pxW - 2;
+        if (x < monitor.Left) x = monitor.Left + 2;
+
+        if (y + pxH > monitor.Bottom)
+        {
+            // Flip above the caret line.
+            y = anchor.Y - pxH - 2;
+        }
+        if (y < monitor.Top) y = monitor.Top + 2;
 
         SetWindowPos(
             _source.Handle, HWND_TOPMOST,
             (int)x, (int)y, (int)pxW, (int)pxH,
             SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
+
+    private static (double Left, double Top, double Right, double Bottom) GetMonitorBounds(ScreenRect anchor)
+    {
+        // Use Win32 monitor-from-point so we don't pull in WindowsForms.
+        var pt = new POINT { x = (int)anchor.X, y = (int)anchor.Y };
+        var hmon = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+        var mi = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
+        if (GetMonitorInfo(hmon, ref mi))
+        {
+            return (mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom);
+        }
+        return GetPrimaryWorkArea();
+    }
+
+    private static (double Left, double Top, double Right, double Bottom) GetPrimaryWorkArea()
+    {
+        var hmon = MonitorFromPoint(default, MONITOR_DEFAULTTOPRIMARY);
+        var mi = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
+        if (GetMonitorInfo(hmon, ref mi))
+        {
+            return (mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom);
+        }
+        return (0, 0, 1920, 1080);
+    }
+
+    private const uint MONITOR_DEFAULTTOPRIMARY = 1;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int x; public int y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT { public int left; public int top; public int right; public int bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MONITORINFO
+    {
+        public uint cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
+    [LibraryImport("user32.dll")]
+    private static partial IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
 
     [LibraryImport("user32.dll", EntryPoint = "SetWindowLongW")]
     private static partial int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);

@@ -34,6 +34,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private readonly SynchronizationContext _ui;
 
     private SuggestionSession? _session;
+    private int _sessionPid;
     private bool _enabled = true;
     private bool _disposed;
 
@@ -95,10 +96,14 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         Post(() =>
         {
             if (_session is null) return;
-            // If focus changed away from the session's element, kill the session.
-            if (field is null || !ReferenceEquals(field.ElementHandle, _session.ElementHandle))
+            // Compare host process, not AutomationElement reference: UIA returns
+            // a fresh AutomationElement instance on every focus event even when
+            // focus stayed on the same conceptual field (Monaco/Electron in
+            // particular re-fire focus when their internal AX tree mutates),
+            // and ReferenceEquals on those instances is always false.
+            if (field is null || field.ProcessId != _sessionPid)
             {
-                CancelSession("focus changed");
+                CancelSession("focus changed to different process");
             }
         });
     }
@@ -106,6 +111,10 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private void OnKeyEvent(object? sender, KeyEventArgs args)
     {
         if (!_enabled) return;
+
+        _logger.LogDebug("Key kind={Kind} char={Char} down={Down} mod={Mod} session={HasSession}",
+            args.Event.Kind, (int)args.Event.Character, args.Event.IsKeyDown,
+            args.Event.HasNonShiftModifier, _session is not null);
 
         // Tab acceptance must be decided synchronously on the hook thread —
         // returning true here is the only way to eat the keystroke before the
@@ -154,9 +163,21 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
 
         var field = _focus.Refresh();
-        if (!SuggestionAvailability.ShouldRequest(field, ev)) return;
+        if (field is null)
+        {
+            _logger.LogDebug("No focused field at trigger-decision time.");
+            return;
+        }
+        if (!SuggestionAvailability.ShouldRequest(field, ev))
+        {
+            _logger.LogDebug("ShouldRequest false: secure={Sec} textLen={Len} host={Host}",
+                field.IsSecure, field.Text.Length, field.ProcessName);
+            return;
+        }
 
-        TriggerGeneration(field!);
+        _logger.LogInformation("Triggering suggestion: host={Host} textLen={Len} caret={Caret}",
+            field.ProcessName, field.Text.Length, field.CaretOffset);
+        TriggerGeneration(field);
     }
 
     private void TriggerGeneration(FocusedField field)
@@ -166,12 +187,17 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         var anchor = field.CaretRect;
         var element = field.ElementHandle;
 
-        _logger.LogDebug("Trigger request {ReqId} prefix={Len} host={Host}",
-            reqId, request.Prefix.Length, request.HostApp);
+        _logger.LogInformation("Trigger request {ReqId} prefix={Len} host={Host} anchor={X},{Y} {W}x{H}",
+            reqId, request.Prefix.Length, request.HostApp,
+            (int)anchor.X, (int)anchor.Y, (int)anchor.Width, (int)anchor.Height);
 
         _ = _work.Submit(async ct =>
         {
-            if (!_engine.IsReady) return;
+            if (!_engine.IsReady)
+            {
+                _logger.LogWarning("Engine not ready when work fired for {ReqId}.", reqId);
+                return;
+            }
 
             var sw = Stopwatch.StartNew();
             string accumulated = string.Empty;
@@ -196,18 +222,46 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                     if (_session is null)
                     {
                         if (string.IsNullOrEmpty(accumulated)) return;
+
+                        // CPU inference is slow enough (~1s) that by the time the
+                        // first chunk arrives the user has typed several more
+                        // characters. If those characters happen to match the
+                        // start of our suggestion, fast-forward through them;
+                        // otherwise drop instead of flashing for one frame.
+                        var live = _focus.Refresh();
+                        if (live is null || live.ProcessId != field.ProcessId) return;
+                        int extra = live.CaretOffset - field.CaretOffset;
+                        string toShow = accumulated;
+                        if (extra > 0)
+                        {
+                            if (extra >= toShow.Length) return;
+                            var typedSince = live.Text.Substring(
+                                field.CaretOffset, Math.Min(extra, live.Text.Length - field.CaretOffset));
+                            if (!toShow.StartsWith(typedSince)) return;
+                            toShow = toShow[extra..];
+                        }
+                        else if (extra < 0)
+                        {
+                            return; // backspaced past request anchor
+                        }
+                        if (string.IsNullOrEmpty(toShow)) return;
+                        var liveAnchor = live.CaretRect.IsEmpty ? anchor : live.CaretRect;
+
                         _session = new SuggestionSession
                         {
                             RequestId = reqId,
                             ElementHandle = element,
                             OriginalPrefix = request.Prefix,
-                            ConsumedChars = 0,
-                            VisibleText = accumulated,
+                            ConsumedChars = Math.Max(0, extra),
+                            VisibleText = toShow,
                             IsComplete = chunk.IsFinal,
-                            AnchorRect = anchor,
+                            AnchorRect = liveAnchor,
                         };
-                        _overlay.Show(accumulated, anchor);
+                        _sessionPid = field.ProcessId;
+                        _overlay.Show(toShow, liveAnchor);
                         overlayShown = true;
+                        _logger.LogInformation("Overlay shown req={ReqId} text=\"{Preview}\" anchor={X},{Y} fastFwd={Extra}",
+                            reqId, Preview(toShow), (int)liveAnchor.X, (int)liveAnchor.Y, extra);
                     }
                     else
                     {
@@ -250,11 +304,14 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private void CancelSession(string reason)
     {
         if (_session is null) return;
-        _logger.LogDebug("Cancel session ({Reason}).", reason);
+        _logger.LogInformation("Cancel session ({Reason}).", reason);
         _session = null;
+        _sessionPid = 0;
         _overlay.Hide();
         _work.Cancel();
     }
+
+    private static string Preview(string s) => s.Length <= 40 ? s : s[..40] + "…";
 
     private void Post(Action action)
     {

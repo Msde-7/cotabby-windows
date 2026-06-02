@@ -149,13 +149,14 @@ public sealed class UiaFocusTracker : IFocusTracker
         try
         {
             var info = element.Current;
-            if (!info.IsEnabled || !info.IsKeyboardFocusable) return false;
+            if (!info.IsEnabled) return false;
+            // IsKeyboardFocusable is unreliable — Win11 Notepad's RichEditBox
+            // exposes false for the document control even though it accepts
+            // keystrokes — so we don't gate on it. We rely on the control type
+            // and a TextPattern / ValuePattern probe instead.
 
-            // Document for rich-text (VS Code monaco, Word), Edit for inputs,
-            // ComboBox carries an internal Edit child but the focused element is
-            // usually the inner Edit anyway.
             var ct = info.ControlType;
-            if (ct != ControlType.Edit && ct != ControlType.Document)
+            if (ct != ControlType.Edit && ct != ControlType.Document && ct != ControlType.Pane)
             {
                 return false;
             }
@@ -168,7 +169,12 @@ public sealed class UiaFocusTracker : IFocusTracker
                 return false;
             }
 
-            return true;
+            // Require at least one of TextPattern or ValuePattern so we know we
+            // can actually read text out of this element. Without that the
+            // request would have an empty prefix.
+            bool hasText = element.TryGetCurrentPattern(TextPattern.Pattern, out _);
+            bool hasValue = element.TryGetCurrentPattern(ValuePattern.Pattern, out _);
+            return hasText || hasValue;
         }
         catch (Exception) { return false; }
     }

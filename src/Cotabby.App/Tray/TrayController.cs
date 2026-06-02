@@ -1,3 +1,5 @@
+using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media.Imaging;
@@ -28,9 +30,12 @@ public sealed class TrayController : IDisposable
         _tray = new TaskbarIcon
         {
             ToolTipText = "Cotabby — local AI autocomplete",
-            Visibility = Visibility.Visible,
         };
         TrySetIcon(_tray);
+        // ForceCreate registers the icon with the shell. Without it, H.NotifyIcon
+        // waits until the FrameworkElement is added to a visual tree, which never
+        // happens for a tray-only app — so the icon never appears in the tray.
+        _tray.ForceCreate();
 
         _enabledItem = new MenuItem
         {
@@ -110,21 +115,51 @@ public sealed class TrayController : IDisposable
 
     private static void TrySetIcon(TaskbarIcon tray)
     {
-        // Use the executable's embedded icon as the tray icon — falls back to
-        // a default WPF blue square if no app icon is present.
+        // Always generate a programmatic icon. ExtractAssociatedIcon returns the
+        // generic app icon when the exe has no embedded icon, which looks like
+        // every other random .NET process — easy to miss in the system tray.
         try
         {
-            var exePath = Environment.ProcessPath;
-            if (!string.IsNullOrEmpty(exePath))
-            {
-                var icon = System.Drawing.Icon.ExtractAssociatedIcon(exePath);
-                if (icon is not null)
-                {
-                    tray.Icon = icon;
-                }
-            }
+            tray.Icon = BuildBrandIcon();
         }
-        catch (Exception) { /* default icon */ }
+        catch (Exception) { /* H.NotifyIcon falls back to its default */ }
+    }
+
+    /// <summary>
+    /// Render a 32×32 dark-blue rounded square with a white "C" — works on both
+    /// light and dark Windows themes and is distinguishable from the generic
+    /// .NET diamond.
+    /// </summary>
+    private static Icon BuildBrandIcon()
+    {
+        using var bmp = new Bitmap(32, 32);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            using var bg = new SolidBrush(Color.FromArgb(255, 33, 89, 200));
+            using var path = RoundedRect(new Rectangle(0, 0, 32, 32), 7);
+            g.FillPath(bg, path);
+            using var fg = new SolidBrush(Color.White);
+            using var font = new Font("Segoe UI", 18f, System.Drawing.FontStyle.Bold, GraphicsUnit.Pixel);
+            var sz = g.MeasureString("C", font);
+            g.DrawString("C", font, fg, (32 - sz.Width) / 2f, (32 - sz.Height) / 2f - 1);
+        }
+        // Bitmap -> Icon via HICON. The caller owns disposal of the returned Icon.
+        IntPtr hicon = bmp.GetHicon();
+        return (Icon)Icon.FromHandle(hicon).Clone();
+    }
+
+    private static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle r, int radius)
+    {
+        var p = new System.Drawing.Drawing2D.GraphicsPath();
+        int d = radius * 2;
+        p.AddArc(r.X, r.Y, d, d, 180, 90);
+        p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
     }
 
     public void Dispose()

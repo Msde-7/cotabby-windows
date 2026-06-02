@@ -30,6 +30,13 @@ namespace Cotabby.Win32.Input;
 /// </remarks>
 public sealed class KeyboardHook : IKeyboardHook
 {
+    // Escape hatch for automated end-to-end testing: SendInput sets LLKHF_INJECTED
+    // and we normally drop those events to avoid a Tab-accept feedback loop.
+    // The smoke harness needs the hook to observe synthesized typing, so it
+    // sets COTABBY_ALLOW_INJECTED=1 before launch. Never set this in production.
+    private static readonly bool AllowInjected =
+        Environment.GetEnvironmentVariable("COTABBY_ALLOW_INJECTED") == "1";
+
     private readonly ILogger<KeyboardHook> _logger;
     private readonly object _gate = new();
 
@@ -72,7 +79,9 @@ public sealed class KeyboardHook : IKeyboardHook
                         throw new InvalidOperationException(
                             $"SetWindowsHookEx failed: {Marshal.GetLastWin32Error()}");
                     }
-                    _logger.LogInformation("Keyboard hook installed (thread {ThreadId}).", _threadId);
+                    _logger.LogInformation(
+                        "Keyboard hook installed (thread {ThreadId}, allowInjected={Allow}).",
+                        _threadId, AllowInjected);
                     started.Set();
 
                     while (GetMessage(out MSG msg, IntPtr.Zero, 0, 0) > 0)
@@ -145,7 +154,7 @@ public sealed class KeyboardHook : IKeyboardHook
 
             // Ignore events we synthesize ourselves. SendInput sets LLKHF_INJECTED,
             // and re-entering acceptance would amplify a tab-to-accept loop.
-            if ((data.flags & LLKHF_INJECTED) != 0)
+            if ((data.flags & LLKHF_INJECTED) != 0 && !AllowInjected)
             {
                 return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
             }
