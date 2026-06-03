@@ -42,14 +42,45 @@ public sealed class SendInputTextInserter : ITextInserter
         {
             ct.ThrowIfCancellationRequested();
 
-            var inputs = BuildInputs(text);
-            uint sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
-            if (sent != inputs.Length)
+            // SendInput in a single big batch reliably loses events on some
+            // Windows builds — particularly under input throttling and when
+            // the target window's WndProc takes more than a few µs per
+            // WM_CHAR. Symptom we saw: 49-character suggestion arrived at
+            // the host as 'oooooo ddddd' — only a sparse handful of the
+            // synthesized keystrokes survived. Send one character per
+            // SendInput call with a 1ms yield between, and verify each call's
+            // delivery count.
+            int total = 0, failed = 0;
+            foreach (char c in text)
             {
-                int err = Marshal.GetLastWin32Error();
+                ct.ThrowIfCancellationRequested();
+                var pair = new[]
+                {
+                    MakeUnicodeInput(c, keyUp: false),
+                    MakeUnicodeInput(c, keyUp: true),
+                };
+                uint sent = SendInput((uint)pair.Length, pair, Marshal.SizeOf<INPUT>());
+                if (sent != pair.Length)
+                {
+                    failed++;
+                    int err = Marshal.GetLastWin32Error();
+                    _logger.LogWarning(
+                        "SendInput dropped char '{Ch}' (sent {Sent}/{Total}, err {Err}).",
+                        c, sent, pair.Length, err);
+                }
+                total++;
+                // Tiny yield. ~1ms between chars gives the target's message
+                // pump time to drain WM_CHAR before the next pair arrives.
+                if ((total & 7) == 0)
+                {
+                    await Task.Delay(1, ct).ConfigureAwait(false);
+                }
+            }
+            if (failed > 0)
+            {
                 _logger.LogWarning(
-                    "SendInput delivered {Sent}/{Total} events (last error {Err}). The host app may be elevated (UIPI) or non-focusable.",
-                    sent, inputs.Length, err);
+                    "SendInput insertion dropped {Failed}/{Total} chars for target host pid={Pid}.",
+                    failed, total, target.ProcessId);
                 return false;
             }
             return true;
@@ -58,19 +89,6 @@ public sealed class SendInputTextInserter : ITextInserter
         {
             _gate.Release();
         }
-    }
-
-    private static INPUT[] BuildInputs(string text)
-    {
-        // Worst case: every char emits a down + up (2 events). Surrogate pairs add
-        // another 2 events per high surrogate. We over-allocate by counting chars.
-        var inputs = new List<INPUT>(text.Length * 2);
-        foreach (char c in text)
-        {
-            inputs.Add(MakeUnicodeInput(c, keyUp: false));
-            inputs.Add(MakeUnicodeInput(c, keyUp: true));
-        }
-        return inputs.ToArray();
     }
 
     private static INPUT MakeUnicodeInput(char unit, bool keyUp) => new()
