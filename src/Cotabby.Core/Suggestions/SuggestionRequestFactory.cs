@@ -11,8 +11,10 @@ public static class SuggestionRequestFactory
 {
     private const int MaxPrefixChars = 1024;
     private const int MaxSuffixChars = 512;
-    private const int DefaultMaxTokensSingleLine = 32;
-    private const int DefaultMaxTokensMultiLine = 96;
+    // Conservative caps — long suggestions on small models are usually
+    // degenerate. Users can always re-trigger by typing the first char.
+    private const int DefaultMaxTokensSingleLine = 24;
+    private const int DefaultMaxTokensMultiLine = 48;
 
     public static SuggestionRequest Build(FocusedField field, string requestId)
     {

@@ -41,11 +41,17 @@ public static class ModelCatalog
         // 0.5B-Instruct was the original default and is kept for back-compat
         // so existing caches don't get orphaned, but the picker now shows base
         // variants first.
+        // bartowski's Instruct GGUFs are the consistently open-mirror set
+        // available without HF auth right now. The base variants are gated
+        // (401), and Qwen's official repos require login since late 2025.
+        // Instruct on a larger model still beats Instruct on a smaller one
+        // for FIM completion — the tokenizer is the same and the larger
+        // model just understands the <|fim_*|> tokens better.
         new CotabbyModel
         {
             Id = "qwen2.5-coder-1.5b-base-q4",
-            DisplayName = "Qwen2.5-Coder 1.5B Base (Q4_K_M) — recommended",
-            DownloadUrl = "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-GGUF/resolve/main/qwen2.5-coder-1.5b-q4_k_m.gguf",
+            DisplayName = "Qwen2.5-Coder 1.5B Instruct (Q4_K_M) — recommended",
+            DownloadUrl = "https://huggingface.co/bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf",
             ApproxSizeBytes = 1024L * 1024 * 1024,
             ContextLength = 4096,
             SupportsFillInMiddle = true,
@@ -53,8 +59,8 @@ public static class ModelCatalog
         new CotabbyModel
         {
             Id = "qwen2.5-coder-0.5b-base-q4",
-            DisplayName = "Qwen2.5-Coder 0.5B Base (Q4_K_M) — fastest",
-            DownloadUrl = "https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-GGUF/resolve/main/qwen2.5-coder-0.5b-q4_k_m.gguf",
+            DisplayName = "Qwen2.5-Coder 0.5B Instruct (bartowski) — fastest",
+            DownloadUrl = "https://huggingface.co/bartowski/Qwen2.5-Coder-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M.gguf",
             ApproxSizeBytes = 400L * 1024 * 1024,
             ContextLength = 4096,
             SupportsFillInMiddle = true,
@@ -62,8 +68,8 @@ public static class ModelCatalog
         new CotabbyModel
         {
             Id = "qwen2.5-coder-3b-base-q4",
-            DisplayName = "Qwen2.5-Coder 3B Base (Q4_K_M) — higher quality",
-            DownloadUrl = "https://huggingface.co/Qwen/Qwen2.5-Coder-3B-GGUF/resolve/main/qwen2.5-coder-3b-q4_k_m.gguf",
+            DisplayName = "Qwen2.5-Coder 3B Instruct (Q4_K_M) — higher quality",
+            DownloadUrl = "https://huggingface.co/bartowski/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf",
             ApproxSizeBytes = 2_100L * 1024 * 1024,
             ContextLength = 4096,
             SupportsFillInMiddle = true,
@@ -71,8 +77,8 @@ public static class ModelCatalog
         new CotabbyModel
         {
             Id = "qwen2.5-coder-7b-base-q4",
-            DisplayName = "Qwen2.5-Coder 7B Base (Q4_K_M) — best quality",
-            DownloadUrl = "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-GGUF/resolve/main/qwen2.5-coder-7b-q4_k_m.gguf",
+            DisplayName = "Qwen2.5-Coder 7B Instruct (Q4_K_M) — best quality",
+            DownloadUrl = "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
             ApproxSizeBytes = 5_200L * 1024 * 1024,
             ContextLength = 4096,
             SupportsFillInMiddle = true,

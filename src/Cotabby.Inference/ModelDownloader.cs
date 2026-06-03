@@ -77,7 +77,16 @@ public sealed class ModelDownloader
             File.Move(partPath, finalPath, overwrite: true);
             return;
         }
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            string body = "";
+            try { body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false); } catch { }
+            _logger.LogError(
+                "Download failed: status={Status} url={Url} finalUrl={Final} body={Body}",
+                response.StatusCode, model.DownloadUrl,
+                response.RequestMessage?.RequestUri, body[..Math.Min(body.Length, 200)]);
+            response.EnsureSuccessStatusCode();
+        }
 
         long? total = response.Content.Headers.ContentLength;
         if (total.HasValue && response.StatusCode == System.Net.HttpStatusCode.PartialContent)

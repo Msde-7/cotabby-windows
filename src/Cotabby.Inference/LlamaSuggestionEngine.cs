@@ -84,13 +84,24 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
 
             emitted.Append(clean);
 
-            // Degeneration guard: small models occasionally lock into a single
-            // token ("aaaaaaaa..." / "I I I I I..."). If we've emitted a long
-            // run of the same character, stop instead of polluting the field.
+            // Degeneration guards. Small models lock into either:
+            //   (a) a single token loop ("aaaa…", "I I I I …")
+            //   (b) a multi-token phrase loop ("hi my name is gabe hi my name
+            //       is gabe hi my name is gabe…")
+            // Both are catastrophic for the user — the suggestion fills with
+            // junk that they have no way to dismiss without typing. Catch (a)
+            // with HasLongCharRun and (b) with HasRepeatingPattern.
             if (HasLongCharRun(emitted, maxRunLength))
             {
                 _logger.LogInformation(
-                    "Stopping {ReqId} early: degenerate run detected.",
+                    "Stopping {ReqId} early: long char run detected.",
+                    request.RequestId);
+                yield break;
+            }
+            if (HasRepeatingPattern(emitted))
+            {
+                _logger.LogInformation(
+                    "Stopping {ReqId} early: repeating phrase detected.",
                     request.RequestId);
                 yield break;
             }
@@ -148,5 +159,50 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
             count++;
         }
         return count > threshold;
+    }
+
+    /// <summary>
+    /// Detects whether the tail of <paramref name="sb"/> contains a repeating
+    /// pattern of N characters. Multi-token loops like
+    /// "hi my name is gabe hi my name is gabe…" slip past
+    /// <see cref="HasLongCharRun"/> because no single character repeats.
+    ///
+    /// Heuristics:
+    /// <list type="bullet">
+    /// <item>Short patterns (N &lt; 10) need 3 consecutive copies — "foo foo
+    /// foo" is degenerate, but a one-off "foo foo" might be legitimate.</item>
+    /// <item>Long patterns (N &gt;= 10) need only 2 — repeating a whole phrase
+    /// is almost never legitimate output.</item>
+    /// </list>
+    /// </summary>
+    private static bool HasRepeatingPattern(StringBuilder sb, int maxPatternLen = 40, int minPatternLen = 3)
+    {
+        int len = sb.Length;
+        if (len < minPatternLen * 2) return false;
+        int maxN = Math.Min(maxPatternLen, len / 2);
+        for (int n = minPatternLen; n <= maxN; n++)
+        {
+            bool match = true;
+            for (int i = 0; i < n; i++)
+            {
+                if (sb[len - 1 - i] != sb[len - 1 - i - n]) { match = false; break; }
+            }
+            if (!match) continue;
+
+            // Two copies of a long phrase (>= 10 chars) is already enough.
+            if (n >= 10) return true;
+
+            // For short patterns, require a third confirming copy.
+            if (len >= n * 3)
+            {
+                bool third = true;
+                for (int i = 0; i < n; i++)
+                {
+                    if (sb[len - 1 - i - n] != sb[len - 1 - i - n * 2]) { third = false; break; }
+                }
+                if (third) return true;
+            }
+        }
+        return false;
     }
 }
