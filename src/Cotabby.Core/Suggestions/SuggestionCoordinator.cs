@@ -216,17 +216,13 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             return;
         }
 
-        // One-at-a-time generation: if the engine is already producing tokens,
-        // don't cancel and restart — that's why fast typing produced zero
-        // suggestions before. Let the in-flight generation finish; the chunk
-        // handler re-reads the live field and fast-forwards through whatever
-        // the user typed in the meantime.
-        if (_generationInFlight)
-        {
-            _logger.LogDebug("Skip trigger: generation already in flight.");
-            return;
-        }
-
+        // Match upstream Cotabby behavior: every new keystroke cancels the
+        // prior debounce/work and reschedules a fresh one. Without this, the
+        // FIRST keystroke captures the prefix for the entire typing burst and
+        // ~5s later we surface a completion for context that no longer exists
+        // ("ork" appearing after the user already typed "ork" themselves and
+        // moved on). The cancel-prior path lets Submit replace pending work,
+        // and the work function snapshots the *live* focus at debounce expiry.
         _logger.LogInformation("Triggering suggestion: host={Host} textLen={Len} caret={Caret}",
             field.ProcessName, field.Text.Length, field.CaretOffset);
         TriggerGeneration(field);
@@ -239,6 +235,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
         _logger.LogInformation("Scheduled request {ReqId} pid={Pid}", reqId, pid);
 
+        // We no longer gate new triggers on _generationInFlight (see
+        // HandleEvent), but keep the flag in sync for OnFocusChanged's
+        // cross-process work-cancel and for diagnostics.
         _generationInFlight = true;
         _inFlightPid = pid;
         _ = _work.Submit(async ct =>
