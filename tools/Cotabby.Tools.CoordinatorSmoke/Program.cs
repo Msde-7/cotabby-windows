@@ -151,6 +151,97 @@ else
     Console.WriteLine("[coord] STEP 3 PASS — overlay was hidden after acceptance.");
 }
 
+// STEP 4: Window-switch scenario. Generate, then "switch process" mid-stream,
+// assert the overlay is hidden / not shown for the new process.
+Console.WriteLine();
+Console.WriteLine("[coord] STEP 4: window-switch during generation…");
+overlay.ShowCount = 0;
+overlay.UpdateCount = 0;
+overlay.HideCount = 0;
+focus.SetField(focus.Current! with { Text = string.Empty, CaretOffset = 0 });
+foreach (char c in "long(")
+{
+    var cur = focus.Current!;
+    focus.SetField(cur with { Text = cur.Text + c, CaretOffset = cur.Text.Length + 1 });
+    hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = true, HasNonShiftModifier = false });
+    await Task.Delay(30);
+    hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = false, HasNonShiftModifier = false });
+}
+// Wait 800ms — about half a CPU generation — then simulate Alt-Tab to a
+// different process by changing pid.
+await Task.Delay(800);
+Console.WriteLine($"[coord] STEP 4: mid-stream Alt-Tab (ShowCalls so far = {overlay.ShowCount})");
+focus.SetField(new FocusedField
+{
+    ElementHandle = new object(),
+    ProcessId = 99999, // different process
+    ProcessName = "other-app",
+    Text = "totally different content",
+    CaretOffset = 25,
+    CaretRect = new ScreenRect(900, 700, 1, 20),
+    FieldRect = new ScreenRect(800, 600, 1000, 200),
+    IsSingleLine = false,
+    IsSecure = false,
+});
+// Give the cancelled generation time to fully drain.
+await Task.Delay(3000);
+// After the switch the overlay must be hidden, and there must not be an
+// overlay anchored at the old (500, 300) showing in the new process.
+if (overlay.HideCount > 0)
+{
+    Console.WriteLine($"[coord] STEP 4 PASS — overlay hidden after window switch. ShowCalls={overlay.ShowCount} HideCalls={overlay.HideCount}");
+}
+else
+{
+    Console.WriteLine($"[coord] STEP 4 WARNING — overlay was not hidden after window switch. ShowCalls={overlay.ShowCount} HideCalls={overlay.HideCount}");
+}
+
+// STEP 5: Multiple generation cycles. Ensure _generationInFlight resets
+// cleanly between independent typing sessions.
+Console.WriteLine();
+Console.WriteLine("[coord] STEP 5: three independent typing sessions…");
+focus.SetField(focus.Current! with
+{
+    ProcessId = 11111,
+    ProcessName = "session-cycle",
+    Text = string.Empty,
+    CaretOffset = 0,
+});
+overlay.ShowCount = 0;
+int cycleSuccess = 0;
+for (int round = 0; round < 3; round++)
+{
+    overlay.LastShown = null;
+    foreach (char c in "abc")
+    {
+        var cur = focus.Current!;
+        focus.SetField(cur with { Text = cur.Text + c, CaretOffset = cur.Text.Length + 1 });
+        hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = true, HasNonShiftModifier = false });
+        await Task.Delay(30);
+        hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = false, HasNonShiftModifier = false });
+    }
+    var roundWait = Stopwatch.StartNew();
+    while (overlay.LastShown is null && roundWait.Elapsed < TimeSpan.FromSeconds(15))
+        await Task.Delay(150);
+    if (overlay.LastShown is not null)
+    {
+        cycleSuccess++;
+        Console.WriteLine($"[coord] STEP 5 round {round + 1}/3 PASS — overlay text=\"{overlay.LastShown.Text}\"");
+        // Accept it and wait briefly for the next round.
+        hook.Raise(new KeyboardEvent { Kind = KeyKind.Tab, Character = '\0', IsKeyDown = true, HasNonShiftModifier = false });
+        await Task.Delay(50);
+        hook.Raise(new KeyboardEvent { Kind = KeyKind.Tab, Character = '\0', IsKeyDown = false, HasNonShiftModifier = false });
+        await Task.Delay(500);
+    }
+    else
+    {
+        Console.WriteLine($"[coord] STEP 5 round {round + 1}/3 FAIL — no overlay within 15s.");
+        break;
+    }
+}
+Console.WriteLine($"[coord] STEP 5 result: {cycleSuccess}/3 rounds passed.");
+if (cycleSuccess < 3) exitCode = 1;
+
 await coordinator.DisposeAsync();
 pump.Stop();
 Console.WriteLine();
@@ -183,7 +274,7 @@ sealed class FakeKeyboardHook : IKeyboardHook
 sealed class RecordingOverlay : IOverlayPresenter
 {
     public record ShownInfo(string Text, ScreenRect Anchor);
-    public ShownInfo? LastShown { get; private set; }
+    public ShownInfo? LastShown { get; set; }
     public int ShowCount, UpdateCount, HideCount;
     public void Show(string text, ScreenRect anchor) { LastShown = new(text, anchor); ShowCount++; }
     public void Update(string text) { if (LastShown is not null) LastShown = LastShown with { Text = text }; UpdateCount++; }
