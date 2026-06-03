@@ -63,7 +63,8 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
 
         var emitted = new StringBuilder();
         bool firstChunk = true;
-        const int maxRunLength = 8; // stop on 9+ identical chars in a row
+        const int maxRunLength = 4;     // stop on 5+ identical non-whitespace chars
+        const int maxOutputChars = 80;  // hard absolute cap regardless of tokens
 
         await foreach (var token in _runtime.Executor.InferAsync(prompt, inference, ct).ConfigureAwait(false))
         {
@@ -84,18 +85,29 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
 
             emitted.Append(clean);
 
+            // Hard absolute cap on emitted text. MaxTokens is in tokens, not
+            // chars, and BPE tokenizers can encode "fffff" as a single token
+            // — so an output that loops on "fff" tokens easily blows past the
+            // visible token budget into 30+ characters of garbage. Stop the
+            // suggestion at 80 chars regardless of what the token counter
+            // says; the user can re-trigger by typing past it if they want more.
+            if (emitted.Length > maxOutputChars)
+            {
+                _logger.LogInformation(
+                    "Stopping {ReqId} at {Chars}-char absolute cap.",
+                    request.RequestId, emitted.Length);
+                yield break;
+            }
+
             // Degeneration guards. Small models lock into either:
             //   (a) a single token loop ("aaaa…", "I I I I …")
             //   (b) a multi-token phrase loop ("hi my name is gabe hi my name
             //       is gabe hi my name is gabe…")
-            // Both are catastrophic for the user — the suggestion fills with
-            // junk that they have no way to dismiss without typing. Catch (a)
-            // with HasLongCharRun and (b) with HasRepeatingPattern.
             if (HasLongCharRun(emitted, maxRunLength))
             {
                 _logger.LogInformation(
-                    "Stopping {ReqId} early: long char run detected.",
-                    request.RequestId);
+                    "Stopping {ReqId} early at {Chars} chars: long char run detected ('{Last}').",
+                    request.RequestId, emitted.Length, emitted[^1]);
                 yield break;
             }
             if (HasRepeatingPattern(emitted))
