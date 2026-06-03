@@ -11,14 +11,14 @@ public static class SuggestionRequestFactory
 {
     private const int MaxPrefixChars = 1024;
     private const int MaxSuffixChars = 512;
-    // Aggressively short on CPU. Throughput is ~30 tokens/sec for 1.5B Q4
-    // CPU; capping at 12 multi-line / 8 single-line keeps end-to-end
-    // latency under 500ms, which is the only way the cancel-prior debounce
-    // pattern can ever surface a suggestion — at 32-token caps the engine
-    // call took 5 seconds and every keystroke in the user's natural typing
-    // cadence cancelled it before it could produce a chunk.
-    private const int DefaultMaxTokensSingleLine = 8;
-    private const int DefaultMaxTokensMultiLine = 12;
+    // Ultra-short on CPU. The user pressed Enter ~880ms after a request
+    // fired; the 1.5B Q4 model on CPU needs ~500ms for prompt eval alone
+    // before yielding the first token, so a 12-token cap still pushed
+    // total latency past 1.2s — long enough for the user to send their
+    // message and cancel everything. Capping at 4-6 tokens means the
+    // first chunk lands by ~600ms and the full suggestion by ~800ms.
+    private const int DefaultMaxTokensSingleLine = 4;
+    private const int DefaultMaxTokensMultiLine = 6;
 
     public static SuggestionRequest Build(FocusedField field, string requestId)
     {

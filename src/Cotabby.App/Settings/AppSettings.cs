@@ -12,7 +12,7 @@ public sealed class AppSettings
 {
     public bool Enabled { get; set; } = true;
     public string? ActiveModelId { get; set; }
-    public int DebounceMs { get; set; } = 250;
+    public int DebounceMs { get; set; } = 120;
 }
 
 /// <summary>
