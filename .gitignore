@@ -54,9 +54,15 @@ project.fragment.lock.json
 Thumbs.db
 desktop.ini
 
-# Models — these are large GGUF files the user downloads at runtime
-models/
+# GGUF files the user downloads at runtime — these are HUGE (>500MB) so we
+# blanket-ignore them regardless of where they live. The macOS Models folder
+# would have collided here but Windows + core.ignoreCase=true means a bare
+# `models/` rule also matches src/Cotabby.Core/Models/, which silently
+# orphaned the entire ModelCatalog source for several commits. Anchor the
+# rule to the runtime cache directory instead.
 *.gguf
+/models/
+%LOCALAPPDATA%/Cotabby/models/
 
 # Local secrets / dev
 *.env
