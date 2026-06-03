@@ -327,20 +327,18 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                             return;
                         }
 
-                        // Re-read the live caret. If the user has Alt-Tabbed
-                        // to a different process, drop the suggestion entirely
-                        // — popping it over the new window with the old
-                        // window's continuation would be confusing.
+                        // Re-read the live caret to anchor the overlay where
+                        // the user *is*. The work CTS is already cancelled by
+                        // OnFocusChanged if the user Alt-Tabbed away, so we
+                        // don't double-check the PID here — the
+                        // ctSnapshot.IsCancellationRequested guard above
+                        // covers that. Trying to be too strict here was
+                        // dropping legitimate completions when UIA returned a
+                        // null or zero-rect for a frame.
                         var live = _focus.Refresh();
-                        if (live is null || live.ProcessId != field.ProcessId)
-                        {
-                            _logger.LogInformation(
-                                "Dropping {ReqId}: focus moved (was pid={Was}, now {Now}).",
-                                reqId, field.ProcessId, live?.ProcessId ?? 0);
-                            return;
-                        }
-                        var liveAnchor = live.CaretRect.IsEmpty ? anchor : live.CaretRect;
-                        int livePid = live.ProcessId;
+                        var liveAnchor = (live is not null && !live.CaretRect.IsEmpty)
+                            ? live.CaretRect : anchor;
+                        int livePid = live?.ProcessId ?? field.ProcessId;
 
                         _session = new SuggestionSession
                         {

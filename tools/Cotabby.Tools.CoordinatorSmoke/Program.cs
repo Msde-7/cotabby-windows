@@ -25,13 +25,14 @@ using var lf = LoggerFactory.Create(b =>
 
 Console.WriteLine("[coord] Loading model…");
 await using var runtime = new LlamaRuntimeManager(lf.CreateLogger<LlamaRuntimeManager>());
-var model = ModelCatalog.All[0];
-var path = ModelDownloader.LocalPath(model);
-if (!ModelDownloader.IsCached(model))
+var model = ModelCatalog.All.FirstOrDefault(ModelDownloader.IsCached);
+if (model is null)
 {
-    Console.Error.WriteLine($"[coord] Model not cached at {path}. Run InferenceSmoke first.");
+    Console.Error.WriteLine($"[coord] No cached model found in {ModelCatalog.DefaultLocalDirectory()}. Run InferenceSmoke first.");
     return 2;
 }
+var path = ModelDownloader.LocalPath(model);
+Console.WriteLine($"[coord] Using cached model: {model.DisplayName}");
 await runtime.LoadAsync(model, path, CancellationToken.None);
 var engine = new LlamaSuggestionEngine(runtime, lf.CreateLogger<LlamaSuggestionEngine>());
 Console.WriteLine($"[coord] Engine ready in {sw.ElapsedMilliseconds} ms.");

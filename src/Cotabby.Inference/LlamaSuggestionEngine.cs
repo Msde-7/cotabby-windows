@@ -132,12 +132,15 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
     /// Walk back from the end of <paramref name="sb"/> and stop as soon as the
     /// last char doesn't match; if the matching run is &gt; <paramref name="threshold"/>,
     /// return true. Detects "aaaaaaaa" and similar collapses cheaply (O(threshold))
-    /// without scanning the whole emitted buffer.
+    /// without scanning the whole emitted buffer. Whitespace runs (indentation,
+    /// blank lines) are NEVER flagged — Python and YAML routinely produce long
+    /// whitespace sequences as legitimate output.
     /// </summary>
     private static bool HasLongCharRun(StringBuilder sb, int threshold)
     {
         if (sb.Length <= threshold) return false;
         char last = sb[^1];
+        if (last == ' ' || last == '\t' || last == '\n' || last == '\r') return false;
         int count = 0;
         for (int i = sb.Length - 1; i >= 0 && count <= threshold; i--)
         {
