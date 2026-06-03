@@ -39,8 +39,11 @@ public sealed class ModelDownloader
         var path = LocalPath(model);
         if (!File.Exists(path)) return false;
         var len = new FileInfo(path).Length;
-        // Tolerance: HF compressed sizes can be ~5% off the in-memory estimate.
-        return len >= model.ApproxSizeBytes * 0.95;
+        // Tolerance: HF mirrors occasionally re-quantize so the published
+        // size can drift by a wider margin than the original 5%. We accept
+        // anything at 85% of the catalog estimate or above — a real
+        // half-downloaded .part is at .part, not at the final path.
+        return len >= model.ApproxSizeBytes * 0.85;
     }
 
     public async Task DownloadAsync(
