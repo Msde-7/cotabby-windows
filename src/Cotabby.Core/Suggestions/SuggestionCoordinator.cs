@@ -39,6 +39,17 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private bool _disposed;
     /// <summary>True while a generation is past its debounce and the engine is producing tokens.</summary>
     private bool _generationInFlight;
+    /// <summary>Process id of the host that owned focus when the in-flight request fired.</summary>
+    private int _inFlightPid;
+    /// <summary>
+    /// Volatile flag the hook thread reads to decide whether to synchronously
+    /// suppress Tab. A separate primitive from <see cref="_session"/> because
+    /// .NET's memory model doesn't guarantee reference-field visibility across
+    /// threads without explicit fences. Volatile.Write/Read on this int gives
+    /// us a portable acquire/release ordering — Tab acceptance becomes
+    /// deterministic instead of dropping every ~3rd attempt to a stale null.
+    /// </summary>
+    private int _hasVisibleSession; // 0 or 1; written with Volatile.Write
 
     public SuggestionCoordinator(
         IKeyboardHook hook,
@@ -97,15 +108,30 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     {
         Post(() =>
         {
-            if (_session is null) return;
             // Compare host process, not AutomationElement reference: UIA returns
             // a fresh AutomationElement instance on every focus event even when
             // focus stayed on the same conceptual field (Monaco/Electron in
             // particular re-fire focus when their internal AX tree mutates),
             // and ReferenceEquals on those instances is always false.
-            if (field is null || field.ProcessId != _sessionPid)
+            int newPid = field?.ProcessId ?? 0;
+
+            if (_session is not null && (field is null || newPid != _sessionPid))
             {
                 CancelSession("focus changed to different process");
+            }
+
+            // Also abort any in-flight work whose request was for a different
+            // process — otherwise the in-flight generation keeps streaming for
+            // the OLD window's prefix and eventually pops a stale overlay over
+            // the new window. The work's Post handler also re-checks before
+            // touching state, but cancelling immediately frees CPU sooner.
+            if (_generationInFlight && _inFlightPid != 0 && newPid != _inFlightPid)
+            {
+                _logger.LogInformation("Focus moved (oldPid={Old}, newPid={New}); cancelling in-flight work.",
+                    _inFlightPid, newPid);
+                _work.Cancel();
+                _generationInFlight = false;
+                _inFlightPid = 0;
             }
         });
     }
@@ -114,46 +140,21 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     {
         if (!_enabled) return;
 
-        // Cross-thread read: Volatile.Read forces a memory fence so we observe
-        // the pump-thread's most recent _session assignment. Without this the
-        // hook thread can read a stale null on x64 even though writes are
-        // serialized on the pump, and Tab acceptance fails because the
-        // reconciler decides Ignore on what looks like an empty session.
-        var snap = Volatile.Read(ref _session);
+        // Read the cross-thread visibility flag (release-acquire ordered).
+        bool hasSession = Volatile.Read(ref _hasVisibleSession) != 0;
 
         _logger.LogDebug("Key kind={Kind} char={Char} down={Down} mod={Mod} session={HasSession}",
             args.Event.Kind, (int)args.Event.Character, args.Event.IsKeyDown,
-            args.Event.HasNonShiftModifier, snap is not null);
+            args.Event.HasNonShiftModifier, hasSession);
 
-        // Tab acceptance must be decided synchronously on the hook thread —
-        // returning true here is the only way to eat the keystroke before the
-        // host app sees it.
-        var outcome = SuggestionSessionReconciler.Apply(snap, args.Event);
-        if (outcome.Outcome == SuggestionSessionReconciler.Outcome.Accept)
+        // Tab + visible session => accept. We suppress synchronously here
+        // because that's the only way to eat the Tab before it reaches the
+        // host app, and Post AcceptAsync to the dispatcher so it runs single-
+        // threaded with the rest of the state machine.
+        if (hasSession && args.Event.Kind == KeyKind.Tab && args.Event.IsKeyDown)
         {
             args.Suppress = true;
             Post(() => AcceptAsync().ContinueWith(LogFault, TaskScheduler.Default));
-            return;
-        }
-
-        // Even if the sync reconciler said Ignore, a session might have been
-        // created right after our snap-read. If this is Tab and there's a fresh
-        // session by the time the pump processes the event, treat it as Accept
-        // — the cost is one Tab that already reached the host (no suppress).
-        if (args.Event.Kind == KeyKind.Tab && args.Event.IsKeyDown)
-        {
-            Post(() =>
-            {
-                var late = _session;
-                if (late is not null && late.VisibleText.Length > 0)
-                {
-                    AcceptAsync().ContinueWith(LogFault, TaskScheduler.Default);
-                }
-                else
-                {
-                    HandleEvent(args.Event);
-                }
-            });
             return;
         }
 
@@ -167,8 +168,20 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             var result = SuggestionSessionReconciler.Apply(_session, ev);
             switch (result.Outcome)
             {
+                case SuggestionSessionReconciler.Outcome.Accept:
+                    // The hook-thread fast-path missed this Tab (volatile flag
+                    // wasn't yet set when the key fired). Accept on the pump
+                    // where state is consistent. The host already received the
+                    // raw Tab — that's a one-frame cosmetic glitch we accept
+                    // in exchange for deterministic insertion.
+                    AcceptAsync().ContinueWith(LogFault, TaskScheduler.Default);
+                    return;
                 case SuggestionSessionReconciler.Outcome.AdvanceVisible when result.Next is { } next:
                     _session = next;
+                    if (next.VisibleText.Length == 0)
+                    {
+                        Volatile.Write(ref _hasVisibleSession, 0);
+                    }
                     _overlay.Update(next.VisibleText);
                     if (next.VisibleText.Length == 0 && next.IsComplete)
                     {
@@ -227,6 +240,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         _logger.LogInformation("Scheduled request {ReqId} pid={Pid}", reqId, pid);
 
         _generationInFlight = true;
+        _inFlightPid = pid;
         _ = _work.Submit(async ct =>
         {
             // Inside the work, the debounce has expired. Re-read the live field so
@@ -260,14 +274,18 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 var sw = Stopwatch.StartNew();
                 string accumulated = string.Empty;
                 bool overlayShown = false;
-                // Throttle chunk-update Posts so a fast engine can't fill the
-                // UI message queue ahead of a Tab-accept Post. Without this,
-                // Tab queued after 96 pending updates only runs *after* every
-                // update — pushing acceptance latency past 5 seconds.
                 var lastPosted = DateTime.MinValue;
                 var minInterval = TimeSpan.FromMilliseconds(50);
 
-            await foreach (var chunk in _engine.GenerateAsync(request, ct).ConfigureAwait(false))
+                // Watchdog: cap any single generation at 12 seconds. Without
+                // this a hung engine call leaves _generationInFlight=true
+                // forever and the next keystroke is silently dropped — that's
+                // the "Notepad randomly stops showing suggestions" symptom.
+                using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, watchdog.Token);
+                var combinedToken = linked.Token;
+
+            await foreach (var chunk in _engine.GenerateAsync(request, combinedToken).ConfigureAwait(false))
             {
                 if (ct.IsCancellationRequested) return;
                 accumulated += chunk.Text;
@@ -289,8 +307,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                     lastPosted = DateTime.UtcNow;
                 }
 
+                var ctSnapshot = combinedToken;
                 Post(() =>
                 {
+                    if (ctSnapshot.IsCancellationRequested) return;
+
                     if (_session is not null && _session.RequestId != reqId)
                     {
                         _logger.LogDebug("Chunk for stale req {ReqId} (current session is {Cur}); dropping.",
@@ -306,26 +327,20 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                             return;
                         }
 
-                        // Re-read the live caret so the overlay anchors to where
-                        // the user *is*, not where they were ~1s ago when the
-                        // request fired. We deliberately do NOT try to verify
-                        // the user typed something matching — just show the
-                        // suggestion; the reconciler advances or cancels on the
-                        // next keystroke based on whether it matches.
+                        // Re-read the live caret. If the user has Alt-Tabbed
+                        // to a different process, drop the suggestion entirely
+                        // — popping it over the new window with the old
+                        // window's continuation would be confusing.
                         var live = _focus.Refresh();
-                        ScreenRect liveAnchor;
-                        int livePid;
-                        if (live is not null && !live.CaretRect.IsEmpty
-                            && live.ProcessId == field.ProcessId)
+                        if (live is null || live.ProcessId != field.ProcessId)
                         {
-                            liveAnchor = live.CaretRect;
-                            livePid = live.ProcessId;
+                            _logger.LogInformation(
+                                "Dropping {ReqId}: focus moved (was pid={Was}, now {Now}).",
+                                reqId, field.ProcessId, live?.ProcessId ?? 0);
+                            return;
                         }
-                        else
-                        {
-                            liveAnchor = anchor;
-                            livePid = field.ProcessId;
-                        }
+                        var liveAnchor = live.CaretRect.IsEmpty ? anchor : live.CaretRect;
+                        int livePid = live.ProcessId;
 
                         _session = new SuggestionSession
                         {
@@ -338,6 +353,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                             AnchorRect = liveAnchor,
                         };
                         _sessionPid = livePid;
+                        Volatile.Write(ref _hasVisibleSession, 1);
                         _overlay.Show(accumulated, liveAnchor);
                         overlayShown = true;
                         _logger.LogInformation(
@@ -412,6 +428,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         _session = null;
         _sessionPid = 0;
         _generationInFlight = false;
+        _inFlightPid = 0;
+        Volatile.Write(ref _hasVisibleSession, 0);
         _overlay.Hide();
         _work.Cancel();
     }

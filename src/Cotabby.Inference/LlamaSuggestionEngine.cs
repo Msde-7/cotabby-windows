@@ -48,13 +48,22 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
             AntiPrompts = antiPrompts,
             SamplingPipeline = new DefaultSamplingPipeline
             {
-                Temperature = 0.2f,
-                TopP = 0.95f,
+                // 0.5B Qwen-Coder degenerates fast at low temperature — single-
+                // token loops ("I I I I", "aaaa..."). Higher temp + repetition
+                // penalty + top-k make degeneration far less likely on small
+                // models. These values are the llama.cpp defaults for code
+                // completion.
+                Temperature = 0.5f,
+                TopP = 0.9f,
+                TopK = 40,
+                RepeatPenalty = 1.2f,
+                PenaltyCount = 64,
             },
         };
 
         var emitted = new StringBuilder();
         bool firstChunk = true;
+        const int maxRunLength = 8; // stop on 9+ identical chars in a row
 
         await foreach (var token in _runtime.Executor.InferAsync(prompt, inference, ct).ConfigureAwait(false))
         {
@@ -74,6 +83,18 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
             if (string.IsNullOrEmpty(clean)) continue;
 
             emitted.Append(clean);
+
+            // Degeneration guard: small models occasionally lock into a single
+            // token ("aaaaaaaa..." / "I I I I I..."). If we've emitted a long
+            // run of the same character, stop instead of polluting the field.
+            if (HasLongCharRun(emitted, maxRunLength))
+            {
+                _logger.LogInformation(
+                    "Stopping {ReqId} early: degenerate run detected.",
+                    request.RequestId);
+                yield break;
+            }
+
             yield return new SuggestionChunk(clean, IsFinal: false);
         }
 
@@ -85,14 +106,12 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
 
     private static string BuildPrompt(SuggestionRequest request)
     {
-        // Qwen2.5-Coder fill-in-middle template. Even when the suffix is empty
-        // FIM works correctly — the model just treats it as plain continuation.
-        // Reference: https://qwenlm.github.io/blog/qwen2.5-coder/
-        if (!string.IsNullOrEmpty(request.Suffix))
-        {
-            return $"<|fim_prefix|>{request.Prefix}<|fim_suffix|>{request.Suffix}<|fim_middle|>";
-        }
-        return request.Prefix;
+        // Qwen2.5-Coder fill-in-middle template. Always use FIM so the model
+        // knows it's emitting a span between two boundaries, even when the
+        // suffix is empty. Without FIM the instruct-tuned 0.5B model frequently
+        // outputs degenerate runs because raw-prefix continuation isn't its
+        // training format. Reference: https://qwenlm.github.io/blog/qwen2.5-coder/
+        return $"<|fim_prefix|>{request.Prefix}<|fim_suffix|>{request.Suffix}<|fim_middle|>";
     }
 
     private static string StripEchoedPrefix(string chunk, string prefix)
@@ -107,5 +126,24 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
             }
         }
         return chunk;
+    }
+
+    /// <summary>
+    /// Walk back from the end of <paramref name="sb"/> and stop as soon as the
+    /// last char doesn't match; if the matching run is &gt; <paramref name="threshold"/>,
+    /// return true. Detects "aaaaaaaa" and similar collapses cheaply (O(threshold))
+    /// without scanning the whole emitted buffer.
+    /// </summary>
+    private static bool HasLongCharRun(StringBuilder sb, int threshold)
+    {
+        if (sb.Length <= threshold) return false;
+        char last = sb[^1];
+        int count = 0;
+        for (int i = sb.Length - 1; i >= 0 && count <= threshold; i--)
+        {
+            if (sb[i] != last) return false;
+            count++;
+        }
+        return count > threshold;
     }
 }
