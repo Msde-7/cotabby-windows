@@ -291,6 +291,29 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 chunkSeq++;
                 accumulated += chunk.Text;
 
+                // Defense-in-depth — guard a second time at the coordinator
+                // level. The engine has its own char-run + pattern + 80-char
+                // guards; if any of them fails (e.g. the engine yields a
+                // chunk that pushes accumulated past the limit) we still
+                // refuse to display or insert past 80 visible chars total
+                // and a 5+ same-char tail run.
+                if (accumulated.Length > 80)
+                {
+                    _logger.LogInformation("Req {ReqId}: coordinator hard-cap at {Len} chars; truncating.",
+                        reqId, accumulated.Length);
+                    accumulated = accumulated[..80];
+                    // Stop accumulating any further chunks for this request.
+                    combinedToken = new CancellationToken(true);
+                }
+                else if (HasTrailingCharRun(accumulated, 4))
+                {
+                    _logger.LogInformation("Req {ReqId}: coordinator detected tail char run; truncating.",
+                        reqId);
+                    // Trim back to the start of the offending run.
+                    accumulated = TrimTrailingCharRun(accumulated);
+                    combinedToken = new CancellationToken(true);
+                }
+
                 if (!chunk.IsFinal && string.IsNullOrEmpty(chunk.Text)) continue;
 
                 // Always Post the first chunk (so overlay appears ASAP) and the
@@ -406,6 +429,17 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
 
         var text = session.VisibleText;
+        // FINAL FIREWALL before SendInput. If by some path a degenerate
+        // suggestion slipped through both the engine and the coordinator's
+        // streaming guards, trim it here. Better to insert nothing than
+        // 30 consecutive 't's into the user's editor.
+        text = StripDegenerateTail(text);
+        if (string.IsNullOrEmpty(text))
+        {
+            _logger.LogInformation("AcceptAsync: session text was all degenerate after trim, skip insert.");
+            CancelSession("accepted");
+            return;
+        }
         _logger.LogInformation("AcceptAsync: inserting {Len} chars: \"{Preview}\"",
             text.Length, Preview(text));
         CancelSession("accepted");
@@ -434,6 +468,49 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     }
 
     private static string Preview(string s) => s.Length <= 40 ? s : s[..40] + "…";
+
+    /// <summary>True if the tail of <paramref name="s"/> ends with 5+ identical
+    /// non-whitespace chars — a degenerate run that should be stripped.</summary>
+    private static bool HasTrailingCharRun(string s, int threshold)
+    {
+        if (s.Length <= threshold) return false;
+        char last = s[^1];
+        if (last == ' ' || last == '\t' || last == '\n' || last == '\r') return false;
+        int count = 0;
+        for (int i = s.Length - 1; i >= 0 && count <= threshold; i--)
+        {
+            if (s[i] != last) return false;
+            count++;
+        }
+        return count > threshold;
+    }
+
+    /// <summary>Trim the trailing same-char run from <paramref name="s"/>.</summary>
+    private static string TrimTrailingCharRun(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return s;
+        char last = s[^1];
+        int end = s.Length - 1;
+        while (end >= 0 && s[end] == last) end--;
+        return s[..(end + 1)];
+    }
+
+    /// <summary>
+    /// Pre-insertion firewall: if the suggestion ends in a degenerate run
+    /// (>= 5 identical non-whitespace chars), trim the run plus any trailing
+    /// punctuation that introduced it (e.g. "(" before "ttttt"). If after
+    /// trimming nothing useful is left, return empty so AcceptAsync skips
+    /// insertion entirely.
+    /// </summary>
+    private static string StripDegenerateTail(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return s;
+        while (HasTrailingCharRun(s, 4))
+        {
+            s = TrimTrailingCharRun(s);
+        }
+        return s;
+    }
 
     private void Post(Action action)
     {
