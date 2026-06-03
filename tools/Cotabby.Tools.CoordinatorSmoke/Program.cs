@@ -152,6 +152,46 @@ else
     Console.WriteLine("[coord] STEP 3 PASS — overlay was hidden after acceptance.");
 }
 
+// STEP A: Realistic-rhythm test — type at 75ms gaps (= user's actual cadence
+// from the live log), pause for 600ms, assert an overlay appeared. This is the
+// regression test for "I type into Notepad and never see anything".
+Console.WriteLine();
+Console.WriteLine("[coord] STEP A: realistic typing rhythm…");
+overlay.LastShown = null;
+overlay.ShowCount = 0;
+overlay.UpdateCount = 0;
+overlay.HideCount = 0;
+focus.SetField(focus.Current! with
+{
+    ProcessId = 88888,
+    ProcessName = "rhythm",
+    Text = string.Empty,
+    CaretOffset = 0,
+});
+const string realisticInput = "def reverse_string(s):";
+foreach (char c in realisticInput)
+{
+    var cur = focus.Current!;
+    focus.SetField(cur with { Text = cur.Text + c, CaretOffset = cur.Text.Length + 1 });
+    hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = true, HasNonShiftModifier = false });
+    await Task.Delay(75);
+    hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = false, HasNonShiftModifier = false });
+}
+Console.WriteLine($"[coord] STEP A: done typing '{realisticInput}'. Pausing 600ms then waiting for overlay…");
+await Task.Delay(600);
+var aStart = Stopwatch.StartNew();
+while (overlay.LastShown is null && aStart.Elapsed < TimeSpan.FromSeconds(10))
+    await Task.Delay(100);
+if (overlay.LastShown is { } ashown)
+{
+    Console.WriteLine($"[coord] STEP A PASS — overlay text=\"{ashown.Text}\" after {aStart.ElapsedMilliseconds}ms.");
+}
+else
+{
+    Console.WriteLine($"[coord] STEP A FAIL — no overlay in 10s after pause. ShowCalls={overlay.ShowCount}.");
+    exitCode = 1;
+}
+
 // STEP 4: Window-switch scenario. Generate, then "switch process" mid-stream,
 // assert the overlay is hidden / not shown for the new process.
 Console.WriteLine();

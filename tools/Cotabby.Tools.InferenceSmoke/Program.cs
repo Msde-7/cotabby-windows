@@ -51,7 +51,7 @@ await runtime.LoadAsync(model, path, CancellationToken.None);
 
 var engine = new LlamaSuggestionEngine(runtime, loggerFactory.CreateLogger<LlamaSuggestionEngine>());
 
-var fixedText = "def fibonacci(n):\n    if n < 2:\n        return n\n    return ";
+var fixedText = args.Length > 0 ? args[0] : "def fibonacci(n):\n    if n < 2:\n        return n\n    return ";
 var fakeField = new FocusedField
 {
     ElementHandle = new object(),

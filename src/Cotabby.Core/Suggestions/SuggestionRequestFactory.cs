@@ -11,12 +11,14 @@ public static class SuggestionRequestFactory
 {
     private const int MaxPrefixChars = 1024;
     private const int MaxSuffixChars = 512;
-    // Conservative caps — long suggestions on small CPU-only models take
-    // too long to be useful (12 chars/sec on 1.5B Q4 = 4s for 48 tokens
-    // ≈ 50 chars). Smaller caps make the suggestion arrive while the
-    // context is still current; users can always re-trigger after accept.
-    private const int DefaultMaxTokensSingleLine = 16;
-    private const int DefaultMaxTokensMultiLine = 32;
+    // Aggressively short on CPU. Throughput is ~30 tokens/sec for 1.5B Q4
+    // CPU; capping at 12 multi-line / 8 single-line keeps end-to-end
+    // latency under 500ms, which is the only way the cancel-prior debounce
+    // pattern can ever surface a suggestion — at 32-token caps the engine
+    // call took 5 seconds and every keystroke in the user's natural typing
+    // cadence cancelled it before it could produce a chunk.
+    private const int DefaultMaxTokensSingleLine = 8;
+    private const int DefaultMaxTokensMultiLine = 12;
 
     public static SuggestionRequest Build(FocusedField field, string requestId)
     {

@@ -233,34 +233,28 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         var reqId = "req_" + Guid.NewGuid().ToString("N")[..8];
         var pid = fieldAtTrigger.ProcessId;
 
-        _logger.LogInformation("Scheduled request {ReqId} pid={Pid}", reqId, pid);
+        // Capture the prefix synchronously at trigger time. The PostAsync +
+        // _focus.Refresh() round-trip we used to do inside the work function
+        // adds 100-300ms of UIA overhead per request, which combined with
+        // 250ms of debounce means the next keystroke almost always cancels
+        // the engine BEFORE it can produce a chunk. Now we lock the snapshot
+        // here; if the user keeps typing during the debounce window, Submit's
+        // cancel-prior takes care of dropping the stale request.
+        var request = SuggestionRequestFactory.Build(fieldAtTrigger, reqId);
+        var anchor = fieldAtTrigger.CaretRect;
+        var element = fieldAtTrigger.ElementHandle;
+        var field = fieldAtTrigger;
 
-        // We no longer gate new triggers on _generationInFlight (see
-        // HandleEvent), but keep the flag in sync for OnFocusChanged's
-        // cross-process work-cancel and for diagnostics.
+        _logger.LogInformation(
+            "Scheduled request {ReqId} pid={Pid} prefix={Len} host={Host} anchor={X},{Y}",
+            reqId, pid, request.Prefix.Length, request.HostApp,
+            (int)anchor.X, (int)anchor.Y);
+
         _generationInFlight = true;
         _inFlightPid = pid;
         _ = _work.Submit(async ct =>
         {
-            // Inside the work, the debounce has expired. Re-read the live field so
-            // the model sees the prefix the user is at *now*, not the one as it
-            // was when the first keystroke landed. Bail if focus has moved.
-            FocusedField? liveAtRequest = null;
-            await PostAsync(() => liveAtRequest = _focus.Refresh()).ConfigureAwait(false);
-            if (liveAtRequest is null || liveAtRequest.ProcessId != pid)
-            {
-                _logger.LogInformation("Request {ReqId} aborted: focus moved away pre-fire.", reqId);
-                return;
-            }
-            var request = SuggestionRequestFactory.Build(liveAtRequest, reqId);
-            var anchor = liveAtRequest.CaretRect.IsEmpty
-                ? fieldAtTrigger.CaretRect : liveAtRequest.CaretRect;
-            var element = liveAtRequest.ElementHandle;
-            var field = liveAtRequest;
-            _logger.LogInformation(
-                "Firing request {ReqId} prefix={Len} host={Host} anchor={X},{Y}",
-                reqId, request.Prefix.Length, request.HostApp,
-                (int)anchor.X, (int)anchor.Y);
+            _logger.LogInformation("Firing request {ReqId} (post-debounce).", reqId);
 
             try
             {
@@ -284,9 +278,17 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, watchdog.Token);
                 var combinedToken = linked.Token;
 
+            int chunkSeq = 0;
             await foreach (var chunk in _engine.GenerateAsync(request, combinedToken).ConfigureAwait(false))
             {
-                if (ct.IsCancellationRequested) return;
+                if (ct.IsCancellationRequested)
+                {
+                    _logger.LogInformation(
+                        "Req {ReqId} aborted by cancel after {Chunks} chunks ({Chars} chars).",
+                        reqId, chunkSeq, accumulated.Length);
+                    return;
+                }
+                chunkSeq++;
                 accumulated += chunk.Text;
 
                 if (!chunk.IsFinal && string.IsNullOrEmpty(chunk.Text)) continue;
