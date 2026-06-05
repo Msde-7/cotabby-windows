@@ -13,19 +13,32 @@
         ResizeMode="NoResize"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True">
-    <Border x:Name="GhostBackground"
-            Padding="6,3"
-            CornerRadius="3"
-            Background="#E0202020"
-            BorderBrush="#FF3478FF"
-            BorderThickness="1">
+    <StackPanel x:Name="GhostRow"
+                Orientation="Horizontal"
+                Background="Transparent">
         <TextBlock x:Name="GhostText"
-                   Foreground="#FFD0D0D0"
-                   FontFamily="Cascadia Mono, Consolas, Segoe UI"
-                   FontSize="13"
+                   Foreground="#A6FFFFFF"
+                   FontFamily="Segoe UI Variable, Segoe UI, Segoe UI Symbol, Cascadia Mono, Consolas"
+                   FontSize="14"
                    Text=""
                    TextOptions.TextRenderingMode="ClearType"
                    TextOptions.TextFormattingMode="Display"
-                   TextWrapping="NoWrap" />
-    </Border>
+                   TextWrapping="NoWrap"
+                   VerticalAlignment="Center" />
+        <Border x:Name="TabKeycap"
+                Margin="6,0,0,0"
+                Padding="5,1"
+                CornerRadius="4"
+                Background="#33FFFFFF"
+                BorderBrush="#55FFFFFF"
+                BorderThickness="1"
+                VerticalAlignment="Center">
+            <TextBlock x:Name="TabKeycapLabel"
+                       Text="Tab"
+                       FontFamily="Segoe UI"
+                       FontSize="10"
+                       FontWeight="Medium"
+                       Foreground="#CCFFFFFF" />
+        </Border>
+    </StackPanel>
 </Window>

@@ -51,6 +51,17 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     /// </summary>
     private int _hasVisibleSession; // 0 or 1; written with Volatile.Write
 
+    /// <summary>
+    /// Snapshot of exactly what the overlay last rendered, written on every
+    /// Show/Update and read by the hook-thread Tab fast-path. The streaming
+    /// work can post a chunk-arrival action that mutates <see cref="_session"/>
+    /// between the hook firing Tab and the dispatcher running AcceptAsync;
+    /// without snapshotting the displayed text we'd insert a later/different
+    /// completion than the one the user accepted with their eyes. Writes
+    /// happen on the UI thread; the hook thread does a release-acquire read.
+    /// </summary>
+    private string? _displayedTextSnapshot;
+
     public SuggestionCoordinator(
         IKeyboardHook hook,
         IFocusTracker focus,
@@ -154,7 +165,17 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         if (hasSession && args.Event.Kind == KeyKind.Tab && args.Event.IsKeyDown)
         {
             args.Suppress = true;
-            Post(() => AcceptAsync().ContinueWith(LogFault, TaskScheduler.Default));
+            // Snapshot the displayed text right now, on the hook thread. Any
+            // chunk that streams in between this point and AcceptAsync running
+            // would otherwise mutate _session.VisibleText and cause us to
+            // insert something the user didn't accept. Stop the engine
+            // immediately for the same reason.
+            string textToInsert = Volatile.Read(ref _displayedTextSnapshot) ?? string.Empty;
+            _work.Cancel();
+            _logger.LogInformation(
+                "Tab fast-path: snapshot len={Len} text=\"{Text}\" hex={Hex}",
+                textToInsert.Length, EscapeFull(textToInsert), HexDump(textToInsert));
+            Post(() => AcceptAsync(textToInsert).ContinueWith(LogFault, TaskScheduler.Default));
             return;
         }
 
@@ -173,8 +194,13 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                     // wasn't yet set when the key fired). Accept on the pump
                     // where state is consistent. The host already received the
                     // raw Tab — that's a one-frame cosmetic glitch we accept
-                    // in exchange for deterministic insertion.
-                    AcceptAsync().ContinueWith(LogFault, TaskScheduler.Default);
+                    // in exchange for deterministic insertion. Snapshot the
+                    // displayed text now so we still insert what's on screen
+                    // even though we missed the fast-path snapshot.
+                    {
+                        string acceptText = _displayedTextSnapshot ?? _session.VisibleText;
+                        AcceptAsync(acceptText).ContinueWith(LogFault, TaskScheduler.Default);
+                    }
                     return;
                 case SuggestionSessionReconciler.Outcome.AdvanceVisible when result.Next is { } next:
                     _session = next;
@@ -182,6 +208,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                     {
                         Volatile.Write(ref _hasVisibleSession, 0);
                     }
+                    Volatile.Write(ref _displayedTextSnapshot, next.VisibleText);
                     _overlay.Update(next.VisibleText);
                     if (next.VisibleText.Length == 0 && next.IsComplete)
                     {
@@ -270,11 +297,14 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 var lastPosted = DateTime.MinValue;
                 var minInterval = TimeSpan.FromMilliseconds(50);
 
-                // Watchdog: cap any single generation at 12 seconds. Without
+                // Watchdog: cap any single generation at 4 seconds. Without
                 // this a hung engine call leaves _generationInFlight=true
                 // forever and the next keystroke is silently dropped — that's
                 // the "Notepad randomly stops showing suggestions" symptom.
-                using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+                // 4s comfortably covers prompt eval + 24-token decode on the
+                // 1.5B Q4 model on CPU; anything past that is a wedge to be
+                // killed, not a slow-but-recoverable generation.
+                using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(4));
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, watchdog.Token);
                 var combinedToken = linked.Token;
 
@@ -305,13 +335,17 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                     // Stop accumulating any further chunks for this request.
                     combinedToken = new CancellationToken(true);
                 }
-                else if (HasTrailingCharRun(accumulated, 4))
+                else
                 {
-                    _logger.LogInformation("Req {ReqId}: coordinator detected tail char run; truncating.",
-                        reqId);
-                    // Trim back to the start of the offending run.
-                    accumulated = TrimTrailingCharRun(accumulated);
-                    combinedToken = new CancellationToken(true);
+                    int runStart = FindInteriorRunStart(accumulated, 4);
+                    if (runStart >= 0)
+                    {
+                        _logger.LogInformation(
+                            "Req {ReqId}: coordinator detected interior char run at {Idx}; truncating from {Old} → {New} chars.",
+                            reqId, runStart, accumulated.Length, runStart);
+                        accumulated = accumulated[..runStart].TrimEnd();
+                        combinedToken = new CancellationToken(true);
+                    }
                 }
 
                 if (!chunk.IsFinal && string.IsNullOrEmpty(chunk.Text)) continue;
@@ -376,11 +410,13 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                         };
                         _sessionPid = livePid;
                         Volatile.Write(ref _hasVisibleSession, 1);
+                        Volatile.Write(ref _displayedTextSnapshot, accumulated);
                         _overlay.Show(accumulated, liveAnchor);
                         overlayShown = true;
                         _logger.LogInformation(
-                            "Overlay shown req={ReqId} text=\"{Preview}\" anchor={X},{Y}",
-                            reqId, Preview(accumulated), (int)liveAnchor.X, (int)liveAnchor.Y);
+                            "Overlay shown req={ReqId} text=\"{Text}\" hex={Hex} anchor={X},{Y}",
+                            reqId, EscapeFull(accumulated), HexDump(accumulated),
+                            (int)liveAnchor.X, (int)liveAnchor.Y);
                     }
                     else
                     {
@@ -389,8 +425,12 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                             VisibleText = accumulated,
                             IsComplete = chunk.IsFinal,
                         };
+                        Volatile.Write(ref _displayedTextSnapshot, accumulated);
                         if (overlayShown) _overlay.Update(accumulated);
                         else { _overlay.Show(accumulated, _session.AnchorRect); overlayShown = true; }
+                        _logger.LogInformation(
+                            "Overlay updated req={ReqId} text=\"{Text}\" hex={Hex}",
+                            reqId, EscapeFull(accumulated), HexDump(accumulated));
                     }
                 });
             }
@@ -405,7 +445,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         });
     }
 
-    private async Task AcceptAsync()
+    private async Task AcceptAsync(string textToInsert)
     {
         var session = _session;
         if (session is null)
@@ -413,9 +453,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             _logger.LogInformation("AcceptAsync: session null, nothing to insert.");
             return;
         }
-        if (session.VisibleText.Length == 0)
+        if (string.IsNullOrEmpty(textToInsert))
         {
-            _logger.LogInformation("AcceptAsync: session VisibleText empty (req={ReqId}), skip insert.",
+            _logger.LogInformation("AcceptAsync: snapshot empty (req={ReqId}), skip insert.",
                 session.RequestId);
             return;
         }
@@ -428,25 +468,59 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             return;
         }
 
-        var text = session.VisibleText;
         // FINAL FIREWALL before SendInput. If by some path a degenerate
         // suggestion slipped through both the engine and the coordinator's
         // streaming guards, trim it here. Better to insert nothing than
         // 30 consecutive 't's into the user's editor.
-        text = StripDegenerateTail(text);
+        var text = StripDegenerateTail(textToInsert);
         if (string.IsNullOrEmpty(text))
         {
-            _logger.LogInformation("AcceptAsync: session text was all degenerate after trim, skip insert.");
+            _logger.LogInformation("AcceptAsync: snapshot was all degenerate after trim, skip insert.");
             CancelSession("accepted");
             return;
         }
-        _logger.LogInformation("AcceptAsync: inserting {Len} chars: \"{Preview}\"",
-            text.Length, Preview(text));
+        // Detailed monitoring: log BOTH what the snapshot held AND what we
+        // pass to the inserter, byte-for-byte. The user-visible "spliced
+        // suggestion" symptoms can be diagnosed by joining these against the
+        // SendInput delivery count in the inserter log.
+        _logger.LogInformation("AcceptAsync: snapshot=\"{Snap}\" trimmed=\"{Trim}\" hex={Hex}",
+            EscapeFull(textToInsert), EscapeFull(text), HexDump(text));
         CancelSession("accepted");
         try
         {
             var ok = await _inserter.InsertAsync(field, text, CancellationToken.None).ConfigureAwait(false);
             _logger.LogInformation("AcceptAsync: inserter returned ok={Ok}", ok);
+
+            // Verify what actually landed in the host. Give the host's input
+            // queue ~30ms to publish the WM_CHARs back into AX/UIA, then re-read
+            // the focused field. The diff between {inserted, prefixBefore} and
+            // {afterText} is the actual on-screen result — if it differs from
+            // what we tried to type, the bug isn't in the coordinator/snapshot
+            // but in SendInput delivery or host re-interpretation.
+            await Task.Delay(60).ConfigureAwait(false);
+            try
+            {
+                var after = _focus.Refresh();
+                if (after is not null)
+                {
+                    int prefixLen = field.Text.Length;
+                    string tail = after.Text.Length > prefixLen
+                        ? after.Text[prefixLen..Math.Min(after.Text.Length, prefixLen + text.Length + 32)]
+                        : "";
+                    _logger.LogInformation(
+                        "AcceptAsync: post-insertion verify pid={Pid} hostTextLen={Len} caret={Caret} tailAfterInsert=\"{Tail}\" hex={Hex}",
+                        after.ProcessId, after.Text.Length, after.CaretOffset,
+                        EscapeFull(tail), HexDump(tail));
+                }
+                else
+                {
+                    _logger.LogInformation("AcceptAsync: post-insertion verify FAILED — no focused field returned.");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "AcceptAsync: post-insertion verify threw.");
+            }
         }
         catch (Exception ex)
         {
@@ -463,11 +537,55 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         _generationInFlight = false;
         _inFlightPid = 0;
         Volatile.Write(ref _hasVisibleSession, 0);
+        Volatile.Write(ref _displayedTextSnapshot, null);
         _overlay.Hide();
         _work.Cancel();
     }
 
     private static string Preview(string s) => s.Length <= 40 ? s : s[..40] + "…";
+
+    /// <summary>
+    /// Escape control chars and newlines so a single-line log entry shows the
+    /// FULL string verbatim. Used by the detailed-monitoring path so we can
+    /// reconstruct exactly what the engine produced vs what the inserter sent
+    /// vs what the host received.
+    /// </summary>
+    private static string EscapeFull(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return s;
+        var sb = new System.Text.StringBuilder(s.Length + 8);
+        foreach (var c in s)
+        {
+            switch (c)
+            {
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                case '"':  sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                default:
+                    if (c < 0x20 || c == 0x7F) sb.Append($"\\x{(int)c:X2}");
+                    else sb.Append(c);
+                    break;
+            }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>UTF-16 hex dump of <paramref name="s"/>. Lets us spot doubled
+    /// chars, invisible whitespace, or off-by-one differences between snapshot
+    /// and inserter at a glance.</summary>
+    private static string HexDump(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        var sb = new System.Text.StringBuilder(s.Length * 5);
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (i > 0) sb.Append(' ');
+            sb.Append(((int)s[i]).ToString("X4"));
+        }
+        return sb.ToString();
+    }
 
     /// <summary>True if the tail of <paramref name="s"/> ends with 5+ identical
     /// non-whitespace chars — a degenerate run that should be stripped.</summary>
@@ -485,31 +603,44 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         return count > threshold;
     }
 
-    /// <summary>Trim the trailing same-char run from <paramref name="s"/>.</summary>
-    private static string TrimTrailingCharRun(string s)
+    /// <summary>Find the first index of a run of 5+ identical non-whitespace
+    /// chars anywhere in <paramref name="s"/>, or -1 if none. Used to truncate
+    /// the suggestion before an interior degenerate run reaches the host —
+    /// degeneration that the engine's tail-only check missed when the run was
+    /// split across many small chunks.</summary>
+    private static int FindInteriorRunStart(string s, int threshold)
     {
-        if (string.IsNullOrEmpty(s)) return s;
-        char last = s[^1];
-        int end = s.Length - 1;
-        while (end >= 0 && s[end] == last) end--;
-        return s[..(end + 1)];
+        if (s.Length <= threshold) return -1;
+        int runStart = 0;
+        for (int i = 1; i < s.Length; i++)
+        {
+            if (s[i] != s[runStart])
+            {
+                runStart = i;
+                continue;
+            }
+            int runLen = i - runStart + 1;
+            if (runLen > threshold)
+            {
+                char c = s[runStart];
+                if (c != ' ' && c != '\t' && c != '\n' && c != '\r') return runStart;
+            }
+        }
+        return -1;
     }
 
     /// <summary>
-    /// Pre-insertion firewall: if the suggestion ends in a degenerate run
-    /// (>= 5 identical non-whitespace chars), trim the run plus any trailing
-    /// punctuation that introduced it (e.g. "(" before "ttttt"). If after
-    /// trimming nothing useful is left, return empty so AcceptAsync skips
-    /// insertion entirely.
+    /// Pre-insertion firewall: if the suggestion contains a degenerate run
+    /// (5+ identical non-whitespace chars) anywhere, truncate at the start of
+    /// the run. If after trimming nothing useful is left, return empty so
+    /// AcceptAsync skips insertion entirely.
     /// </summary>
     private static string StripDegenerateTail(string s)
     {
         if (string.IsNullOrEmpty(s)) return s;
-        while (HasTrailingCharRun(s, 4))
-        {
-            s = TrimTrailingCharRun(s);
-        }
-        return s;
+        int idx = FindInteriorRunStart(s, 4);
+        if (idx >= 0) s = s[..idx];
+        return s.TrimEnd();
     }
 
     private void Post(Action action)

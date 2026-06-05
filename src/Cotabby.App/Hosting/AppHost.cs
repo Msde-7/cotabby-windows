@@ -45,6 +45,10 @@ public sealed class AppHost : IAsyncDisposable
                 opts.SingleLine = true;
                 opts.TimestampFormat = "HH:mm:ss.fff ";
             });
+            // File sink so detailed monitoring lands somewhere stable
+            // regardless of how the user launched the exe. Path is fixed at
+            // C:\tmp\cotabby-live.log to match the existing tail tooling.
+            b.AddProvider(new FileLoggerProvider(@"C:\tmp\cotabby-live.log"));
         });
 
         sc.AddSingleton<HttpClient>(_ =>

@@ -9,11 +9,19 @@ namespace Cotabby.Inference;
 
 /// <summary>
 /// LLamaSharp-backed <see cref="ISuggestionEngine"/>. Translates the pure
-/// <see cref="SuggestionRequest"/> into a Qwen-style fill-in-middle prompt,
-/// streams tokens out of the runtime, applies post-processing (stop-on-newline
-/// for single-line fields, trim whitespace-only tails, drop self-echo prefix),
-/// and surfaces them as <see cref="SuggestionChunk"/> values.
+/// <see cref="SuggestionRequest"/> into a Qwen-style prompt, streams tokens
+/// out of the runtime, applies post-processing (stop-on-newline for single-
+/// line fields, trim whitespace-only tails, drop self-echo prefix), and
+/// surfaces them as <see cref="SuggestionChunk"/> values.
 /// </summary>
+/// <remarks>
+/// Prompt strategy follows the macOS port: fill-in-middle is reserved for
+/// genuinely mid-line carets (real text follows the caret on the same line);
+/// every other case uses bare prefix continuation, which is far more stable
+/// on instruct-tuned Qwen variants — the Instruct fine-tune frequently
+/// ignores or mis-applies <c>&lt;|fim_*|&gt;</c> tokens and degenerates into
+/// single-token loops.
+/// </remarks>
 public sealed class LlamaSuggestionEngine : ISuggestionEngine
 {
     private readonly LlamaRuntimeManager _runtime;
@@ -39,8 +47,9 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
         }
 
         var prompt = BuildPrompt(request);
-        var antiPrompts = request.SingleLine ? new[] { "\n", "<|endoftext|>", "<|fim_pad|>" }
-                                              : new[] { "<|endoftext|>", "<|fim_pad|>" };
+        var antiPrompts = request.SingleLine
+            ? new[] { "\n", "<|endoftext|>", "<|fim_pad|>", "<|im_end|>" }
+            : new[] { "\n\n", "<|endoftext|>", "<|fim_pad|>", "<|im_end|>" };
 
         var inference = new InferenceParams
         {
@@ -48,15 +57,16 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
             AntiPrompts = antiPrompts,
             SamplingPipeline = new DefaultSamplingPipeline
             {
-                // 0.5B Qwen-Coder degenerates fast at low temperature — single-
-                // token loops ("I I I I", "aaaa..."). Higher temp + repetition
-                // penalty + top-k make degeneration far less likely on small
-                // models. These values are the llama.cpp defaults for code
-                // completion.
-                Temperature = 0.5f,
-                TopP = 0.9f,
-                TopK = 40,
-                RepeatPenalty = 1.2f,
+                // Code completion wants tight sampling: low temperature so the
+                // most likely continuation wins, narrow top-k/p so the tail of
+                // the distribution can't surface noise, mild repetition penalty
+                // (the upstream macOS port runs the same values). Anything
+                // hotter and the 1.5B model wanders into pseudocode/prose.
+                Temperature = 0.1f,
+                TopP = 0.7f,
+                MinP = 0.08f,
+                TopK = 20,
+                RepeatPenalty = 1.05f,
                 PenaltyCount = 64,
             },
         };
@@ -64,7 +74,12 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
         var emitted = new StringBuilder();
         bool firstChunk = true;
         const int maxRunLength = 4;     // stop on 5+ identical non-whitespace chars
-        const int maxOutputChars = 80;  // hard absolute cap regardless of tokens
+        // Cap absolute output. MaxTokens is in tokens, not chars, and BPE can
+        // pack 4-5 chars into one token, so an output that loops on a 4-char
+        // token easily blows past the visible budget. Stop at 100 chars —
+        // ghost text any longer than that just runs off the side of the host
+        // editor before the user can read it.
+        const int maxOutputChars = 100;
 
         await foreach (var token in _runtime.Executor.InferAsync(prompt, inference, ct).ConfigureAwait(false))
         {
@@ -85,12 +100,21 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
 
             emitted.Append(clean);
 
-            // Hard absolute cap on emitted text. MaxTokens is in tokens, not
-            // chars, and BPE tokenizers can encode "fffff" as a single token
-            // — so an output that loops on "fff" tokens easily blows past the
-            // visible token budget into 30+ characters of garbage. Stop the
-            // suggestion at 80 chars regardless of what the token counter
-            // says; the user can re-trigger by typing past it if they want more.
+            // Drop chat-style refusals and assistant greetings the moment they
+            // surface. The bartowski Qwen-Coder GGUFs are all Instruct
+            // fine-tunes; on bare-prefix continuation (caret at end-of-line,
+            // no FIM suffix) they treat the user's prose as a chat message and
+            // respond as the assistant. Always-FIM would suppress this but
+            // crashes LLamaSharp 0.21's sampler chain on empty suffix. Until
+            // that's fixed upstream, scrub the recognizable patterns instead.
+            if (LooksLikeChatLeak(emitted))
+            {
+                _logger.LogInformation(
+                    "Stopping {ReqId} early: instruct chat-leak pattern detected (\"{Preview}\").",
+                    request.RequestId, emitted.ToString());
+                yield break;
+            }
+
             if (emitted.Length > maxOutputChars)
             {
                 _logger.LogInformation(
@@ -129,12 +153,46 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
 
     private static string BuildPrompt(SuggestionRequest request)
     {
-        // Qwen2.5-Coder fill-in-middle template. Always use FIM so the model
-        // knows it's emitting a span between two boundaries, even when the
-        // suffix is empty. Without FIM the instruct-tuned 0.5B model frequently
-        // outputs degenerate runs because raw-prefix continuation isn't its
-        // training format. Reference: https://qwenlm.github.io/blog/qwen2.5-coder/
-        return $"<|fim_prefix|>{request.Prefix}<|fim_suffix|>{request.Suffix}<|fim_middle|>";
+        // FIM is the right template when the caret is genuinely mid-line —
+        // real text follows the caret on the same line. Always-FIM (wrapping
+        // every prompt in <|fim_prefix|>…<|fim_suffix|><|fim_middle|>, even
+        // at end-of-line where the suffix is empty or a synthetic newline)
+        // crashes LLamaSharp 0.21's StatelessExecutor sampler chain with
+        // "invalid logits id N, reason: batch.logits[N] != true" (0xC0000005
+        // at SafeLLamaSamplerChainHandle.Sample). Reproduced consistently on
+        // the 3B-Instruct and 0.5B-Instruct quantizations; the bug is in
+        // how StatelessExecutor sets up the batch when FIM markers tokenize
+        // into multi-segment positions. Until that's fixed upstream we can
+        // only safely use FIM when the suffix is non-empty real text.
+        if (HasMeaningfulSuffix(request.Suffix))
+        {
+            return $"<|fim_prefix|>{request.Prefix}<|fim_suffix|>{request.Suffix}<|fim_middle|>";
+        }
+        // End-of-line fall-through: bare prefix continuation. The Instruct
+        // fine-tune treats a bare conversational prefix ("Hi I am") as a
+        // user turn and replies as the assistant. Trim trailing whitespace
+        // so the model starts at a real token boundary instead of re-emitting
+        // the trailing space.
+        return TrimTrailingWhitespace(request.Prefix);
+    }
+
+    private static bool HasMeaningfulSuffix(string suffix)
+    {
+        if (string.IsNullOrEmpty(suffix)) return false;
+        for (int i = 0; i < suffix.Length; i++)
+        {
+            char c = suffix[i];
+            if (c == '\n' || c == '\r') return false;
+            if (!char.IsWhiteSpace(c)) return true;
+        }
+        return false;
+    }
+
+    private static string TrimTrailingWhitespace(string s)
+    {
+        int end = s.Length;
+        while (end > 0 && (s[end - 1] == ' ' || s[end - 1] == '\t')) end--;
+        return end == s.Length ? s : s[..end];
     }
 
     private static string StripEchoedPrefix(string chunk, string prefix)
@@ -152,25 +210,101 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
     }
 
     /// <summary>
-    /// Walk back from the end of <paramref name="sb"/> and stop as soon as the
-    /// last char doesn't match; if the matching run is &gt; <paramref name="threshold"/>,
-    /// return true. Detects "aaaaaaaa" and similar collapses cheaply (O(threshold))
-    /// without scanning the whole emitted buffer. Whitespace runs (indentation,
-    /// blank lines) are NEVER flagged — Python and YAML routinely produce long
-    /// whitespace sequences as legitimate output.
+    /// Recognizable assistant/chat patterns an Instruct fine-tune emits when
+    /// given bare prose as a "user turn." These never make sense as inline
+    /// autocomplete and almost certainly aren't what the user typed next;
+    /// better to suppress the suggestion than insert a refusal.
+    /// </summary>
+    private static readonly string[] ChatLeakPrefixes = new[]
+    {
+        // Refusals
+        "I'm sorry, but I can",
+        "I'm sorry, I can",
+        "I cannot",
+        "I can't assist",
+        "I can't help",
+        "Sorry, I can't",
+        "Sorry, but I can",
+        // Generic assistant greetings
+        "Hi there! How can I",
+        "Hello! How can I",
+        "Hi! How can I",
+        "Hello there! How can",
+        "How can I assist",
+        "How can I help you",
+        // Common Coder-Instruct opener when treating prose as a code request
+        "Sure, here is",
+        "Sure, here's",
+        "Certainly! Here",
+    };
+
+    /// <summary>
+    /// Tests the LEAD of <paramref name="sb"/> (skipping leading whitespace and
+    /// comment markers like '#', '//', '*') against <see cref="ChatLeakPrefixes"/>.
+    /// Case-insensitive substring match against a 32-char window so a chat
+    /// pattern that surfaces inside a code-comment prefix ("#I'm sorry…") is
+    /// still caught.
+    /// </summary>
+    private static bool LooksLikeChatLeak(StringBuilder sb)
+    {
+        if (sb.Length < 6) return false;
+        int start = 0;
+        while (start < sb.Length && (sb[start] == ' ' || sb[start] == '#' ||
+                                     sb[start] == '/' || sb[start] == '*' ||
+                                     sb[start] == '-' || sb[start] == '>'))
+        {
+            start++;
+        }
+        if (start >= sb.Length) return false;
+        int windowLen = Math.Min(32, sb.Length - start);
+        var window = new char[windowLen];
+        for (int i = 0; i < windowLen; i++) window[i] = sb[start + i];
+        var winStr = new string(window);
+        foreach (var pat in ChatLeakPrefixes)
+        {
+            if (winStr.Length >= pat.Length &&
+                winStr.AsSpan(0, pat.Length).Equals(pat.AsSpan(), StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// True if anywhere in <paramref name="sb"/> there is a run of more than
+    /// <paramref name="threshold"/> identical non-whitespace characters. Scans
+    /// the WHOLE buffer rather than just the tail because BPE can pack a long
+    /// 'sssssss' run into a single token, AND the model can interleave a few
+    /// non-'s' chars between 's' chunks so the run never quite ends up at the
+    /// tail when each chunk lands.
+    ///
+    /// Whitespace runs (indentation, blank lines) are skipped — Python and
+    /// YAML routinely produce long whitespace sequences as legitimate output.
     /// </summary>
     private static bool HasLongCharRun(StringBuilder sb, int threshold)
     {
         if (sb.Length <= threshold) return false;
-        char last = sb[^1];
-        if (last == ' ' || last == '\t' || last == '\n' || last == '\r') return false;
-        int count = 0;
-        for (int i = sb.Length - 1; i >= 0 && count <= threshold; i--)
+        int run = 1;
+        char prev = sb[0];
+        for (int i = 1; i < sb.Length; i++)
         {
-            if (sb[i] != last) return false;
-            count++;
+            char c = sb[i];
+            if (c == prev)
+            {
+                run++;
+                if (run > threshold && prev != ' ' && prev != '\t' && prev != '\n' && prev != '\r')
+                {
+                    return true;
+                }
+            }
+            else
+            {
+                run = 1;
+                prev = c;
+            }
         }
-        return count > threshold;
+        return false;
     }
 
     /// <summary>

@@ -118,6 +118,20 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll", SetLastError = true)]
     public static partial uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
+    /// <summary>
+    /// Suspends physical keyboard + mouse input system-wide. Used during text
+    /// insertion so the user's own keystrokes (especially auto-repeat) can't
+    /// interleave with our SendInput batch and produce "spliced" output.
+    /// </summary>
+    /// <remarks>
+    /// Returns true if input is now blocked. The OS allows Ctrl+Alt+Delete to
+    /// punch through; only the calling thread may unblock. We always pair a
+    /// successful block with an unblock in a finally clause.
+    /// </remarks>
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool BlockInput([MarshalAs(UnmanagedType.Bool)] bool fBlockIt);
+
     [LibraryImport("user32.dll")]
     public static partial short GetKeyState(int nVirtKey);
 

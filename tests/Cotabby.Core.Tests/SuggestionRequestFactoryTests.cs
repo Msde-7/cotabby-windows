@@ -47,12 +47,16 @@ public class SuggestionRequestFactoryTests
     }
 
     [Fact]
-    public void PrefixWindowedTo1024Chars()
+    public void PrefixWindowedTo512Chars()
     {
+        // The prefix window is sized to the LLamaSharp StatelessExecutor's
+        // per-call prompt-eval cost on CPU; see SuggestionRequestFactory.
+        // Tracking the constant in a test keeps an accidental regression
+        // back to a multi-second prompt eval visible.
         var s = new string('a', 5000);
         var f = Field(s, caret: s.Length);
         var r = SuggestionRequestFactory.Build(f, "req");
-        Assert.Equal(1024, r.Prefix.Length);
+        Assert.Equal(512, r.Prefix.Length);
     }
 
     [Fact]

@@ -207,10 +207,7 @@ public partial class App : Application
                 var (visible, text, rect) = _overlay.Dispatcher.Invoke(() =>
                 {
                     bool vis = _overlay.Visibility == System.Windows.Visibility.Visible;
-                    string t = "<no textblock>";
-                    if (_overlay.Content is System.Windows.Controls.Border br
-                        && br.Child is System.Windows.Controls.TextBlock tb)
-                        t = tb.Text;
+                    string t = _overlay.CurrentGhostText;
                     var src = System.Windows.Interop.HwndSource.FromVisual(_overlay) as System.Windows.Interop.HwndSource;
                     int x = 0, y = 0, w = 0, h = 0;
                     if (src is not null)
@@ -263,20 +260,27 @@ public partial class App : Application
     private async Task LoadModelAsync()
     {
         if (_host is null || _tray is null) return;
+        var logger = _host.Services.GetService(typeof(Microsoft.Extensions.Logging.ILoggerFactory))
+            is Microsoft.Extensions.Logging.ILoggerFactory lf
+            ? lf.CreateLogger("Cotabby.App.LoadModel") : null;
         try
         {
+            logger?.LogInformation("LoadModelAsync starting.");
             var loaded = await _host.TryLoadCachedAsync(CancellationToken.None);
             if (loaded)
             {
+                logger?.LogInformation("LoadModelAsync OK: model is ready.");
                 _tray.SetStatus($"Ready · {_host.Runtime.ActiveModel?.DisplayName}");
             }
             else
             {
+                logger?.LogWarning("LoadModelAsync: TryLoadCachedAsync returned false (model not cached or runtime not ready).");
                 _tray.SetStatus("No model. Right-click → Settings to download one.");
             }
         }
         catch (Exception ex)
         {
+            logger?.LogError(ex, "LoadModelAsync THREW.");
             _tray.SetStatus("Model load failed: " + ex.Message);
         }
     }

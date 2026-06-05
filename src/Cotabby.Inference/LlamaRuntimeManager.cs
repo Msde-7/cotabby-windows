@@ -56,10 +56,21 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
             UnloadInternal();
 
             var sw = Stopwatch.StartNew();
+            // Reserve one logical core for the UI/UIA pump so prompt eval never
+            // starves keystroke delivery — sustained 100% saturation on every
+            // core is the symptom users see as "the app freezes while typing"
+            // even though the engine is just hot. BatchSize 256 gives a decent
+            // chunk for prompt prefill on small prompts (Qwen 1.5B Q4 evaluates
+            // ~150 tokens of prefix in ~120ms at this batch on a modern CPU).
+            int threads = Math.Max(1, Environment.ProcessorCount - 1);
             var parameters = new ModelParams(path)
             {
                 ContextSize = (uint)model.ContextLength,
                 GpuLayerCount = 0,
+                Threads = threads,
+                BatchThreads = threads,
+                BatchSize = 256,
+                UBatchSize = 256,
             };
 
             _logger.LogInformation(

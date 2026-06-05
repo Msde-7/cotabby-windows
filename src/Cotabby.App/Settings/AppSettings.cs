@@ -12,7 +12,10 @@ public sealed class AppSettings
 {
     public bool Enabled { get; set; } = true;
     public string? ActiveModelId { get; set; }
-    public int DebounceMs { get; set; } = 120;
+    // 80ms keeps time-to-first-suggestion low while still collapsing typing
+    // bursts. Per-keystroke cancel-prior in SuggestionWorkController means
+    // we never start a generation that the next keystroke would invalidate.
+    public int DebounceMs { get; set; } = 80;
 }
 
 /// <summary>

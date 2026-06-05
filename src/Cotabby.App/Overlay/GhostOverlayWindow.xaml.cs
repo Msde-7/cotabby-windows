@@ -4,6 +4,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using Cotabby.Core.Focus;
 using Cotabby.Core.Overlay;
+using Microsoft.Win32;
 
 namespace Cotabby.App.Overlay;
 
@@ -20,9 +21,9 @@ namespace Cotabby.App.Overlay;
 /// raw physical pixels we already get from UIA, then convert back to DIPs for
 /// the <c>Width</c>/<c>Height</c> on the target monitor.
 ///
-/// We also flip on <c>WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE |
-/// WS_EX_TOOLWINDOW</c> so the window never steals focus, never appears in
-/// alt-tab, and lets mouse events fall through to the host app.
+/// Visual style mirrors the macOS port's <c>GhostSuggestionView</c>: no panel
+/// background, foreground color tracks system light/dark, font size derives
+/// from the caret height so ghost text matches the host editor's line height.
 /// </remarks>
 public partial class GhostOverlayWindow : Window, IOverlayPresenter
 {
@@ -39,6 +40,12 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     private const uint SWP_SHOWWINDOW = 0x0040;
     private static readonly IntPtr HWND_TOPMOST = new(-1);
 
+    // Per-session floor for caret-derived font size. UIA's caret-rect height
+    // flickers between the real line height and a coarse field-height fallback;
+    // a per-session floor keeps ghost text from shrinking mid-completion when
+    // the trustworthy reading happens to be the smaller of the two.
+    private double _stabilizedCaretHeightPx;
+
     private HwndSource? _source;
 
     public GhostOverlayWindow()
@@ -46,6 +53,9 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         InitializeComponent();
         Visibility = Visibility.Hidden;
         SourceInitialized += OnSourceInitialized;
+        ApplyThemePalette();
+        // Pick up OS theme switches without restart.
+        SystemEvents.UserPreferenceChanged += (_, _) => Dispatcher.BeginInvoke(ApplyThemePalette);
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
@@ -71,7 +81,9 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
             Dispatcher.BeginInvoke(() => Show(text, anchor));
             return;
         }
+        ApplyCaretGeometry(anchor);
         GhostText.Text = text;
+        TabKeycap.Visibility = string.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
         Visibility = Visibility.Visible;
         if (_source is null)
         {
@@ -108,8 +120,14 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
             return;
         }
         GhostText.Text = text;
+        TabKeycap.Visibility = string.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
         UpdateLayout();
     }
+
+    /// <summary>Currently-rendered ghost text. Test seam for the self-test harness
+    /// so it can verify what the overlay is actually displaying without coupling
+    /// to the XAML element tree.</summary>
+    internal string CurrentGhostText => GhostText.Text;
 
     public new void Hide()
     {
@@ -119,7 +137,81 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
             return;
         }
         GhostText.Text = string.Empty;
+        TabKeycap.Visibility = Visibility.Collapsed;
+        _stabilizedCaretHeightPx = 0;
         Visibility = Visibility.Hidden;
+    }
+
+    /// <summary>
+    /// Scales the ghost text + keycap to match the caret line height. UIA reports
+    /// the caret rect in physical pixels; WPF font sizes are in DIPs, so we
+    /// divide by the source's device pixel ratio before applying. Empty/zero
+    /// caret heights (some apps return a degenerate rect on first focus) keep
+    /// the previous size rather than collapsing the overlay to nothing.
+    /// </summary>
+    private void ApplyCaretGeometry(ScreenRect anchor)
+    {
+        double caretHeightPx = anchor.Height;
+        if (caretHeightPx <= 1) return;
+
+        // Keep ghost text from shrinking mid-session: UIA frequently flips
+        // between the real line-height rect (~28px) and a field-height fallback
+        // (~18px) between polls; stabilize on the larger.
+        if (caretHeightPx < _stabilizedCaretHeightPx)
+        {
+            caretHeightPx = _stabilizedCaretHeightPx;
+        }
+        else
+        {
+            _stabilizedCaretHeightPx = caretHeightPx;
+        }
+
+        double scale = 1.0;
+        if (_source?.CompositionTarget is { } ct)
+        {
+            // M22 is the y-axis device pixel ratio (DPI / 96).
+            double m22 = ct.TransformToDevice.M22;
+            if (m22 > 0.1) scale = m22;
+        }
+
+        double caretHeightDip = caretHeightPx / scale;
+        // 0.78 matches the macOS GhostSuggestionView ratio: font_size = line_height * 0.78.
+        double fontSize = Math.Clamp(caretHeightDip * 0.78, 12, 22);
+        GhostText.FontSize = Math.Round(fontSize, 1);
+        TabKeycapLabel.FontSize = Math.Max(9, fontSize - 4);
+    }
+
+    private void ApplyThemePalette()
+    {
+        bool darkMode = IsSystemInDarkMode();
+        if (darkMode)
+        {
+            // Translucent light gray over dark host backgrounds.
+            GhostText.Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0xA6, 0xA6, 0xA6));
+            TabKeycap.Background = new SolidColorBrush(Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF));
+            TabKeycap.BorderBrush = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF));
+            TabKeycapLabel.Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF));
+        }
+        else
+        {
+            // Translucent dark gray over light host backgrounds.
+            GhostText.Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0x73, 0x73, 0x73));
+            TabKeycap.Background = new SolidColorBrush(Color.FromArgb(0x33, 0x00, 0x00, 0x00));
+            TabKeycap.BorderBrush = new SolidColorBrush(Color.FromArgb(0x55, 0x00, 0x00, 0x00));
+            TabKeycapLabel.Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0x55, 0x55, 0x55));
+        }
+    }
+
+    private static bool IsSystemInDarkMode()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            // 0 = dark, 1 = light. Missing key on older builds defaults to light.
+            return key?.GetValue("AppsUseLightTheme") is int v && v == 0;
+        }
+        catch (Exception) { return false; }
     }
 
     private void PositionAt(ScreenRect anchor)
@@ -130,9 +222,11 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         double pxW = ActualWidth * matrix.M11;
         double pxH = ActualHeight * matrix.M22;
 
-        // Default: right of caret, same vertical baseline.
-        double x = anchor.Right + 2;
-        double y = anchor.Y;
+        // Default: right of caret, baseline-aligned. The TextBlock's top-left
+        // sits a few pixels above the caret's baseline, so shift down slightly
+        // so the descender line meets the host caret instead of floating above.
+        double x = anchor.Right + 1;
+        double y = anchor.Y + Math.Max(0, (anchor.Height - pxH) / 2.0);
 
         // Avoid clipping against monitor edges. Pick the monitor under the
         // caret (the work area excludes the taskbar) and clamp the overlay
