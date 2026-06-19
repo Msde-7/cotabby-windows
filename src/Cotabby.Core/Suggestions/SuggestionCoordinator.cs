@@ -110,6 +110,13 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     /// <summary>See <see cref="MaxTokensSingleLine"/>.</summary>
     public int? MaxTokensMultiLine { get; set; }
 
+    /// <summary>
+    /// When false, even multi-line fields receive a single-line request
+    /// (the engine stops on the first newline). Default true mirrors the
+    /// macOS port's "Allow multi-line suggestions" toggle.
+    /// </summary>
+    public bool AllowMultiLineSuggestions { get; set; } = true;
+
     public void Start()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -286,6 +293,15 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         // cancel-prior takes care of dropping the stale request.
         var request = SuggestionRequestFactory.Build(
             fieldAtTrigger, reqId, MaxTokensSingleLine, MaxTokensMultiLine);
+
+        // Honor the "Allow multi-line suggestions" toggle by forcing the
+        // single-line stop on multi-line fields when the user has opted out.
+        // Done here, not in the factory, because the override is a settings
+        // concern that the factory shouldn't know about.
+        if (!AllowMultiLineSuggestions && !request.SingleLine)
+        {
+            request = request with { SingleLine = true };
+        }
         var anchor = fieldAtTrigger.CaretRect;
         var element = fieldAtTrigger.ElementHandle;
         var field = fieldAtTrigger;

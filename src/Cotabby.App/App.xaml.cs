@@ -20,6 +20,8 @@ public partial class App : Application
     private AppHost? _host;
     private TrayController? _tray;
     private GhostOverlayWindow? _overlay;
+    private Emoji.EmojiPopupWindow? _emojiPopup;
+    private Emoji.EmojiPickerController? _emojiPicker;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -52,6 +54,13 @@ public partial class App : Application
 
         var ui = SynchronizationContext.Current
                  ?? throw new InvalidOperationException("WPF startup must have a SynchronizationContext.");
+        // Pre-realize the emoji popup so the first show is instantaneous (no
+        // ~50ms WPF window creation latency between the trigger colon and the
+        // panel appearing).
+        _emojiPopup = new Emoji.EmojiPopupWindow();
+        _emojiPopup.Show();
+        _emojiPopup.Hide();
+
         _host = new AppHost(ui, _overlay);
         // Apply user appearance preferences before the first show so a stored
         // color/opacity choice takes effect on the very first suggestion.
@@ -62,6 +71,32 @@ public partial class App : Application
         _tray = new TrayController(_host);
         _host.Coordinator.Start();
         _tray.SetStatus("Starting…");
+
+        // Emoji autocomplete observes the same keyboard hook the coordinator
+        // uses but consumes events only while a `:query` trigger is active.
+        try
+        {
+            var hook = (Cotabby.Core.Input.IKeyboardHook)
+                _host.Services.GetService(typeof(Cotabby.Core.Input.IKeyboardHook))!;
+            var focus = (Cotabby.Core.Focus.IFocusTracker)
+                _host.Services.GetService(typeof(Cotabby.Core.Focus.IFocusTracker))!;
+            var inserter = (Cotabby.Core.Insertion.ITextInserter)
+                _host.Services.GetService(typeof(Cotabby.Core.Insertion.ITextInserter))!;
+            var lf = (Microsoft.Extensions.Logging.ILoggerFactory)
+                _host.Services.GetService(typeof(Microsoft.Extensions.Logging.ILoggerFactory))!;
+
+            _emojiPicker = new Emoji.EmojiPickerController(
+                hook, focus, inserter, _emojiPopup, Dispatcher,
+                lf.CreateLogger<Emoji.EmojiPickerController>())
+            {
+                Enabled = _host.Settings.EmojiPickerEnabled,
+            };
+            _host.RegisterEmojiPicker(_emojiPicker);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine("Emoji picker init failed: " + ex);
+        }
 
         _ = LoadModelAsync();
 

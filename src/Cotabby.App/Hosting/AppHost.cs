@@ -32,6 +32,18 @@ public sealed class AppHost : IAsyncDisposable
     public AppSettings Settings { get; }
     public GhostOverlayWindow Overlay { get; }
 
+    /// <summary>
+    /// Optional emoji picker controller — registered from <c>App.OnStartup</c>
+    /// after the popup window is realized. Kept on the host so the settings
+    /// UI can toggle <see cref="EmojiPickerController.Enabled"/>.
+    /// </summary>
+    public Cotabby.App.Emoji.EmojiPickerController? EmojiPicker { get; private set; }
+
+    public void RegisterEmojiPicker(Cotabby.App.Emoji.EmojiPickerController picker)
+    {
+        EmojiPicker = picker;
+    }
+
     public AppHost(SynchronizationContext uiContext, GhostOverlayWindow overlay)
     {
         var sc = new ServiceCollection();
@@ -106,6 +118,12 @@ public sealed class AppHost : IAsyncDisposable
         var (single, multi) = CompletionLengthPreset.Tokens(Settings.CompletionLengthPreset);
         Coordinator.MaxTokensSingleLine = single;
         Coordinator.MaxTokensMultiLine = multi;
+        Coordinator.AllowMultiLineSuggestions = Settings.AllowMultiLine;
+
+        if (EmojiPicker is not null)
+        {
+            EmojiPicker.Enabled = Settings.EmojiPickerEnabled;
+        }
 
         if (Settings.BlockedApps is { Count: > 0 } list)
         {
@@ -174,6 +192,7 @@ public sealed class AppHost : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        EmojiPicker?.Dispose();
         await Coordinator.DisposeAsync().ConfigureAwait(false);
         await Runtime.DisposeAsync().ConfigureAwait(false);
     }
