@@ -119,6 +119,7 @@ public sealed class AppHost : IAsyncDisposable
         Coordinator.MaxTokensSingleLine = single;
         Coordinator.MaxTokensMultiLine = multi;
         Coordinator.AllowMultiLineSuggestions = Settings.AllowMultiLine;
+        Coordinator.AlternateAcceptKey = ParseAlternateAcceptKey(Settings.AcceptSuggestionKey);
 
         if (EmojiPicker is not null)
         {
@@ -188,6 +189,26 @@ public sealed class AppHost : IAsyncDisposable
     {
         ApplyRuntimeSettings();
         SettingsStore.Save(Settings);
+    }
+
+    /// <summary>
+    /// Parse the user's "accept whole suggestion" preference into a single
+    /// character the coordinator can compare against keyboard events. Accepts
+    /// either a one-character string ("`") or a friendly name ("Backtick").
+    /// Anything else means "unbound".
+    /// </summary>
+    private static char? ParseAlternateAcceptKey(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var s = raw.Trim();
+        if (s.Length == 1 && !char.IsControl(s[0])) return s[0];
+        return s.ToLowerInvariant() switch
+        {
+            "backtick" or "grave" or "graveaccent" or "tick" => '`',
+            "tilde" => '~',
+            "backslash" => '\\',
+            _ => null,
+        };
     }
 
     public async ValueTask DisposeAsync()

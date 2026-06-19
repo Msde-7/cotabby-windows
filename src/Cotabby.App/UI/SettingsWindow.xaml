@@ -259,7 +259,7 @@
                     <StackPanel>
                         <TextBlock Style="{StaticResource SectionHeader}" Text="Acceptance" />
                         <TextBlock Style="{StaticResource SubLabel}"
-                                   Text="Tab is currently the only acceptance key supported on Windows — eating other keys before the host sees them requires per-key registration we don't ship yet. The fields below capture your intent for future versions." />
+                                   Text="Tab always accepts the visible suggestion. You can also bind a second key (e.g. `Backtick`) as an alternate accept key — useful if Tab clashes with the host app. Type one character or one of the named keys: Backtick, Tilde, Backslash." />
 
                         <Grid Margin="0,4,0,4">
                             <Grid.ColumnDefinitions>

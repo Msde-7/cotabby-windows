@@ -117,6 +117,16 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     /// </summary>
     public bool AllowMultiLineSuggestions { get; set; } = true;
 
+    /// <summary>
+    /// Optional alternate accept-key character (case-insensitive). When set,
+    /// pressing this printable character with a visible suggestion accepts
+    /// the suggestion exactly like Tab. The macOS port uses Backtick for
+    /// "accept whole suggestion"; on Windows the existing Tab path already
+    /// inserts the entire visible text, so binding Backtick here gives users
+    /// the same muscle memory.
+    /// </summary>
+    public char? AlternateAcceptKey { get; set; }
+
     public void Start()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -181,11 +191,17 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             args.Event.Kind, (int)args.Event.Character, args.Event.IsKeyDown,
             args.Event.HasNonShiftModifier, hasSession);
 
-        // Tab + visible session => accept. We suppress synchronously here
-        // because that's the only way to eat the Tab before it reaches the
-        // host app, and Post AcceptAsync to the dispatcher so it runs single-
-        // threaded with the rest of the state machine.
-        if (hasSession && args.Event.Kind == KeyKind.Tab && args.Event.IsKeyDown)
+        // Tab (or user-configured alternate key) + visible session => accept.
+        // We suppress synchronously here because that's the only way to eat
+        // the key before it reaches the host app, and Post AcceptAsync to the
+        // dispatcher so it runs single-threaded with the rest of the state
+        // machine.
+        bool isTabAccept = args.Event.Kind == KeyKind.Tab && args.Event.IsKeyDown;
+        bool isAltAccept = AlternateAcceptKey is { } alt
+            && args.Event.Kind == KeyKind.Character
+            && args.Event.IsKeyDown
+            && char.ToLowerInvariant(args.Event.Character) == char.ToLowerInvariant(alt);
+        if (hasSession && (isTabAccept || isAltAccept))
         {
             args.Suppress = true;
             // Snapshot the displayed text right now, on the hook thread. Any

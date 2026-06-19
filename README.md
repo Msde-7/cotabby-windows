@@ -10,6 +10,25 @@ the focused text field, render ghost text near the caret, and insert accepted
 suggestions on `Tab`. This port replaces that stack with WPF, UI Automation (UIA),
 `SetWindowsHookEx`, and `SendInput` to provide the same experience on Windows 10/11.
 
+## What you get
+
+- **System-wide ghost text** — works in any focused text field exposed via UI Automation
+  (Notepad, VS Code, Slack, Discord, Outlook, browser inputs, …). Press `Tab` to accept.
+- **Inline `:emoji:` autocomplete** — type `:smile`, `:tada`, `:+1` and a small popup
+  shows matching glyphs; close the trigger with `:` to commit.
+- **First-run welcome wizard** — five quick steps that capture name, languages,
+  completion length preset, model choice, and a few defaults (skip to keep defaults).
+- **Settings window with parity panes** — General, Engine & model, Writing, Shortcuts,
+  Apps (per-app blocklist), Advanced (debounce, paths, open log/models), About.
+- **Launch at login** — opt-in via the General pane; written to `HKCU\…\Run` so no
+  admin is required.
+- **Customizable ghost text** — color preset palette, opacity slider, optional `Tab`
+  hint chip; automatic light/dark theme follow.
+- **Configurable acceptance** — `Tab` is always bound; you can add an alternate key
+  (e.g. backtick) when `Tab` clashes with the host app.
+- **All inference local** — llama.cpp via LLamaSharp; no network calls except the
+  one-time model download from Hugging Face. No telemetry.
+
 ## Stack
 
 | Concern                    | macOS (Swift)                  | Windows (this port, C# / .NET 9)        |
@@ -60,6 +79,38 @@ On first run, Cotabby will register a global keyboard hook and place an icon in 
 system tray. There is no UAC elevation; UI Automation and `WH_KEYBOARD_LL` both work
 under standard user rights, though some elevated processes (e.g. Task Manager) will
 not surface AX trees.
+
+The first launch also opens the **welcome wizard** to capture a couple of preferences
+and let you pick a model — every step is skippable. You can re-run the wizard any time
+from `Tray → Run welcome again…`.
+
+## Configuration
+
+- Settings file: `%APPDATA%\Cotabby\settings.json`
+- Models cache:  `%LOCALAPPDATA%\Cotabby\models`
+- Log file:      `C:\tmp\cotabby-live.log`
+
+Open them from `Tray → Settings… → Advanced` (each has a one-click "Open" button).
+
+## Parity status vs the macOS port
+
+| Area                              | Windows port              |
+|-----------------------------------|---------------------------|
+| Ghost text overlay (color/opacity, hint chip, theme-aware) | ✅ |
+| Settings window (General / Engine & model / Writing / Shortcuts / Apps / Advanced / About) | ✅ |
+| First-run welcome wizard           | ✅                        |
+| Inline `:emoji:` autocomplete      | ✅ (built-in catalog)     |
+| Per-app blocklist                  | ✅                        |
+| Launch at login                    | ✅ (HKCU Run key)         |
+| Completion length presets          | ✅                        |
+| Allow multi-line / single-line     | ✅                        |
+| Alternate accept key (e.g. backtick) | ✅                      |
+| Tab accept                         | ✅                        |
+| Word-by-word vs whole acceptance   | Whole only on Windows     |
+| Apple Intelligence engine          | n/a (llama.cpp only)      |
+| Foundation Models routing          | n/a                       |
+| Visual-context / screenshot OCR    | not yet                   |
+| Custom rules editor                | not yet                   |
 
 ## License
 
