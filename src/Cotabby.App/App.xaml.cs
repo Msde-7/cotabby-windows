@@ -53,11 +53,29 @@ public partial class App : Application
         var ui = SynchronizationContext.Current
                  ?? throw new InvalidOperationException("WPF startup must have a SynchronizationContext.");
         _host = new AppHost(ui, _overlay);
+        // Apply user appearance preferences before the first show so a stored
+        // color/opacity choice takes effect on the very first suggestion.
+        _overlay.ApplyAppearance(
+            _host.Settings.GhostTextColor,
+            _host.Settings.GhostTextOpacity,
+            _host.Settings.ShowAcceptanceHint);
         _tray = new TrayController(_host);
         _host.Coordinator.Start();
         _tray.SetStatus("Starting…");
 
         _ = LoadModelAsync();
+
+        // First-run onboarding wizard. The flag is cleared inside the window
+        // when the user finishes/skips it. Defer until after the tray is up so
+        // the experience starts with the tray icon already showing.
+        if (_host.Settings.ShowFirstRunWelcome)
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                try { UI.WelcomeWindow.ShowFor(_host); }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("WelcomeWindow failed: " + ex); }
+            }), System.Windows.Threading.DispatcherPriority.Background);
+        }
 
         if (Environment.GetEnvironmentVariable("COTABBY_SELF_TEST") == "1")
         {

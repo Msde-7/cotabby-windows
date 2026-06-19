@@ -48,6 +48,12 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
 
     private HwndSource? _source;
 
+    // User-selected appearance overrides. Null = use auto/system palette.
+    // Set via ApplyAppearance from the settings UI; survive theme changes.
+    private Color? _userColor;
+    private double _userOpacity = 1.0;
+    private bool _showHint = true;
+
     public GhostOverlayWindow()
     {
         InitializeComponent();
@@ -56,6 +62,32 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         ApplyThemePalette();
         // Pick up OS theme switches without restart.
         SystemEvents.UserPreferenceChanged += (_, _) => Dispatcher.BeginInvoke(ApplyThemePalette);
+    }
+
+    /// <summary>
+    /// Apply user appearance choices from settings. Re-evaluates the palette
+    /// immediately so the next Show / a currently-visible overlay both pick up
+    /// the change without restart. <paramref name="colorId"/> is a
+    /// <see cref="Cotabby.App.UI.GhostTextPalette"/> id ("auto", "gray", …) or
+    /// a "#RRGGBB" hex string.
+    /// </summary>
+    public void ApplyAppearance(string colorId, double opacity, bool showHint)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => ApplyAppearance(colorId, opacity, showHint));
+            return;
+        }
+        _userColor = Cotabby.App.UI.GhostTextPalette.Resolve(colorId);
+        _userOpacity = Math.Clamp(opacity, 0.10, 1.0);
+        _showHint = showHint;
+        ApplyThemePalette();
+        // If overlay is currently visible, make sure the hint band reflects the
+        // new toggle without waiting for the next Show.
+        if (GhostText.Text.Length > 0)
+        {
+            TabKeycap.Visibility = _showHint ? Visibility.Visible : Visibility.Collapsed;
+        }
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
@@ -83,7 +115,8 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         }
         ApplyCaretGeometry(anchor);
         GhostText.Text = text;
-        TabKeycap.Visibility = string.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
+        TabKeycap.Visibility = (_showHint && !string.IsNullOrEmpty(text))
+            ? Visibility.Visible : Visibility.Collapsed;
         Visibility = Visibility.Visible;
         if (_source is null)
         {
@@ -120,7 +153,8 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
             return;
         }
         GhostText.Text = text;
-        TabKeycap.Visibility = string.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
+        TabKeycap.Visibility = (_showHint && !string.IsNullOrEmpty(text))
+            ? Visibility.Visible : Visibility.Collapsed;
         UpdateLayout();
     }
 
@@ -184,18 +218,27 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     private void ApplyThemePalette()
     {
         bool darkMode = IsSystemInDarkMode();
+
+        // The user can override the ghost text color from settings; if they
+        // haven't, we pick a translucent gray that contrasts with the host
+        // background (light gray on dark, dark gray on light).
+        Color textColor = _userColor ?? (darkMode
+            ? Color.FromRgb(0xA6, 0xA6, 0xA6)
+            : Color.FromRgb(0x73, 0x73, 0x73));
+
+        // Opacity is applied to alpha so the keycap chrome stays readable.
+        byte alpha = (byte)Math.Round(Math.Clamp(_userOpacity, 0.10, 1.0) * 0xCC);
+        GhostText.Foreground = new SolidColorBrush(Color.FromArgb(alpha,
+            textColor.R, textColor.G, textColor.B));
+
         if (darkMode)
         {
-            // Translucent light gray over dark host backgrounds.
-            GhostText.Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0xA6, 0xA6, 0xA6));
             TabKeycap.Background = new SolidColorBrush(Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF));
             TabKeycap.BorderBrush = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF));
             TabKeycapLabel.Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF));
         }
         else
         {
-            // Translucent dark gray over light host backgrounds.
-            GhostText.Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0x73, 0x73, 0x73));
             TabKeycap.Background = new SolidColorBrush(Color.FromArgb(0x33, 0x00, 0x00, 0x00));
             TabKeycap.BorderBrush = new SolidColorBrush(Color.FromArgb(0x55, 0x00, 0x00, 0x00));
             TabKeycapLabel.Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0x55, 0x55, 0x55));

@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media.Imaging;
 using Cotabby.App.Hosting;
+using Cotabby.App.Settings;
 using Cotabby.App.UI;
 using Cotabby.Core.Focus;
 using Cotabby.Core.Models;
@@ -25,6 +26,7 @@ public sealed class TrayController : IDisposable
     private readonly MenuItem _enabledItem;
     private readonly MenuItem _modelMenu;
     private readonly MenuItem _statusItem;
+    private readonly MenuItem _lengthMenu;
 
     public TrayController(AppHost host)
     {
@@ -63,8 +65,29 @@ public sealed class TrayController : IDisposable
 
         _statusItem = new MenuItem { Header = "Loading model…", IsEnabled = false };
 
+        // Completion-length submenu — mirrors the macOS "completion length"
+        // quick-pick in the menu bar. Lets the user widen/shrink the budget
+        // without opening the full Settings window.
+        var lengthMenu = new MenuItem { Header = "Completion length" };
+        foreach (var (id, label) in CompletionLengthPreset.All)
+        {
+            var item = new MenuItem
+            {
+                Header = label,
+                IsCheckable = true,
+                IsChecked = id == host.Settings.CompletionLengthPreset,
+                Tag = id,
+            };
+            item.Click += (_, _) => SetLengthPreset(id);
+            lengthMenu.Items.Add(item);
+        }
+        _lengthMenu = lengthMenu;
+
         var openSettingsItem = new MenuItem { Header = "Settings…" };
         openSettingsItem.Click += (_, _) => SettingsWindow.ShowOrFocus(host);
+
+        var welcomeItem = new MenuItem { Header = "Run welcome again…" };
+        welcomeItem.Click += (_, _) => WelcomeWindow.ShowFor(host);
 
         // Diagnostic submenu — used to isolate which subsystem is broken when
         // the live typing flow fails to surface a suggestion. Each item
@@ -91,11 +114,26 @@ public sealed class TrayController : IDisposable
         menu.Items.Add(new Separator());
         menu.Items.Add(_enabledItem);
         menu.Items.Add(_modelMenu);
+        menu.Items.Add(_lengthMenu);
         menu.Items.Add(openSettingsItem);
+        menu.Items.Add(welcomeItem);
         menu.Items.Add(diagMenu);
         menu.Items.Add(new Separator());
         menu.Items.Add(quitItem);
         _tray.ContextMenu = menu;
+    }
+
+    private void SetLengthPreset(string id)
+    {
+        _host.Settings.CompletionLengthPreset = id;
+        _host.PersistSettings();
+        foreach (object item in _lengthMenu.Items)
+        {
+            if (item is MenuItem mi && mi.Tag is string tagId)
+            {
+                mi.IsChecked = tagId == id;
+            }
+        }
     }
 
     private async Task ShowTestOverlay()
