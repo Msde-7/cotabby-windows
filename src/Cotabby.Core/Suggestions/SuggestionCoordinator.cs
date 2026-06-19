@@ -94,6 +94,22 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Case-insensitive process-name blocklist (no .exe). When a focused field's
+    /// host is in this set we suppress suggestions for it. Settable from the
+    /// settings UI; null/empty disables the check.
+    /// </summary>
+    public ISet<string>? BlockedApps { get; set; }
+
+    /// <summary>
+    /// Per-request max-token overrides driven by the completion length preset.
+    /// Null falls back to the factory defaults.
+    /// </summary>
+    public int? MaxTokensSingleLine { get; set; }
+
+    /// <summary>See <see cref="MaxTokensSingleLine"/>.</summary>
+    public int? MaxTokensMultiLine { get; set; }
+
     public void Start()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -236,10 +252,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             _logger.LogDebug("No focused field at trigger-decision time.");
             return;
         }
-        if (!SuggestionAvailability.ShouldRequest(field, ev))
+        if (!SuggestionAvailability.ShouldRequest(field, ev, BlockedApps))
         {
-            _logger.LogDebug("ShouldRequest false: secure={Sec} textLen={Len} host={Host}",
-                field.IsSecure, field.Text.Length, field.ProcessName);
+            _logger.LogDebug("ShouldRequest false: secure={Sec} textLen={Len} host={Host} blocked={Blocked}",
+                field.IsSecure, field.Text.Length, field.ProcessName,
+                BlockedApps?.Contains(field.ProcessName) ?? false);
             return;
         }
 
@@ -267,7 +284,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         // the engine BEFORE it can produce a chunk. Now we lock the snapshot
         // here; if the user keeps typing during the debounce window, Submit's
         // cancel-prior takes care of dropping the stale request.
-        var request = SuggestionRequestFactory.Build(fieldAtTrigger, reqId);
+        var request = SuggestionRequestFactory.Build(
+            fieldAtTrigger, reqId, MaxTokensSingleLine, MaxTokensMultiLine);
         var anchor = fieldAtTrigger.CaretRect;
         var element = fieldAtTrigger.ElementHandle;
         var field = fieldAtTrigger;

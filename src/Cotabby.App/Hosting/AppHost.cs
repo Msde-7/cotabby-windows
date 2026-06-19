@@ -90,7 +90,36 @@ public sealed class AppHost : IAsyncDisposable
         Settings = Services.GetRequiredService<AppSettings>();
         Overlay = overlay;
 
+        ApplyRuntimeSettings();
+    }
+
+    /// <summary>
+    /// Push the user-visible settings into the long-lived runtime (coordinator,
+    /// launch-at-login). Idempotent — call after editing <see cref="Settings"/>
+    /// (and before <see cref="PersistSettings"/>) to make the change take effect
+    /// without restarting the app.
+    /// </summary>
+    public void ApplyRuntimeSettings()
+    {
         Coordinator.Enabled = Settings.Enabled;
+
+        var (single, multi) = CompletionLengthPreset.Tokens(Settings.CompletionLengthPreset);
+        Coordinator.MaxTokensSingleLine = single;
+        Coordinator.MaxTokensMultiLine = multi;
+
+        if (Settings.BlockedApps is { Count: > 0 } list)
+        {
+            Coordinator.BlockedApps = new HashSet<string>(list, StringComparer.OrdinalIgnoreCase);
+        }
+        else
+        {
+            Coordinator.BlockedApps = null;
+        }
+
+        // Best-effort. The registry write fails silently in restricted
+        // environments — settings UI shows the actual queried state on next
+        // open so we don't mislead the user.
+        LaunchAtLogin.Set(Settings.LaunchAtLogin);
     }
 
     /// <summary>
@@ -137,7 +166,11 @@ public sealed class AppHost : IAsyncDisposable
         return model;
     }
 
-    public void PersistSettings() => SettingsStore.Save(Settings);
+    public void PersistSettings()
+    {
+        ApplyRuntimeSettings();
+        SettingsStore.Save(Settings);
+    }
 
     public async ValueTask DisposeAsync()
     {

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Cotabby.Core.Focus;
 using Cotabby.Core.Input;
 
@@ -14,13 +15,27 @@ public static class SuggestionAvailability
     /// response to <paramref name="ev"/> on <paramref name="field"/>. Returning
     /// false means "don't even ask the engine."
     /// </summary>
-    public static bool ShouldRequest(FocusedField? field, KeyboardEvent ev)
+    /// <param name="blockedApps">
+    /// Optional case-insensitive set of process names where suggestions are
+    /// suppressed. Mirrors the macOS per-app blocklist. Pass null to disable
+    /// the check entirely.
+    /// </param>
+    public static bool ShouldRequest(
+        FocusedField? field,
+        KeyboardEvent ev,
+        ISet<string>? blockedApps = null)
     {
         if (field is null) return false;
         if (field.IsSecure) return false;
         if (field.Text.Length == 0) return false; // need at least some prefix
         if (ev.HasNonShiftModifier) return false;
         if (!ev.IsKeyDown) return false;
+        if (blockedApps is not null
+            && !string.IsNullOrEmpty(field.ProcessName)
+            && blockedApps.Contains(field.ProcessName))
+        {
+            return false;
+        }
         // Printable characters trigger; backspace shrinks an active session but
         // does not start a new one, and arrow/escape/enter cancel.
         return ev.Kind == KeyKind.Character;

@@ -23,10 +23,19 @@ public static class SuggestionRequestFactory
     // so small that completions were barely a word, which made suggestions feel
     // useless when one DID land. Code completion benefits from a larger budget
     // because BPE packs prose tokens looser than code tokens.
-    private const int DefaultMaxTokensSingleLine = 16;
-    private const int DefaultMaxTokensMultiLine = 24;
+    public const int DefaultMaxTokensSingleLine = 16;
+    public const int DefaultMaxTokensMultiLine = 24;
 
-    public static SuggestionRequest Build(FocusedField field, string requestId)
+    /// <summary>
+    /// Build a request, optionally overriding the token budget from settings
+    /// (the completion length preset). When <paramref name="maxTokensSingle"/>
+    /// / <paramref name="maxTokensMulti"/> are null, the defaults above apply.
+    /// </summary>
+    public static SuggestionRequest Build(
+        FocusedField field,
+        string requestId,
+        int? maxTokensSingle = null,
+        int? maxTokensMulti = null)
     {
         var caret = Math.Clamp(field.CaretOffset, 0, field.Text.Length);
         var prefixStart = Math.Max(0, caret - MaxPrefixChars);
@@ -35,6 +44,9 @@ public static class SuggestionRequestFactory
         var suffixEnd = Math.Min(field.Text.Length, caret + MaxSuffixChars);
         var suffix = field.Text.Substring(caret, suffixEnd - caret);
 
+        var single = Math.Clamp(maxTokensSingle ?? DefaultMaxTokensSingleLine, 4, 96);
+        var multi = Math.Clamp(maxTokensMulti ?? DefaultMaxTokensMultiLine, 4, 128);
+
         return new SuggestionRequest
         {
             RequestId = requestId,
@@ -42,7 +54,7 @@ public static class SuggestionRequestFactory
             Suffix = suffix,
             HostApp = field.ProcessName,
             SingleLine = field.IsSingleLine,
-            MaxTokens = field.IsSingleLine ? DefaultMaxTokensSingleLine : DefaultMaxTokensMultiLine,
+            MaxTokens = field.IsSingleLine ? single : multi,
         };
     }
 }
