@@ -9,10 +9,24 @@
         ShowActivated="False"
         Focusable="False"
         IsHitTestVisible="False"
-        SizeToContent="WidthAndHeight"
+        SizeToContent="Height"
+        Width="300"
         ResizeMode="NoResize">
-    <Border x:Name="Panel" CornerRadius="8" Padding="6,4"
-            Background="#EE1F1F1F" BorderBrush="#FF3A3A3A" BorderThickness="1">
-        <StackPanel x:Name="Items" Orientation="Vertical" />
+    <!-- Mirrors the macOS EmojiPickerView: fixed 300-wide panel, radius 10,
+         header line showing the live :query, then 30px rows. -->
+    <Border x:Name="Panel" CornerRadius="10" Padding="0"
+            Background="#F51F1F1F" BorderBrush="#26FFFFFF" BorderThickness="1">
+        <StackPanel>
+            <Border x:Name="HeaderBand" Height="26" Padding="10,0">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock x:Name="HeaderColon" Text=":" FontSize="12" FontWeight="Medium"
+                               FontFamily="Cascadia Mono, Consolas" Foreground="#FF9A9A9A" />
+                    <TextBlock x:Name="HeaderQuery" Text="" FontSize="12" FontWeight="Medium"
+                               FontFamily="Cascadia Mono, Consolas" Foreground="#FFE8E8E8" />
+                </StackPanel>
+            </Border>
+            <Border x:Name="HeaderDivider" Height="1" Background="#1AFFFFFF" />
+            <StackPanel x:Name="Items" Orientation="Vertical" Margin="4,4,4,4" />
+        </StackPanel>
     </Border>
 </Window>

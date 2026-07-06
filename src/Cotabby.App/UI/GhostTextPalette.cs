@@ -16,17 +16,24 @@ public static class GhostTextPalette
         public override string ToString() => Label;
     }
 
+    // The exact swatch set (and order) of the macOS GhostTextColorPreset list.
     public static readonly IReadOnlyList<Choice> Choices =
     [
-        new Choice("auto",   "Automatic (match system theme)"),
-        new Choice("gray",   "Gray",         Color.FromRgb(0x73, 0x73, 0x73)),
-        new Choice("blue",   "Blue",         Color.FromRgb(0x21, 0x59, 0xC8)),
-        new Choice("teal",   "Teal",         Color.FromRgb(0x14, 0x9A, 0x9A)),
-        new Choice("green",  "Green",        Color.FromRgb(0x2E, 0x8B, 0x57)),
-        new Choice("purple", "Purple",       Color.FromRgb(0x7E, 0x4B, 0xC1)),
-        new Choice("orange", "Orange",       Color.FromRgb(0xCC, 0x6E, 0x1A)),
-        new Choice("red",    "Red",          Color.FromRgb(0xC8, 0x3A, 0x3A)),
+        new Choice("auto",   "Automatic"),
+        new Choice("blue",   "Blue",   Color.FromRgb(0x3B, 0x82, 0xF6)),
+        new Choice("green",  "Green",  Color.FromRgb(0x22, 0xC5, 0x5E)),
+        new Choice("purple", "Purple", Color.FromRgb(0xA8, 0x55, 0xF7)),
+        new Choice("orange", "Orange", Color.FromRgb(0xF9, 0x73, 0x16)),
+        new Choice("pink",   "Pink",   Color.FromRgb(0xEC, 0x48, 0x99)),
+        new Choice("red",    "Red",    Color.FromRgb(0xEF, 0x44, 0x44)),
+        new Choice("yellow", "Yellow", Color.FromRgb(0xEA, 0xB3, 0x08)),
+        new Choice("teal",   "Teal",   Color.FromRgb(0x14, 0xB8, 0xA6)),
+        new Choice("cyan",   "Cyan",   Color.FromRgb(0x06, 0xB6, 0xD4)),
+        new Choice("indigo", "Indigo", Color.FromRgb(0x63, 0x66, 0xF1)),
     ];
+
+    /// <summary>Alias kept for settings-UI binding symmetry with the design spec.</summary>
+    public static IReadOnlyList<Choice> Presets => Choices;
 
     /// <summary>
     /// Resolve a stored id (or "#RRGGBB" hex) to a Color, falling back to null

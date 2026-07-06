@@ -118,14 +118,29 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     public bool AllowMultiLineSuggestions { get; set; } = true;
 
     /// <summary>
-    /// Optional alternate accept-key character (case-insensitive). When set,
-    /// pressing this printable character with a visible suggestion accepts
-    /// the suggestion exactly like Tab. The macOS port uses Backtick for
-    /// "accept whole suggestion"; on Windows the existing Tab path already
-    /// inserts the entire visible text, so binding Backtick here gives users
-    /// the same muscle memory.
+    /// Optional accept-whole-suggestion key character (case-insensitive).
+    /// Mirrors the macOS default of Backtick: pressing it with a visible
+    /// suggestion inserts the entire remaining text, while Tab honors
+    /// <see cref="AcceptanceGranularity"/>.
     /// </summary>
     public char? AlternateAcceptKey { get; set; }
+
+    /// <summary>
+    /// "word" (default) or "phrase". Governs how much of the suggestion a
+    /// Tab press takes; the alternate key always takes everything. Mirrors
+    /// the macOS AcceptanceGranularity setting.
+    /// </summary>
+    public string AcceptanceGranularity { get; set; } = "word";
+
+    /// <summary>When false, trailing punctuation is left as its own chunk on
+    /// word accepts. Mirrors macOS "Accept Punctuation With Word".</summary>
+    public bool AcceptPunctuationWithWord { get; set; } = true;
+
+    /// <summary>The user's name for persona conditioning. Flows into requests.</summary>
+    public string UserName { get; set; } = "";
+
+    /// <summary>Language conditioning sentence for the prompt preface.</summary>
+    public string LanguageInstruction { get; set; } = "";
 
     public void Start()
     {
@@ -210,11 +225,12 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             // insert something the user didn't accept. Stop the engine
             // immediately for the same reason.
             string textToInsert = Volatile.Read(ref _displayedTextSnapshot) ?? string.Empty;
+            bool whole = isAltAccept;
             _work.Cancel();
             _logger.LogInformation(
-                "Tab fast-path: snapshot len={Len} text=\"{Text}\" hex={Hex}",
-                textToInsert.Length, EscapeFull(textToInsert), HexDump(textToInsert));
-            Post(() => AcceptAsync(textToInsert).ContinueWith(LogFault, TaskScheduler.Default));
+                "Accept fast-path (whole={Whole}): snapshot len={Len} text=\"{Text}\"",
+                whole, textToInsert.Length, EscapeFull(textToInsert));
+            Post(() => AcceptAsync(textToInsert, whole).ContinueWith(LogFault, TaskScheduler.Default));
             return;
         }
 
@@ -238,7 +254,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                     // even though we missed the fast-path snapshot.
                     {
                         string acceptText = _displayedTextSnapshot ?? _session.VisibleText;
-                        AcceptAsync(acceptText).ContinueWith(LogFault, TaskScheduler.Default);
+                        AcceptAsync(acceptText, whole: false).ContinueWith(LogFault, TaskScheduler.Default);
                     }
                     return;
                 case SuggestionSessionReconciler.Outcome.AdvanceVisible when result.Next is { } next:
@@ -308,7 +324,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         // here; if the user keeps typing during the debounce window, Submit's
         // cancel-prior takes care of dropping the stale request.
         var request = SuggestionRequestFactory.Build(
-            fieldAtTrigger, reqId, MaxTokensSingleLine, MaxTokensMultiLine);
+            fieldAtTrigger, reqId, MaxTokensSingleLine, MaxTokensMultiLine,
+            UserName, LanguageInstruction);
 
         // Honor the "Allow multi-line suggestions" toggle by forcing the
         // single-line stop on multi-line fields when the user has opted out.
@@ -347,14 +364,15 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 var lastPosted = DateTime.MinValue;
                 var minInterval = TimeSpan.FromMilliseconds(50);
 
-                // Watchdog: cap any single generation at 4 seconds. Without
+                // Watchdog: cap any single generation at 10 seconds. Without
                 // this a hung engine call leaves _generationInFlight=true
                 // forever and the next keystroke is silently dropped — that's
                 // the "Notepad randomly stops showing suggestions" symptom.
-                // 4s comfortably covers prompt eval + 24-token decode on the
-                // 1.5B Q4 model on CPU; anything past that is a wedge to be
-                // killed, not a slow-but-recoverable generation.
-                using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+                // The engine surfaces its result as one final chunk, so the
+                // watchdog must cover a full 50-token decode on the slowest
+                // supported hardware (CPU-only laptop); anything past 10s is
+                // a wedge to be killed, not a slow-but-recoverable generation.
+                using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, watchdog.Token);
                 var combinedToken = linked.Token;
 
@@ -371,33 +389,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 chunkSeq++;
                 accumulated += chunk.Text;
 
-                // Defense-in-depth — guard a second time at the coordinator
-                // level. The engine has its own char-run + pattern + 80-char
-                // guards; if any of them fails (e.g. the engine yields a
-                // chunk that pushes accumulated past the limit) we still
-                // refuse to display or insert past 80 visible chars total
-                // and a 5+ same-char tail run.
-                if (accumulated.Length > 80)
-                {
-                    _logger.LogInformation("Req {ReqId}: coordinator hard-cap at {Len} chars; truncating.",
-                        reqId, accumulated.Length);
-                    accumulated = accumulated[..80];
-                    // Stop accumulating any further chunks for this request.
-                    combinedToken = new CancellationToken(true);
-                }
-                else
-                {
-                    int runStart = FindInteriorRunStart(accumulated, 4);
-                    if (runStart >= 0)
-                    {
-                        _logger.LogInformation(
-                            "Req {ReqId}: coordinator detected interior char run at {Idx}; truncating from {Old} → {New} chars.",
-                            reqId, runStart, accumulated.Length, runStart);
-                        accumulated = accumulated[..runStart].TrimEnd();
-                        combinedToken = new CancellationToken(true);
-                    }
-                }
-
+                // Quality gating happens in the engine (constrained decode +
+                // one-shot normalizer); the coordinator only keeps the
+                // insert-time StripDegenerateTail firewall. The old streaming
+                // hard-cap/char-run truncation belonged to the instruct-model
+                // era and silently dropped legitimate completions.
                 if (!chunk.IsFinal && string.IsNullOrEmpty(chunk.Text)) continue;
 
                 // Always Post the first chunk (so overlay appears ASAP) and the
@@ -495,7 +491,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         });
     }
 
-    private async Task AcceptAsync(string textToInsert)
+    private async Task AcceptAsync(string textToInsert, bool whole)
     {
         var session = _session;
         if (session is null)
@@ -519,58 +515,82 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
 
         // FINAL FIREWALL before SendInput. If by some path a degenerate
-        // suggestion slipped through both the engine and the coordinator's
-        // streaming guards, trim it here. Better to insert nothing than
-        // 30 consecutive 't's into the user's editor.
-        var text = StripDegenerateTail(textToInsert);
-        if (string.IsNullOrEmpty(text))
+        // suggestion slipped through the engine's guards, trim it here.
+        var visible = StripDegenerateTail(textToInsert);
+        if (string.IsNullOrEmpty(visible))
         {
             _logger.LogInformation("AcceptAsync: snapshot was all degenerate after trim, skip insert.");
             CancelSession("accepted");
             return;
         }
-        // Detailed monitoring: log BOTH what the snapshot held AND what we
-        // pass to the inserter, byte-for-byte. The user-visible "spliced
-        // suggestion" symptoms can be diagnosed by joining these against the
-        // SendInput delivery count in the inserter log.
-        _logger.LogInformation("AcceptAsync: snapshot=\"{Snap}\" trimmed=\"{Trim}\" hex={Hex}",
-            EscapeFull(textToInsert), EscapeFull(text), HexDump(text));
-        CancelSession("accepted");
+
+        // Chunking mirrors the macOS acceptance model: Tab takes one word (or
+        // phrase), the alternate key takes the whole remaining suggestion.
+        string chunk = whole
+            ? visible
+            : AcceptanceGranularity == "phrase"
+                ? SuggestionSessionReconciler.NextAcceptancePhrase(visible, AcceptPunctuationWithWord)
+                : SuggestionSessionReconciler.NextAcceptanceChunk(visible, AcceptPunctuationWithWord);
+        if (chunk.Length == 0) chunk = visible;
+        string remaining = visible[chunk.Length..];
+
+        var caret = Math.Clamp(field.CaretOffset, 0, field.Text.Length);
+        string livePreceding = field.Text[..caret];
+        string insertion = SuggestionSessionReconciler.InsertionChunk(chunk, livePreceding);
+
+        _logger.LogInformation(
+            "AcceptAsync: whole={Whole} chunk=\"{Chunk}\" insertion=\"{Ins}\" remaining={Rem} chars.",
+            whole, EscapeFull(chunk), EscapeFull(insertion), remaining.Length);
+
+        bool exhausted = remaining.Trim().Length == 0;
+        if (exhausted)
+        {
+            CancelSession("accepted");
+        }
+        else
+        {
+            // Advance the session in place: the un-accepted tail stays as
+            // ghost text and the next Tab keeps consuming it.
+            _session = session with
+            {
+                VisibleText = remaining,
+                ConsumedChars = session.ConsumedChars + chunk.Length,
+            };
+            Volatile.Write(ref _displayedTextSnapshot, remaining);
+            _overlay.Update(remaining);
+        }
+
         try
         {
-            var ok = await _inserter.InsertAsync(field, text, CancellationToken.None).ConfigureAwait(false);
-            _logger.LogInformation("AcceptAsync: inserter returned ok={Ok}", ok);
+            if (insertion.Length > 0)
+            {
+                var ok = await _inserter.InsertAsync(field, insertion, CancellationToken.None).ConfigureAwait(false);
+                _logger.LogInformation("AcceptAsync: inserter returned ok={Ok}", ok);
+            }
 
-            // Verify what actually landed in the host. Give the host's input
-            // queue ~30ms to publish the WM_CHARs back into AX/UIA, then re-read
-            // the focused field. The diff between {inserted, prefixBefore} and
-            // {afterText} is the actual on-screen result — if it differs from
-            // what we tried to type, the bug isn't in the coordinator/snapshot
-            // but in SendInput delivery or host re-interpretation.
+            // Give the host ~60ms to publish the inserted text back into UIA,
+            // then re-read the caret so the remaining ghost text re-anchors
+            // where the user now is (or, when exhausted, so the next
+            // suggestion can flow immediately — the upstream post-exhaustion
+            // continuation).
             await Task.Delay(60).ConfigureAwait(false);
-            try
+            Post(() =>
             {
                 var after = _focus.Refresh();
-                if (after is not null)
+                if (after is null) return;
+                if (!exhausted && _session is { } live && live.RequestId == session.RequestId)
                 {
-                    int prefixLen = field.Text.Length;
-                    string tail = after.Text.Length > prefixLen
-                        ? after.Text[prefixLen..Math.Min(after.Text.Length, prefixLen + text.Length + 32)]
-                        : "";
-                    _logger.LogInformation(
-                        "AcceptAsync: post-insertion verify pid={Pid} hostTextLen={Len} caret={Caret} tailAfterInsert=\"{Tail}\" hex={Hex}",
-                        after.ProcessId, after.Text.Length, after.CaretOffset,
-                        EscapeFull(tail), HexDump(tail));
+                    if (!after.CaretRect.IsEmpty)
+                    {
+                        _session = live with { AnchorRect = after.CaretRect };
+                        _overlay.Show(live.VisibleText, after.CaretRect);
+                    }
                 }
-                else
+                else if (exhausted && _enabled)
                 {
-                    _logger.LogInformation("AcceptAsync: post-insertion verify FAILED — no focused field returned.");
+                    TriggerGeneration(after);
                 }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "AcceptAsync: post-insertion verify threw.");
-            }
+            });
         }
         catch (Exception ex)
         {

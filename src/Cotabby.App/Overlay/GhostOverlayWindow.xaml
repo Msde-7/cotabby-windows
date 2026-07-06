@@ -27,10 +27,10 @@
                    VerticalAlignment="Center" />
         <Border x:Name="TabKeycap"
                 Margin="6,0,0,0"
-                Padding="5,1"
-                CornerRadius="4"
-                Background="#33FFFFFF"
-                BorderBrush="#55FFFFFF"
+                Padding="5,2"
+                CornerRadius="6"
+                Background="#2E2E2E"
+                BorderBrush="#4D4D4D"
                 BorderThickness="1"
                 VerticalAlignment="Center">
             <TextBlock x:Name="TabKeycapLabel"

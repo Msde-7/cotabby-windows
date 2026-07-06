@@ -40,6 +40,11 @@ public partial class EmojiPopupWindow : Window
         };
     }
 
+    /// <summary>System accent stand-in — the macOS picker highlights the
+    /// selected row with the OS accent; we hardcode the same blue the rest of
+    /// the port uses.</summary>
+    private static readonly Color Accent = Color.FromRgb(0x00, 0x7A, 0xFF);
+
     public void Show(IReadOnlyList<EmojiEntry> matches, string query, ScreenRect anchor, int selectedIdx)
     {
         if (!Dispatcher.CheckAccess())
@@ -47,18 +52,31 @@ public partial class EmojiPopupWindow : Window
             Dispatcher.BeginInvoke(() => Show(matches, query, anchor, selectedIdx));
             return;
         }
+        bool dark = IsSystemInDarkMode();
+        Panel.Background = new SolidColorBrush(dark
+            ? Color.FromArgb(0xF5, 0x1F, 0x1F, 0x1F)
+            : Color.FromArgb(0xF7, 0xFA, 0xFA, 0xFA));
+        Panel.BorderBrush = new SolidColorBrush(dark
+            ? Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF)
+            : Color.FromArgb(0x1A, 0x00, 0x00, 0x00));
+        HeaderDivider.Background = Panel.BorderBrush;
+        var primary = dark ? Color.FromRgb(0xE8, 0xE8, 0xE8) : Color.FromRgb(0x1D, 0x1D, 0x1F);
+        var secondary = dark ? Color.FromRgb(0x9A, 0x9A, 0x9A) : Color.FromRgb(0x6E, 0x6E, 0x73);
+        HeaderColon.Foreground = new SolidColorBrush(secondary);
+        HeaderQuery.Foreground = new SolidColorBrush(primary);
+        HeaderQuery.Text = query;
+
         Items.Children.Clear();
         if (matches.Count == 0)
         {
-            var hint = new TextBlock
+            Items.Children.Add(new TextBlock
             {
-                Text = $":{query} (no match)",
-                Foreground = new SolidColorBrush(Color.FromArgb(0xAA, 0xCC, 0xCC, 0xCC)),
+                Text = "No emoji found",
+                Foreground = new SolidColorBrush(secondary),
                 FontFamily = new FontFamily("Segoe UI"),
                 FontSize = 12,
-                Margin = new Thickness(8, 4, 8, 4),
-            };
-            Items.Children.Add(hint);
+                Margin = new Thickness(8, 6, 8, 6),
+            });
         }
         else
         {
@@ -69,27 +87,30 @@ public partial class EmojiPopupWindow : Window
 
                 var row = new Border
                 {
-                    Padding = new Thickness(8, 4, 12, 4),
-                    CornerRadius = new CornerRadius(4),
-                    Background = isSel
-                        ? new SolidColorBrush(Color.FromArgb(0x55, 0x21, 0x59, 0xC8))
-                        : Brushes.Transparent,
-                    Margin = new Thickness(0, 1, 0, 1),
+                    Height = 30,
+                    Padding = new Thickness(8, 0, 10, 0),
+                    CornerRadius = new CornerRadius(6),
+                    Background = isSel ? new SolidColorBrush(Accent) : Brushes.Transparent,
                 };
-                var stack = new StackPanel { Orientation = Orientation.Horizontal };
+                var stack = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
                 stack.Children.Add(new TextBlock
                 {
                     Text = entry.Glyph,
                     FontFamily = new FontFamily("Segoe UI Emoji"),
-                    FontSize = 16,
+                    FontSize = 18,
                     Margin = new Thickness(0, 0, 8, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
                 });
                 stack.Children.Add(new TextBlock
                 {
-                    Text = ":" + entry.Name,
-                    Foreground = new SolidColorBrush(Color.FromArgb(0xEE, 0xE0, 0xE0, 0xE0)),
+                    Text = ":" + entry.Name + ":",
+                    Foreground = new SolidColorBrush(isSel ? Colors.White : primary),
                     FontFamily = new FontFamily("Segoe UI"),
-                    FontSize = 12,
+                    FontSize = 13,
                     VerticalAlignment = VerticalAlignment.Center,
                 });
                 row.Child = stack;
@@ -101,6 +122,17 @@ public partial class EmojiPopupWindow : Window
         if (_source is null) base.Show();
         UpdateLayout();
         PositionAt(anchor);
+    }
+
+    private static bool IsSystemInDarkMode()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("AppsUseLightTheme") is int v && v == 0;
+        }
+        catch (Exception) { return false; }
     }
 
     public new void Hide()

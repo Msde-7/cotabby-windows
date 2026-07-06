@@ -47,16 +47,14 @@ public class SuggestionRequestFactoryTests
     }
 
     [Fact]
-    public void PrefixWindowedTo512Chars()
+    public void PrefixWindowedTo1000Chars()
     {
-        // The prefix window is sized to the LLamaSharp StatelessExecutor's
-        // per-call prompt-eval cost on CPU; see SuggestionRequestFactory.
-        // Tracking the constant in a test keeps an accidental regression
-        // back to a multi-second prompt eval visible.
+        // Mirrors the upstream llama-path maxPrefixCharacters = 1000. The
+        // engine word-windows further (last 50 words) before prompting.
         var s = new string('a', 5000);
         var f = Field(s, caret: s.Length);
         var r = SuggestionRequestFactory.Build(f, "req");
-        Assert.Equal(512, r.Prefix.Length);
+        Assert.Equal(1000, r.Prefix.Length);
     }
 
     [Fact]

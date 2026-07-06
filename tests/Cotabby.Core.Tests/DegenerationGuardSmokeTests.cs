@@ -1,56 +1,124 @@
-using System.Reflection;
-using System.Text;
-using Cotabby.Inference;
+using Cotabby.Core.Support;
 using Xunit;
 
 namespace Cotabby.Core.Tests;
 
-// The degeneration detectors live in Cotabby.Inference but are pure functions
-// that need fast feedback. Reflect into them so the unit tests don't require
-// an LLM to run.
+/// <summary>
+/// Guards against degenerate output in the ported pipeline: the token-level
+/// no-repeat-3-gram guard and the one-shot normalizer replace the old
+/// char-run string heuristics.
+/// </summary>
 public class DegenerationGuardSmokeTests
 {
-    private static readonly MethodInfo HasLongCharRunMethod = typeof(LlamaSuggestionEngine)
-        .GetMethod("HasLongCharRun", BindingFlags.NonPublic | BindingFlags.Static)!;
-    private static readonly MethodInfo HasRepeatingPatternMethod = typeof(LlamaSuggestionEngine)
-        .GetMethod("HasRepeatingPattern", BindingFlags.NonPublic | BindingFlags.Static)!;
+    // ---- RepetitionGuard ---------------------------------------------------
 
-    private static bool HasLongCharRun(string s, int threshold = 8) =>
-        (bool)HasLongCharRunMethod.Invoke(null, new object[] { new StringBuilder(s), threshold })!;
-
-    private static bool HasRepeatingPattern(string s) =>
-        (bool)HasRepeatingPatternMethod.Invoke(null, new object[] { new StringBuilder(s), 40, 3 })!;
-
-    [Fact] public void ShortString_NoCharRun()
-        => Assert.False(HasLongCharRun("hello"));
-
-    [Fact] public void LongA_Run_Detected()
-        => Assert.True(HasLongCharRun("hello aaaaaaaaaaaa"));
-
-    [Fact] public void WhitespaceRun_NotFlagged()
-        => Assert.False(HasLongCharRun("def foo():\n            return"));
-
-    [Fact] public void TwelveSpaces_NotFlagged_PythonIndent()
-        => Assert.False(HasLongCharRun("                "));
-
-    [Fact] public void NewlineRun_NotFlagged()
-        => Assert.False(HasLongCharRun("\n\n\n\n\n\n\n\n\n\n\n"));
-
-    [Fact] public void NoPattern_ShortText()
-        => Assert.False(HasRepeatingPattern("hi my name is gabe"));
-
-    [Fact] public void TwoRepetitions_NotFlagged()
-        => Assert.False(HasRepeatingPattern("hi my name is gabe hi my name is gabe"));
-
-    [Fact] public void ThreeRepetitions_Flagged()
-        => Assert.True(HasRepeatingPattern("hi my name is gabe hi my name is gabe hi my name is gabe"));
-
-    [Fact] public void ThreeShortRepetitions_Flagged()
-        => Assert.True(HasRepeatingPattern("foo foo foo "));
-
-    [Fact] public void LegitimateClosingParens_NotFlagged()
+    [Fact]
+    public void RepetitionGuard_BlocksTokenThatWouldRepeatTrigram()
     {
-        // Two closing parens should NOT be flagged as a repeating pattern.
-        Assert.False(HasRepeatingPattern("def f(g(h(i)))"));
+        // History: [1,2,3,1,2] — prefix (1,2) previously continued with 3.
+        var blocked = RepetitionGuard.BlockedTokens([1, 2, 3, 1, 2]);
+        Assert.Contains(3, blocked);
+    }
+
+    [Fact]
+    public void RepetitionGuard_NoBlocksOnShortHistory()
+    {
+        Assert.Empty(RepetitionGuard.BlockedTokens([7]));
+    }
+
+    [Fact]
+    public void RepetitionGuard_DifferentPrefixNotBlocked()
+    {
+        var blocked = RepetitionGuard.BlockedTokens([1, 2, 3, 4, 5]);
+        Assert.Empty(blocked);
+    }
+
+    // ---- Normalizer: chat-scaffolding & degenerate output -------------------
+
+    [Fact]
+    public void Normalizer_StripsThinkBlocks()
+    {
+        var r = SuggestionTextNormalizer.Normalize(
+            "<think>reasoning here</think> the actual continuation",
+            prompt: "p", precedingText: "Hello ", trailingText: "", singleLine: true);
+        Assert.Equal("the actual continuation", r.Text);
+    }
+
+    [Fact]
+    public void Normalizer_StripsScaffoldingLabels()
+    {
+        var r = SuggestionTextNormalizer.Normalize(
+            "Continuation: rest of the sentence",
+            prompt: "p", precedingText: "Some text", trailingText: "", singleLine: true);
+        Assert.Equal("rest of the sentence", r.Text.Trim());
+    }
+
+    [Fact]
+    public void Normalizer_SingleLineCutsAtFirstNewline()
+    {
+        var r = SuggestionTextNormalizer.Normalize(
+            "first line\nsecond line",
+            prompt: "p", precedingText: "x", trailingText: "", singleLine: true);
+        Assert.Equal("first line", r.Text);
+    }
+
+    [Fact]
+    public void Normalizer_MultiLineCutsAtBlankLine()
+    {
+        var r = SuggestionTextNormalizer.Normalize(
+            "para one line one\npara one line two\n\npara two",
+            prompt: "unrelated prompt", precedingText: "x", trailingText: "", singleLine: false);
+        Assert.Equal("para one line one\npara one line two", r.Text);
+    }
+
+    [Fact]
+    public void Normalizer_SuppressesTrailingDuplication()
+    {
+        var r = SuggestionTextNormalizer.Normalize(
+            "world peace",
+            prompt: "p", precedingText: "hello ", trailingText: "world peace now", singleLine: true);
+        Assert.True(r.IsSuppressed);
+        Assert.Equal(SuppressionReason.DuplicatesTrailingText, r.Reason);
+    }
+
+    [Fact]
+    public void Normalizer_StripsEchoOfPrecedingWords()
+    {
+        var r = SuggestionTextNormalizer.Normalize(
+            "quick brown fox jumps high",
+            prompt: "p", precedingText: "the quick brown fox", trailingText: "", singleLine: true);
+        Assert.Equal("jumps high", r.Text);
+    }
+
+    [Fact]
+    public void Normalizer_RejectsReplacementCharacter()
+    {
+        var r = SuggestionTextNormalizer.Normalize(
+            "abc�def",
+            prompt: "p", precedingText: "x", trailingText: "", singleLine: true);
+        Assert.True(r.IsSuppressed);
+    }
+
+    [Fact]
+    public void Normalizer_DropsLeadingSpaceAfterTrailingWhitespace()
+    {
+        var r = SuggestionTextNormalizer.Normalize(
+            " next words",
+            prompt: "p", precedingText: "typed ", trailingText: "", singleLine: true);
+        Assert.Equal("next words", r.Text);
+    }
+
+    // ---- Sentence boundary --------------------------------------------------
+
+    [Theory]
+    [InlineData("This is done.", true)]
+    [InlineData("Really?", true)]
+    [InlineData("Version 3.", false)]  // digit before period
+    [InlineData("Dr.", false)]         // abbreviation
+    [InlineData("J.", false)]          // single-letter initial
+    [InlineData("no terminator", false)]
+    public void SentenceBoundary_Classifies(string text, bool expected)
+    {
+        Assert.Equal(expected, SentenceBoundaryClassifier.EndsSentence(text));
     }
 }

@@ -12,10 +12,12 @@ public sealed record SuggestionRequest
     /// <summary>Correlation id for log joining across coordinator → engine → host.</summary>
     public required string RequestId { get; init; }
 
-    /// <summary>The full prefix that should precede the suggestion.</summary>
+    /// <summary>The raw text preceding the caret (windowed to ~1000 chars).
+    /// The engine word-windows and renders this into the prompt.</summary>
     public required string Prefix { get; init; }
 
-    /// <summary>Best-effort suffix for fill-in-middle prompts. Empty if unavailable.</summary>
+    /// <summary>Raw text following the caret (windowed). Drives fill-in-middle
+    /// and the trailing-duplication filter.</summary>
     public required string Suffix { get; init; }
 
     /// <summary>Host process name. Used for app-specific style hints.</summary>
@@ -26,6 +28,12 @@ public sealed record SuggestionRequest
 
     /// <summary>Maximum number of tokens the engine should emit.</summary>
     public required int MaxTokens { get; init; }
+
+    /// <summary>The user's name for the persona conditioning line, or empty.</summary>
+    public string UserName { get; init; } = "";
+
+    /// <summary>Language conditioning sentence for the prompt preface, or empty.</summary>
+    public string LanguageInstruction { get; init; } = "";
 }
 
 /// <summary>One incremental suggestion chunk streamed back from the engine.</summary>

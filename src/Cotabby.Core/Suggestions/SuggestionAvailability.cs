@@ -27,7 +27,12 @@ public static class SuggestionAvailability
     {
         if (field is null) return false;
         if (field.IsSecure) return false;
-        if (field.Text.Length == 0) return false; // need at least some prefix
+        // Never suggest into our own windows (settings, welcome wizard,
+        // emoji popup) — ghost text over Cotabby's own text boxes is both
+        // useless and confusing. The macOS app has the same self-exclusion.
+        if (field.ProcessId == Environment.ProcessId) return false;
+        // Upstream gate: at least one non-whitespace character in the field.
+        if (string.IsNullOrWhiteSpace(field.Text)) return false;
         if (ev.HasNonShiftModifier) return false;
         if (!ev.IsKeyDown) return false;
         if (blockedApps is not null

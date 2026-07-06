@@ -55,6 +55,7 @@ public sealed class TrayController : IDisposable
             var item = new MenuItem
             {
                 Header = model.DisplayName,
+                ToolTip = model.Subtitle,
                 IsCheckable = true,
                 IsChecked = model.Id == host.Settings.ActiveModelId,
                 Tag = model.Id,
@@ -254,22 +255,32 @@ public sealed class TrayController : IDisposable
 
     private static void TrySetIcon(TaskbarIcon tray)
     {
-        // Always generate a programmatic icon. ExtractAssociatedIcon returns the
-        // generic app icon when the exe has no embedded icon, which looks like
-        // every other random .NET process — easy to miss in the system tray.
+        // Prefer the real Cotabby app icon (the peeking cat, embedded as a WPF
+        // resource); fall back to a drawn placeholder so a packaging mistake
+        // never leaves the tray icon invisible.
         try
         {
-            tray.Icon = BuildBrandIcon();
+            var res = System.Windows.Application.GetResourceStream(
+                new Uri("pack://application:,,,/Assets/Cotabby.ico"));
+            if (res is not null)
+            {
+                using var stream = res.Stream;
+                tray.Icon = new Icon(stream);
+                return;
+            }
+        }
+        catch (Exception) { /* fall through to the placeholder */ }
+
+        try
+        {
+            tray.Icon = BuildFallbackIcon();
         }
         catch (Exception) { /* H.NotifyIcon falls back to its default */ }
     }
 
-    /// <summary>
-    /// Render a 32×32 dark-blue rounded square with a white "C" — works on both
-    /// light and dark Windows themes and is distinguishable from the generic
-    /// .NET diamond.
-    /// </summary>
-    private static Icon BuildBrandIcon()
+    /// <summary>Blue rounded square with a white "C" — only used if the real
+    /// icon resource failed to load.</summary>
+    private static Icon BuildFallbackIcon()
     {
         using var bmp = new Bitmap(32, 32);
         using (var g = Graphics.FromImage(bmp))

@@ -120,6 +120,11 @@ public sealed class AppHost : IAsyncDisposable
         Coordinator.MaxTokensMultiLine = multi;
         Coordinator.AllowMultiLineSuggestions = Settings.AllowMultiLine;
         Coordinator.AlternateAcceptKey = ParseAlternateAcceptKey(Settings.AcceptSuggestionKey);
+        Coordinator.AcceptanceGranularity = Settings.AcceptanceMode == "phrase" ? "phrase" : "word";
+        Coordinator.AcceptPunctuationWithWord = Settings.AcceptPunctuationWithWord;
+        Coordinator.UserName = Settings.UserName;
+        Coordinator.LanguageInstruction =
+            Cotabby.Core.Support.BaseCompletionPromptRenderer.LanguageInstruction(Settings.Languages) ?? "";
 
         if (EmojiPicker is not null)
         {

@@ -5,9 +5,9 @@ using Cotabby.Core.Suggestions;
 using Cotabby.Inference;
 using Microsoft.Extensions.Logging;
 
-// One-shot end-to-end verification of the inference path. Downloads the smallest
-// Qwen2.5-Coder model if not cached, loads it, runs a single generation against
-// a fixed prefix, and prints the streamed output. Intended for CI / manual
+// One-shot end-to-end verification of the inference path. Downloads the
+// default catalog model if not cached, loads it, runs a single generation
+// against a fixed prefix, and prints the output. Intended for CI / manual
 // "does the inference layer actually work" checks.
 
 using var loggerFactory = LoggerFactory.Create(b =>

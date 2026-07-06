@@ -209,10 +209,12 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         }
 
         double caretHeightDip = caretHeightPx / scale;
-        // 0.78 matches the macOS GhostSuggestionView ratio: font_size = line_height * 0.78.
-        double fontSize = Math.Clamp(caretHeightDip * 0.78, 12, 22);
+        // 0.78 matches the macOS GhostSuggestionView ratio: font_size =
+        // line_height * 0.78, clamped to the same 14–24 range.
+        double fontSize = Math.Clamp(caretHeightDip * 0.78, 14, 24);
         GhostText.FontSize = Math.Round(fontSize, 1);
-        TabKeycapLabel.FontSize = Math.Max(9, fontSize - 4);
+        // The keycap stays a fixed small chip like the macOS GhostKeycap.
+        TabKeycapLabel.FontSize = 10;
     }
 
     private void ApplyThemePalette()
@@ -231,17 +233,19 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         GhostText.Foreground = new SolidColorBrush(Color.FromArgb(alpha,
             textColor.R, textColor.G, textColor.B));
 
+        // Exact macOS GhostKeycap palette: dark {text #A6A6A6, fill #2E2E2E,
+        // border #4D4D4D}; light {text #737373, fill #F2F2F2, border #CCCCCC}.
         if (darkMode)
         {
-            TabKeycap.Background = new SolidColorBrush(Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF));
-            TabKeycap.BorderBrush = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF));
-            TabKeycapLabel.Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF));
+            TabKeycap.Background = new SolidColorBrush(Color.FromRgb(0x2E, 0x2E, 0x2E));
+            TabKeycap.BorderBrush = new SolidColorBrush(Color.FromRgb(0x4D, 0x4D, 0x4D));
+            TabKeycapLabel.Foreground = new SolidColorBrush(Color.FromRgb(0xA6, 0xA6, 0xA6));
         }
         else
         {
-            TabKeycap.Background = new SolidColorBrush(Color.FromArgb(0x33, 0x00, 0x00, 0x00));
-            TabKeycap.BorderBrush = new SolidColorBrush(Color.FromArgb(0x55, 0x00, 0x00, 0x00));
-            TabKeycapLabel.Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0x55, 0x55, 0x55));
+            TabKeycap.Background = new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF2));
+            TabKeycap.BorderBrush = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC));
+            TabKeycapLabel.Foreground = new SolidColorBrush(Color.FromRgb(0x73, 0x73, 0x73));
         }
     }
 

@@ -7,34 +7,36 @@ using Microsoft.Extensions.Logging;
 namespace Cotabby.Inference;
 
 /// <summary>
-/// Owns the lifecycle of a single in-memory LLamaSharp <see cref="LLamaWeights"/> +
-/// <see cref="StatelessExecutor"/> pair. Mirrors the macOS port's
+/// Owns the lifecycle of a single in-memory <see cref="LLamaWeights"/> plus a
+/// persistent <see cref="LlamaRuntimeCore"/>. Mirrors the macOS port's
 /// <c>LlamaRuntimeManager</c> + <c>LlamaRuntimeCore</c> split: this type is the
-/// public, observable face; the loaded resources are guarded by a single
-/// semaphore so concurrent calls into the executor are serialized.
+/// public, observable face; the core serializes access to the llama context.
 /// </summary>
 public sealed class LlamaRuntimeManager : IAsyncDisposable
 {
     private readonly ILogger<LlamaRuntimeManager> _logger;
+    private readonly ILoggerFactory _loggerFactory;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private LLamaWeights? _weights;
-    private StatelessExecutor? _executor;
-    private ModelParams? _params;
+    private LlamaRuntimeCore? _core;
     private CotabbyModel? _activeModel;
     private bool _disposed;
 
-    public LlamaRuntimeManager(ILogger<LlamaRuntimeManager> logger) => _logger = logger;
+    public LlamaRuntimeManager(ILogger<LlamaRuntimeManager> logger, ILoggerFactory? loggerFactory = null)
+    {
+        _logger = logger;
+        _loggerFactory = loggerFactory ?? Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance;
+    }
 
     /// <summary>The model currently resident in memory, or null if none.</summary>
     public CotabbyModel? ActiveModel => _activeModel;
 
     /// <summary>True if a model is loaded and ready to generate.</summary>
-    public bool IsReady => _executor is not null && _weights is not null;
+    public bool IsReady => _core is not null;
 
-    /// <summary>Resolved file path for the model. Used by the suggestion engine.</summary>
-    internal StatelessExecutor? Executor => _executor;
-    internal ModelParams? Params => _params;
+    /// <summary>The persistent decode core. Null until a model is loaded.</summary>
+    public LlamaRuntimeCore? Core => _core;
 
     /// <summary>
     /// Load <paramref name="model"/> from <paramref name="path"/>. Unloads any
@@ -57,20 +59,19 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
 
             var sw = Stopwatch.StartNew();
             // Reserve one logical core for the UI/UIA pump so prompt eval never
-            // starves keystroke delivery — sustained 100% saturation on every
-            // core is the symptom users see as "the app freezes while typing"
-            // even though the engine is just hot. BatchSize 256 gives a decent
-            // chunk for prompt prefill on small prompts (Qwen 1.5B Q4 evaluates
-            // ~150 tokens of prefix in ~120ms at this batch on a modern CPU).
+            // starves keystroke delivery when we run on CPU.
             int threads = Math.Max(1, Environment.ProcessorCount - 1);
             var parameters = new ModelParams(path)
             {
                 ContextSize = (uint)model.ContextLength,
-                GpuLayerCount = 0,
+                // Offload every layer when a GPU backend (Vulkan) is present —
+                // mirrors the macOS port's gpuLayerCount -1 (full Metal
+                // offload). The CPU backend ignores this.
+                GpuLayerCount = 999,
                 Threads = threads,
                 BatchThreads = threads,
-                BatchSize = 256,
-                UBatchSize = 256,
+                BatchSize = 512,
+                UBatchSize = 512,
             };
 
             _logger.LogInformation(
@@ -78,16 +79,31 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
                 model.Id, path, model.ContextLength);
 
             var weights = await LLamaWeights.LoadFromFileAsync(parameters, ct).ConfigureAwait(false);
-            var executor = new StatelessExecutor(weights, parameters);
+            // The context is created ONCE and lives for the whole model
+            // residency — context creation costs seconds on Vulkan (pipeline
+            // compilation), which is why the per-request StatelessExecutor
+            // approach felt so slow.
+            var context = weights.CreateContext(parameters, _loggerFactory.CreateLogger<LLamaContext>());
+            var core = new LlamaRuntimeCore(weights, context, _loggerFactory.CreateLogger<LlamaRuntimeCore>());
+
+            // Warm the decode path now: the first generation on a fresh Vulkan
+            // context compiles shaders and reserves buffers (~2-4s). Paying
+            // that at load keeps the first real suggestion inside its latency
+            // budget.
+            var warmupTokens = core.TokenizeText("Hello", addBos: core.Vocab.ShouldAddBOS);
+            _ = await core.GenerateAsync(
+                warmupTokens,
+                new LlamaGenerationOptions { MaxTokens = 4, SingleLine = true },
+                ct).ConfigureAwait(false);
 
             _weights = weights;
-            _executor = executor;
-            _params = parameters;
+            _core = core;
             _activeModel = model;
 
             sw.Stop();
             _logger.LogInformation(
-                "Model {Model} loaded in {Ms} ms.", model.Id, sw.ElapsedMilliseconds);
+                "Model {Model} loaded in {Ms} ms (fim={Fim}).",
+                model.Id, sw.ElapsedMilliseconds, core.SupportsFillInMiddle);
         }
         finally
         {
@@ -105,13 +121,13 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
 
     private void UnloadInternal()
     {
-        _executor = null;
+        _core?.Dispose();
+        _core = null;
         if (_weights is not null)
         {
             _weights.Dispose();
             _weights = null;
         }
-        _params = null;
         _activeModel = null;
     }
 

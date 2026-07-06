@@ -13,21 +13,45 @@ suggestions on `Tab`. This port replaces that stack with WPF, UI Automation (UIA
 ## What you get
 
 - **System-wide ghost text** — works in any focused text field exposed via UI Automation
-  (Notepad, VS Code, Slack, Discord, Outlook, browser inputs, …). Press `Tab` to accept.
+  (Notepad, VS Code, Slack, Discord, Outlook, browser inputs, …).
+- **Word-by-word acceptance** — press `Tab` to take the next word (or whole phrase, in
+  phrase mode) and keep pressing to take more, exactly like the macOS app; press
+  `` ` `` (backtick) to take the entire suggestion at once.
+- **The same models as upstream** — the four `tabby-2-*` *base* checkpoints
+  (Qwen3.5 0.8B/2B Base, Gemma 4 E2B/E4B from mradermacher). Base models continue
+  your text instead of chatting at it, which is what makes the suggestions read
+  like *your* next words.
+- **The upstream prompt pipeline** — persona ("Written by <you>."), language
+  conditioning, budgeted context sections, greedy constrained decode with a
+  no-repeat-3-gram guard, sentence-boundary stops, and a one-shot normalizer
+  (prompt-echo strip, trailing-duplication filter, insertion safety gate).
+- **GPU inference** — llama.cpp's Vulkan backend offloads every layer to your GPU
+  (NVIDIA/AMD/Intel); falls back to CPU automatically. A persistent context keeps
+  time-to-suggestion in the low hundreds of milliseconds.
 - **Inline `:emoji:` autocomplete** — type `:smile`, `:tada`, `:+1` and a small popup
   shows matching glyphs; close the trigger with `:` to commit.
-- **First-run welcome wizard** — five quick steps that capture name, languages,
-  completion length preset, model choice, and a few defaults (skip to keep defaults).
-- **Settings window with parity panes** — General, Engine & model, Writing, Shortcuts,
-  Apps (per-app blocklist), Advanced (debounce, paths, open log/models), About.
+- **First-run welcome wizard** — mirrors the macOS onboarding: template cards
+  (Quick / Everyday / Powerful), profile, keybinds, model download.
+- **Settings window with parity panes** — sidebar navigation like the macOS app:
+  General, Engine & Model, Writing, Shortcuts, Apps, Advanced, About.
 - **Launch at login** — opt-in via the General pane; written to `HKCU\…\Run` so no
   admin is required.
-- **Customizable ghost text** — color preset palette, opacity slider, optional `Tab`
-  hint chip; automatic light/dark theme follow.
-- **Configurable acceptance** — `Tab` is always bound; you can add an alternate key
-  (e.g. backtick) when `Tab` clashes with the host app.
+- **Customizable ghost text** — the upstream color preset palette, opacity slider,
+  optional `Tab` hint chip; automatic light/dark theme follow.
 - **All inference local** — llama.cpp via LLamaSharp; no network calls except the
   one-time model download from Hugging Face. No telemetry.
+
+## Models
+
+| Model          | File                             | Size    | Notes                        |
+| -------------- | -------------------------------- | ------- | ---------------------------- |
+| `tabby-2-nano` | `Qwen3.5-0.8B-Base.i1-Q6_K.gguf` | ~0.6 GB | fastest, low-memory          |
+| `tabby-2-mini` | `Qwen3.5-2B-Base.i1-Q4_K_M.gguf` | ~1.3 GB | recommended default          |
+| `tabby-2-base` | `gemma-4-E2B.i1-Q6_K.gguf`       | ~3.9 GB | higher quality               |
+| `tabby-2-pro`  | `gemma-4-E4B.i1-Q4_K_M.gguf`     | ~5.3 GB | best quality, needs 16 GB+   |
+
+Same Hugging Face artifacts as the macOS app, so the two ports can share a cache.
+Qwen3.5 models also support fill-in-middle (used when the caret is mid-line).
 
 ## Stack
 
@@ -96,19 +120,22 @@ Open them from `Tray → Settings… → Advanced` (each has a one-click "Open" 
 
 | Area                              | Windows port              |
 |-----------------------------------|---------------------------|
+| Base-model catalog (`tabby-2-nano/mini/base/pro`) | ✅ same artifacts |
+| Base-completion prompt pipeline (persona / language / budgeted sections) | ✅ |
+| Constrained greedy decode (top-20 argmax, no-repeat-3-gram, sentence stops) | ✅ |
+| One-shot output normalizer (echo strip, dup filter, safety gate) | ✅ |
+| Fill-in-middle for mid-line carets | ✅ (Qwen3.5 models)       |
+| Word-by-word / phrase acceptance   | ✅ (`Tab`, mode in Shortcuts) |
+| Accept-whole key                   | ✅ (`` ` `` backtick default) |
 | Ghost text overlay (color/opacity, hint chip, theme-aware) | ✅ |
-| Settings window (General / Engine & model / Writing / Shortcuts / Apps / Advanced / About) | ✅ |
-| First-run welcome wizard           | ✅                        |
+| Settings window (sidebar: General / Engine & Model / Writing / Shortcuts / Apps / Advanced / About) | ✅ |
+| First-run welcome wizard (template cards) | ✅                 |
 | Inline `:emoji:` autocomplete      | ✅ (built-in catalog)     |
 | Per-app blocklist                  | ✅                        |
 | Launch at login                    | ✅ (HKCU Run key)         |
-| Completion length presets          | ✅                        |
-| Allow multi-line / single-line     | ✅                        |
-| Alternate accept key (e.g. backtick) | ✅                      |
-| Tab accept                         | ✅                        |
-| Word-by-word vs whole acceptance   | Whole only on Windows     |
+| Completion length presets (2–4 / 4–7 / 7–12 / 12–20 words) | ✅ |
+| GPU offload                        | ✅ Vulkan (vs Metal)      |
 | Apple Intelligence engine          | n/a (llama.cpp only)      |
-| Foundation Models routing          | n/a                       |
 | Visual-context / screenshot OCR    | not yet                   |
 | Custom rules editor                | not yet                   |
 

@@ -1,0 +1,30 @@
+namespace Cotabby.Core.Support;
+
+/// <summary>
+/// No-repeat n-gram guard used inside the decode loop. Direct port of the
+/// macOS <c>RepetitionGuard</c>: with n = 3, the prefix is the last 2
+/// generated tokens; every token that ever followed that same 2-gram earlier
+/// in the generation is blocked, so a 3-gram can never repeat verbatim.
+/// </summary>
+public static class RepetitionGuard
+{
+    public static HashSet<int> BlockedTokens(IReadOnlyList<int> history, int ngramSize = 3)
+    {
+        var blocked = new HashSet<int>();
+        if (ngramSize < 2) return blocked;
+        int prefixLen = ngramSize - 1;
+        if (history.Count < prefixLen) return blocked;
+
+        // The prefix we are about to extend: the last (n-1) tokens.
+        for (int start = 0; start + prefixLen < history.Count; start++)
+        {
+            bool match = true;
+            for (int i = 0; i < prefixLen; i++)
+            {
+                if (history[start + i] != history[history.Count - prefixLen + i]) { match = false; break; }
+            }
+            if (match) blocked.Add(history[start + prefixLen]);
+        }
+        return blocked;
+    }
+}

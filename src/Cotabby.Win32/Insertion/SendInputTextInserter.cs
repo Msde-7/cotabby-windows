@@ -39,6 +39,16 @@ public sealed class SendInputTextInserter : ITextInserter
 
     public SendInputTextInserter(ILogger<SendInputTextInserter> logger) => _logger = logger;
 
+    /// <summary>
+    /// Chunks at or below this length go through a single SendInput unicode
+    /// batch instead of the clipboard round-trip. Word-granularity accepts
+    /// are almost always under this, so per-word Tab presses stay fast and
+    /// never touch the user's clipboard. One SendInput call with the whole
+    /// array is atomic with respect to interleaving, which avoids the
+    /// dropped-character behavior the old one-call-per-char path exhibited.
+    /// </summary>
+    private const int MaxSendInputChars = 24;
+
     public async Task<bool> InsertAsync(FocusedField target, string text, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(text)) return true;
@@ -47,6 +57,15 @@ public sealed class SendInputTextInserter : ITextInserter
         try
         {
             ct.ThrowIfCancellationRequested();
+
+            if (text.Length <= MaxSendInputChars && !text.Contains('\n'))
+            {
+                _logger.LogInformation(
+                    "Inserter (unicode) {Len} chars: \"{Text}\" target.proc={Proc}",
+                    text.Length, EscapeFull(text), target.ProcessName);
+                SendUnicodeString(text);
+                return true;
+            }
 
             _logger.LogInformation(
                 "Inserter (clipboard paste) received {Len} chars: \"{Text}\" hex={Hex} target.pid={Pid} target.proc={Proc}",
@@ -163,6 +182,38 @@ public sealed class SendInputTextInserter : ITextInserter
         };
         SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
     }
+
+    /// <summary>
+    /// Type <paramref name="text"/> as one SendInput batch of
+    /// KEYEVENTF_UNICODE down/up pairs. UTF-16 code units go through as-is,
+    /// so surrogate pairs (emoji) arrive intact.
+    /// </summary>
+    private static void SendUnicodeString(string text)
+    {
+        var inputs = new INPUT[text.Length * 2];
+        for (int i = 0; i < text.Length; i++)
+        {
+            inputs[i * 2] = MakeUnicodeInput(text[i], keyUp: false);
+            inputs[i * 2 + 1] = MakeUnicodeInput(text[i], keyUp: true);
+        }
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    private static INPUT MakeUnicodeInput(char c, bool keyUp) => new()
+    {
+        type = INPUT_KEYBOARD,
+        U = new INPUTUNION
+        {
+            ki = new KEYBDINPUT
+            {
+                wVk = 0,
+                wScan = c,
+                dwFlags = KEYEVENTF_UNICODE | (keyUp ? KEYEVENTF_KEYUP : 0),
+                time = 0,
+                dwExtraInfo = IntPtr.Zero,
+            },
+        },
+    };
 
     private static INPUT MakeVkInput(ushort vk, bool keyUp) => new()
     {

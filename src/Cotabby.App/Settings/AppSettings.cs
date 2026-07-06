@@ -17,14 +17,18 @@ public sealed class AppSettings
     public bool Enabled { get; set; } = true;
     public string? ActiveModelId { get; set; }
 
-    // 80ms keeps time-to-first-suggestion low while still collapsing typing
-    // bursts. Per-keystroke cancel-prior in SuggestionWorkController means
-    // we never start a generation that the next keystroke would invalidate.
-    public int DebounceMs { get; set; } = 80;
+    // Upstream Cotabby debounces at 20ms; we add a little headroom for UIA
+    // read latency. Per-keystroke cancel-prior in SuggestionWorkController
+    // means we never surface a generation the next keystroke invalidated.
+    public int DebounceMs { get; set; } = 50;
 
     public bool LaunchAtLogin { get; set; }
-    public bool AllowMultiLine { get; set; }
+    public bool AllowMultiLine { get; set; } = true;
     public bool AcceptPunctuationWithWord { get; set; } = true;
+
+    /// <summary>Tab acceptance granularity: <c>"word"</c> (default, upstream
+    /// behavior) or <c>"phrase"</c> (whole sentences per press).</summary>
+    public string AcceptanceMode { get; set; } = "word";
     public bool ShowAcceptanceHint { get; set; } = true;
     public bool FastMode { get; set; }
     public bool ShowFirstRunWelcome { get; set; } = true;
@@ -48,8 +52,9 @@ public sealed class AppSettings
     /// <summary>Up to ~6 language tags. Hint shown in completion prompt.</summary>
     public List<string> Languages { get; set; } = new() { "English" };
 
-    /// <summary>Completion length preset id (see <see cref="CompletionLengthPreset"/>).</summary>
-    public string CompletionLengthPreset { get; set; } = "medium";
+    /// <summary>Completion length preset id (see <see cref="CompletionLengthPreset"/>).
+    /// Upstream defaults to the 12–20 word tier.</summary>
+    public string CompletionLengthPreset { get; set; } = "long";
 
     // ---- Shortcuts ------------------------------------------------------
     /// <summary>Accept-word key. Currently only <c>"Tab"</c> is supported on Windows
@@ -57,8 +62,9 @@ public sealed class AppSettings
     /// only for Tab). Other values are recorded but logged-and-ignored.</summary>
     public string AcceptWordKey { get; set; } = "Tab";
 
-    /// <summary>Accept-whole-suggestion key. Default unbound.</summary>
-    public string AcceptSuggestionKey { get; set; } = "";
+    /// <summary>Accept-whole-suggestion key. Backtick mirrors the macOS
+    /// default; it only fires while a suggestion is visible.</summary>
+    public string AcceptSuggestionKey { get; set; } = "Backtick";
 
     /// <summary>Global enable toggle hotkey. Default unbound.</summary>
     public string GlobalToggleKey { get; set; } = "";
@@ -88,23 +94,32 @@ public static class CompletionLengthPreset
 
     public static readonly IReadOnlyList<(string Id, string Label)> All =
     [
-        (VeryShort, "Very short (2–4 words)"),
-        (Short, "Short (4–7 words)"),
-        (Medium, "Medium (8–12 words)"),
-        (Long, "Long (13+ words)"),
+        (VeryShort, "2–4 words"),
+        (Short, "4–7 words"),
+        (Medium, "7–12 words"),
+        (Long, "12–20 words"),
     ];
 
-    /// <summary>Map preset to a (singleLine, multiLine) token budget pair.</summary>
-    public static (int Single, int Multi) Tokens(string id) => id switch
+    /// <summary>
+    /// Map preset to a (singleLine, multiLine) token budget pair. Values are
+    /// the upstream <c>suggestedPredictionTokenBudget</c> table (5/9/15/25),
+    /// with multi-line doubling the budget capped at 60.
+    /// </summary>
+    public static (int Single, int Multi) Tokens(string id)
     {
-        VeryShort => (8, 12),
-        Short => (12, 16),
-        Long => (28, 40),
-        _ => (16, 24), // Medium / default
-    };
+        int single = id switch
+        {
+            VeryShort => 5,
+            Short => 9,
+            Medium => 15,
+            Long => 25,
+            _ => 25,
+        };
+        return (single, Math.Min(single * 2, 60));
+    }
 
     public static string Label(string id) =>
-        All.FirstOrDefault(t => t.Id == id).Label is { Length: > 0 } l ? l : All[2].Label;
+        All.FirstOrDefault(t => t.Id == id).Label is { Length: > 0 } l ? l : All[3].Label;
 }
 
 /// <summary>
