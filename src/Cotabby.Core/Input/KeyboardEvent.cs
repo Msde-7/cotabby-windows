@@ -18,6 +18,25 @@ public sealed record KeyboardEvent
 
     /// <summary>True on key down, false on key up.</summary>
     public required bool IsKeyDown { get; init; }
+
+    /// <summary>Windows virtual key code, or 0 for synthetic events that have none.</summary>
+    public int VirtualKey { get; init; }
+
+    /// <summary>Modifiers held while the key was pressed.</summary>
+    public KeyModifiers Modifiers { get; init; }
+
+    /// <summary>True when the system generated this key down because the key is held.</summary>
+    public bool IsRepeat { get; init; }
+}
+
+[Flags]
+public enum KeyModifiers
+{
+    None = 0,
+    Control = 1,
+    Alt = 2,
+    Shift = 4,
+    Win = 8,
 }
 
 public enum KeyKind

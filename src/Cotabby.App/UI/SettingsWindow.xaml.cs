@@ -12,7 +12,10 @@ using System.Windows.Navigation;
 using System.Windows.Shapes;
 using Cotabby.App.Hosting;
 using Cotabby.App.Settings;
+using KeyBinding = Cotabby.Core.Input.KeyBinding;
+using KeyModifiers = Cotabby.Core.Input.KeyModifiers;
 using Cotabby.Core.Models;
+using Cotabby.Core.Suggestions;
 using Cotabby.Inference;
 using Microsoft.Win32;
 
@@ -51,29 +54,12 @@ public partial class SettingsWindow : Window
         public override string ToString() => Label;
     }
 
-    // Swatches store hex ids rather than palette names so GhostTextPalette.Resolve
-    // and the overlay accept them regardless of which palette revision ships.
-    private static readonly (string Id, string Label)[] ColorPresets =
-    {
-        ("auto", "Automatic"),
-        ("#3B82F6", "Blue"),
-        ("#22C55E", "Green"),
-        ("#A855F7", "Purple"),
-        ("#F97316", "Orange"),
-        ("#EC4899", "Pink"),
-        ("#EF4444", "Red"),
-        ("#EAB308", "Yellow"),
-        ("#14B8A6", "Teal"),
-        ("#06B6D4", "Cyan"),
-        ("#6366F1", "Indigo"),
-    };
-
     private static readonly ChoiceItem[] AcceptKeyChoices =
     {
-        new("Backtick", "Backtick"),
-        new("Tilde", "Tilde"),
+        new("Backtick", "`"),
+        new("Tilde", "~"),
         new("Backslash", "Backslash"),
-        new("", "None"),
+        new("", ""),
     };
 
     private static readonly string[] SuggestedLanguages = { "German", "French", "Spanish", "Chinese" };
@@ -229,7 +215,6 @@ public partial class SettingsWindow : Window
         else if (ReferenceEquals(sender, EmojiToggle)) s.EmojiPickerEnabled = EmojiToggle.IsChecked == true;
         else if (ReferenceEquals(sender, HintToggle)) s.ShowAcceptanceHint = HintToggle.IsChecked == true;
         _host.PersistSettings();
-        if (ReferenceEquals(sender, HintToggle)) PushAppearance();
     }
 
     private void OnOpacityChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -240,24 +225,13 @@ public partial class SettingsWindow : Window
         if (!_loaded) return;
         _host.Settings.GhostTextOpacity = Math.Round(OpacitySlider.Value, 2);
         _host.PersistSettings();
-        PushAppearance();
-    }
-
-    private void PushAppearance()
-    {
-        var s = _host.Settings;
-        try
-        {
-            _host.Overlay.ApplyAppearance(s.GhostTextColor, s.GhostTextOpacity, s.ShowAcceptanceHint);
-        }
-        catch { /* overlay may not be realized yet — first show picks them up */ }
     }
 
     private void BuildSwatches()
     {
         SwatchPanel.Children.Clear();
         var current = _host.Settings.GhostTextColor ?? "auto";
-        foreach (var (id, label) in ColorPresets)
+        foreach (var (id, label) in GhostTextPalette.Presets)
         {
             bool selected = string.Equals(current, id, StringComparison.OrdinalIgnoreCase);
             var cell = new Grid
@@ -293,7 +267,6 @@ public partial class SettingsWindow : Window
             {
                 _host.Settings.GhostTextColor = chosen;
                 _host.PersistSettings();
-                PushAppearance();
                 BuildSwatches();
             };
             SwatchPanel.Children.Add(cell);
@@ -603,34 +576,27 @@ public partial class SettingsWindow : Window
         BuildLanguageChips();
     }
 
-    private static string LengthTitle(string id) => id switch
-    {
-        CompletionLengthPreset.VeryShort => "Very Short",
-        CompletionLengthPreset.Short => "Short",
-        CompletionLengthPreset.Medium => "Medium",
-        CompletionLengthPreset.Long => "Long",
-        _ => id,
-    };
-
     private void BuildLengthRadios()
     {
         LengthPanel.Children.Clear();
         var s = _host.Settings;
         var style = (Style)FindResource("RadioRow");
-        foreach (var (id, label) in CompletionLengthPreset.All)
+        foreach (var preset in WordCountPreset.All)
         {
+            var id = preset.Id;
             var radio = new RadioButton
             {
                 Style = style,
                 GroupName = "LenPreset",
-                Content = $"{LengthTitle(id)} · {label}",
-                IsChecked = id == s.CompletionLengthPreset,
+                Content = $"{preset.Title} · {preset.Label}",
+                IsChecked = !s.UseCustomWordRange && id == s.CompletionLengthPreset,
             };
             var chosen = id;
             radio.Checked += (_, _) =>
             {
                 if (!_loaded) return;
                 s.CompletionLengthPreset = chosen;
+                s.UseCustomWordRange = false;
                 _host.PersistSettings();
             };
             LengthPanel.Children.Add(radio);
@@ -781,44 +747,28 @@ public partial class SettingsWindow : Window
     private void PopulateShortcuts()
     {
         var s = _host.Settings;
-        ModePhrase.IsChecked = s.AcceptanceMode == "phrase";
-        ModeWord.IsChecked = s.AcceptanceMode != "phrase";
+        ModePhrase.IsChecked = s.AcceptanceMode == AcceptanceGranularity.Phrase;
+        ModeWord.IsChecked = s.AcceptanceMode == AcceptanceGranularity.Word;
 
         AcceptKeyCombo.ItemsSource = AcceptKeyChoices;
-        AcceptKeyCombo.SelectedItem = MatchAcceptKey(s.AcceptSuggestionKey);
+        AcceptKeyCombo.SelectedItem = AcceptKeyChoices.FirstOrDefault(c => c.Label == s.AcceptAll.Label) ?? AcceptKeyChoices[^1];
         UpdateAcceptKeycap();
     }
 
-    private static ChoiceItem MatchAcceptKey(string? raw)
-    {
-        // Older configs may hold the literal character rather than the name.
-        var norm = (raw ?? "").Trim() switch
-        {
-            "`" => "Backtick",
-            "~" => "Tilde",
-            "\\" => "Backslash",
-            var v => v,
-        };
-        return AcceptKeyChoices.FirstOrDefault(c => c.Id.Equals(norm, StringComparison.OrdinalIgnoreCase))
-            ?? AcceptKeyChoices[0];
-    }
-
-    private void UpdateAcceptKeycap()
-    {
-        AcceptKeycapText.Text = (AcceptKeyCombo.SelectedItem as ChoiceItem)?.Id switch
-        {
-            "Tilde" => "~",
-            "Backslash" => "\\",
-            "" => "—",
-            _ => "`",
-        };
-    }
+    private void UpdateAcceptKeycap() =>
+        AcceptKeycapText.Text = _host.Settings.AcceptAll.IsBound ? _host.Settings.AcceptAll.Label : "—";
 
     private void OnAcceptKeyChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!_loaded) return;
         if (AcceptKeyCombo.SelectedItem is not ChoiceItem choice) return;
-        _host.Settings.AcceptSuggestionKey = choice.Id;
+        _host.Settings.AcceptAll = choice.Id switch
+        {
+            "Backtick" => KeyBinding.Backtick,
+            "Tilde" => new KeyBinding(KeyBinding.VkBacktick, KeyModifiers.Shift, "~"),
+            "Backslash" => new KeyBinding(0xDC, KeyModifiers.None, "Backslash"),
+            _ => KeyBinding.Unbound,
+        };
         _host.PersistSettings();
         UpdateAcceptKeycap();
     }
@@ -826,7 +776,7 @@ public partial class SettingsWindow : Window
     private void OnModeChanged(object sender, RoutedEventArgs e)
     {
         if (!_loaded) return;
-        _host.Settings.AcceptanceMode = ModePhrase.IsChecked == true ? "phrase" : "word";
+        _host.Settings.AcceptanceMode = ModePhrase.IsChecked == true ? AcceptanceGranularity.Phrase : AcceptanceGranularity.Word;
         _host.PersistSettings();
     }
 

@@ -200,10 +200,13 @@ public sealed class UiaFocusTracker : IFocusTracker
 
         int pid = info.ProcessId;
         string procName = TryGetProcessName(pid);
-        bool isPassword = info.IsPassword;
+        string label = info.Name ?? string.Empty;
+        string helpText = info.HelpText ?? string.Empty;
+        bool isSecure = info.IsPassword
+            || SecureFieldDetector.IsSecure(label, helpText, info.LocalizedControlType);
         bool isSingleLine = info.ControlType == ControlType.Edit;
 
-        var (text, caretOffset) = ReadTextAndCaret(element);
+        var (text, caretOffset, hasSelection) = ReadTextAndCaret(element);
         var caretRect = ReadCaretRect(element);
         var fieldRect = ToScreenRect(info.BoundingRectangle);
 
@@ -217,11 +220,16 @@ public sealed class UiaFocusTracker : IFocusTracker
             CaretRect = caretRect.IsEmpty ? fieldRect : caretRect,
             FieldRect = fieldRect,
             IsSingleLine = isSingleLine,
-            IsSecure = isPassword,
+            IsSecure = isSecure,
+            HasSelection = hasSelection,
+            Label = label,
+            HelpText = helpText,
+            AutomationId = info.AutomationId ?? string.Empty,
+            ClassName = info.ClassName ?? string.Empty,
         };
     }
 
-    private (string text, int caretOffset) ReadTextAndCaret(AutomationElement element)
+    private static (string text, int caretOffset, bool hasSelection) ReadTextAndCaret(AutomationElement element)
     {
         // Prefer TextPattern: it gives both full text and the caret-as-selection.
         if (element.TryGetCurrentPattern(TextPattern.Pattern, out var rawText)
@@ -232,16 +240,18 @@ public sealed class UiaFocusTracker : IFocusTracker
                 // Cap to 16KB — coordinators only need a window around the caret.
                 string full = textPattern.DocumentRange.GetText(16 * 1024);
                 int caret = 0;
+                bool hasSelection = false;
                 var sel = textPattern.GetSelection();
                 if (sel is { Length: > 0 })
                 {
                     var range = sel[0];
+                    hasSelection = range.GetText(1).Length > 0;
                     var preCaret = textPattern.DocumentRange.Clone();
                     preCaret.MoveEndpointByRange(
                         TextPatternRangeEndpoint.End, range, TextPatternRangeEndpoint.Start);
                     caret = preCaret.GetText(16 * 1024).Length;
                 }
-                return (full, caret);
+                return (full, caret, hasSelection);
             }
             catch (Exception) { /* fall through */ }
         }
@@ -250,13 +260,13 @@ public sealed class UiaFocusTracker : IFocusTracker
             && rawValue is ValuePattern vp)
         {
             string v = vp.Current.Value ?? string.Empty;
-            return (v, v.Length); // caret at end as a fallback
+            return (v, v.Length, false); // caret at end as a fallback
         }
 
-        return (string.Empty, 0);
+        return (string.Empty, 0, false);
     }
 
-    private ScreenRect ReadCaretRect(AutomationElement element)
+    private static ScreenRect ReadCaretRect(AutomationElement element)
     {
         if (element.TryGetCurrentPattern(TextPattern.Pattern, out var raw)
             && raw is TextPattern textPattern)

@@ -12,17 +12,16 @@ namespace Cotabby.Core.Suggestions;
 /// </remarks>
 public sealed class SuggestionWorkController : IAsyncDisposable
 {
-    private readonly TimeSpan _debounce;
     private readonly object _gate = new();
 
     private CancellationTokenSource? _inFlight;
     private Task? _pendingTask;
     private bool _disposed;
 
-    public SuggestionWorkController(TimeSpan debounce)
-    {
-        _debounce = debounce;
-    }
+    public SuggestionWorkController(TimeSpan debounce) => Debounce = debounce;
+
+    /// <summary>Quiet time after the last submit before work starts.</summary>
+    public TimeSpan Debounce { get; set; }
 
     /// <summary>
     /// Schedule <paramref name="work"/> to run after the debounce window.
@@ -56,7 +55,7 @@ public sealed class SuggestionWorkController : IAsyncDisposable
     {
         try
         {
-            await Task.Delay(_debounce, cts.Token).ConfigureAwait(false);
+            await Task.Delay(Debounce, cts.Token).ConfigureAwait(false);
             await work(cts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { /* expected */ }

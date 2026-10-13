@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using Cotabby.Core.Focus;
 using Cotabby.Core.Insertion;
+using Cotabby.Core.Support;
 using Microsoft.Extensions.Logging;
 using static Cotabby.Win32.Interop.NativeMethods;
 
@@ -62,14 +63,14 @@ public sealed class SendInputTextInserter : ITextInserter
             {
                 _logger.LogInformation(
                     "Inserter (unicode) {Len} chars: \"{Text}\" target.proc={Proc}",
-                    text.Length, EscapeFull(text), target.ProcessName);
+                    text.Length, LogText.Escape(text), target.ProcessName);
                 SendUnicodeString(text);
                 return true;
             }
 
             _logger.LogInformation(
                 "Inserter (clipboard paste) received {Len} chars: \"{Text}\" hex={Hex} target.pid={Pid} target.proc={Proc}",
-                text.Length, EscapeFull(text), HexDump(text), target.ProcessId, target.ProcessName);
+                text.Length, LogText.Escape(text), LogText.Hex(text), target.ProcessId, target.ProcessName);
 
             // BlockInput keeps physical keystrokes from interleaving with the
             // synthetic Ctrl+V we're about to send. ~50ms blocked total.
@@ -230,38 +231,4 @@ public sealed class SendInputTextInserter : ITextInserter
             },
         },
     };
-
-    private static string EscapeFull(string s)
-    {
-        if (string.IsNullOrEmpty(s)) return s;
-        var sb = new System.Text.StringBuilder(s.Length + 8);
-        foreach (var c in s)
-        {
-            switch (c)
-            {
-                case '\n': sb.Append("\\n"); break;
-                case '\r': sb.Append("\\r"); break;
-                case '\t': sb.Append("\\t"); break;
-                case '"':  sb.Append("\\\""); break;
-                case '\\': sb.Append("\\\\"); break;
-                default:
-                    if (c < 0x20 || c == 0x7F) sb.Append($"\\x{(int)c:X2}");
-                    else sb.Append(c);
-                    break;
-            }
-        }
-        return sb.ToString();
-    }
-
-    private static string HexDump(string s)
-    {
-        if (string.IsNullOrEmpty(s)) return "";
-        var sb = new System.Text.StringBuilder(s.Length * 5);
-        for (int i = 0; i < s.Length; i++)
-        {
-            if (i > 0) sb.Append(' ');
-            sb.Append(((int)s[i]).ToString("X4"));
-        }
-        return sb.ToString();
-    }
 }

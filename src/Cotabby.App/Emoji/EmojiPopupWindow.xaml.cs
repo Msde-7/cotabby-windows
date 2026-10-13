@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -10,9 +9,9 @@ using Cotabby.Core.Focus;
 namespace Cotabby.App.Emoji;
 
 /// <summary>
-/// Tiny topmost, click-through panel that displays emoji matches under the
-/// caret while a <c>:query</c> trigger is active. Visual peer of
-/// <c>GhostOverlayWindow</c>: same WS_EX flags so it never steals focus.
+/// Topmost, click-through panel that shows the emoji ribbon near the caret while a <c>:query</c>
+/// capture is open. Carries the same extended window styles as <c>GhostOverlayWindow</c> so it
+/// never steals focus. All members must be called on the UI thread.
 /// </summary>
 public partial class EmojiPopupWindow : Window
 {
@@ -23,14 +22,25 @@ public partial class EmojiPopupWindow : Window
     private const int WS_EX_TOOLWINDOW = 0x00000080;
     private const uint SWP_NOACTIVATE = 0x0010;
     private const uint SWP_SHOWWINDOW = 0x0040;
+    private const uint MONITOR_DEFAULTTONEAREST = 2;
     private static readonly IntPtr HWND_TOPMOST = new(-1);
 
+    private static readonly Brush SelectionFill = new SolidColorBrush(Color.FromArgb(0x29, 0xFF, 0xFF, 0xFF));
+    private static readonly Brush GlyphBrush = new SolidColorBrush(Color.FromArgb(0xF2, 0xFF, 0xFF, 0xFF));
+    private static readonly FontFamily GlyphFont = new("Segoe UI Emoji");
+
     private HwndSource? _source;
+    private int _selectedIndex;
 
     public EmojiPopupWindow()
     {
         InitializeComponent();
-        Visibility = Visibility.Hidden;
+        QueryRow.Height = EmojiPickerMetrics.QueryRowHeight;
+        QueryRow.Margin = new Thickness(EmojiPickerMetrics.HorizontalInset, 0, EmojiPickerMetrics.HorizontalInset, 0);
+        RibbonRow.Height = EmojiPickerMetrics.RibbonRowHeight;
+        Cells.Margin = QueryRow.Margin;
+        EmptyLabel.Margin = QueryRow.Margin;
+
         SourceInitialized += (_, _) =>
         {
             _source = (HwndSource)PresentationSource.FromVisual(this)!;
@@ -40,142 +50,84 @@ public partial class EmojiPopupWindow : Window
         };
     }
 
-    /// <summary>System accent stand-in — the macOS picker highlights the
-    /// selected row with the OS accent; we hardcode the same blue the rest of
-    /// the port uses.</summary>
-    private static readonly Color Accent = Color.FromRgb(0x00, 0x7A, 0xFF);
-
-    public void Show(IReadOnlyList<EmojiEntry> matches, string query, ScreenRect anchor, int selectedIdx)
+    public void ShowMatches(string query, IReadOnlyList<EmojiMatch> matches, int selectedIndex, ScreenRect caretRect)
     {
-        if (!Dispatcher.CheckAccess())
-        {
-            Dispatcher.BeginInvoke(() => Show(matches, query, anchor, selectedIdx));
-            return;
-        }
-        bool dark = IsSystemInDarkMode();
-        Panel.Background = new SolidColorBrush(dark
-            ? Color.FromArgb(0xF5, 0x1F, 0x1F, 0x1F)
-            : Color.FromArgb(0xF7, 0xFA, 0xFA, 0xFA));
-        Panel.BorderBrush = new SolidColorBrush(dark
-            ? Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF)
-            : Color.FromArgb(0x1A, 0x00, 0x00, 0x00));
-        HeaderDivider.Background = Panel.BorderBrush;
-        var primary = dark ? Color.FromRgb(0xE8, 0xE8, 0xE8) : Color.FromRgb(0x1D, 0x1D, 0x1F);
-        var secondary = dark ? Color.FromRgb(0x9A, 0x9A, 0x9A) : Color.FromRgb(0x6E, 0x6E, 0x73);
-        HeaderColon.Foreground = new SolidColorBrush(secondary);
-        HeaderQuery.Foreground = new SolidColorBrush(primary);
-        HeaderQuery.Text = query;
+        QueryText.Text = query;
+        // A typed query without matches says so. A bare colon without recents keeps the row blank.
+        EmptyLabel.Visibility = matches.Count == 0 && query.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
 
-        Items.Children.Clear();
-        if (matches.Count == 0)
+        Cells.Children.Clear();
+        foreach (var match in matches)
         {
-            Items.Children.Add(new TextBlock
+            Cells.Children.Add(new Border
             {
-                Text = "No emoji found",
-                Foreground = new SolidColorBrush(secondary),
-                FontFamily = new FontFamily("Segoe UI"),
-                FontSize = 12,
-                Margin = new Thickness(8, 6, 8, 6),
+                Width = EmojiPickerMetrics.CellSize,
+                Height = EmojiPickerMetrics.CellSize,
+                Margin = new Thickness(Cells.Children.Count == 0 ? 0 : EmojiPickerMetrics.CellSpacing, 0, 0, 0),
+                CornerRadius = new CornerRadius(8),
+                Child = new TextBlock
+                {
+                    Text = match.Glyph,
+                    FontFamily = GlyphFont,
+                    FontSize = 20,
+                    Foreground = GlyphBrush,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                },
             });
         }
-        else
-        {
-            for (int i = 0; i < matches.Count; i++)
-            {
-                var entry = matches[i];
-                var isSel = i == selectedIdx;
 
-                var row = new Border
-                {
-                    Height = 30,
-                    Padding = new Thickness(8, 0, 10, 0),
-                    CornerRadius = new CornerRadius(6),
-                    Background = isSel ? new SolidColorBrush(Accent) : Brushes.Transparent,
-                };
-                var stack = new StackPanel
-                {
-                    Orientation = Orientation.Horizontal,
-                    VerticalAlignment = VerticalAlignment.Center,
-                };
-                stack.Children.Add(new TextBlock
-                {
-                    Text = entry.Glyph,
-                    FontFamily = new FontFamily("Segoe UI Emoji"),
-                    FontSize = 18,
-                    Margin = new Thickness(0, 0, 8, 0),
-                    VerticalAlignment = VerticalAlignment.Center,
-                });
-                stack.Children.Add(new TextBlock
-                {
-                    Text = ":" + entry.Name + ":",
-                    Foreground = new SolidColorBrush(isSel ? Colors.White : primary),
-                    FontFamily = new FontFamily("Segoe UI"),
-                    FontSize = 13,
-                    VerticalAlignment = VerticalAlignment.Center,
-                });
-                row.Child = stack;
-                Items.Children.Add(row);
-            }
-        }
+        var (width, height) = EmojiPickerMetrics.ContentSize(matches.Count);
+        Width = width;
+        Height = height;
+        _selectedIndex = 0;
+        SetSelectedIndex(selectedIndex);
 
-        Visibility = Visibility.Visible;
-        if (_source is null) base.Show();
-        UpdateLayout();
-        PositionAt(anchor);
+        Show();
+        PositionAt(caretRect, width, height);
     }
 
-    private static bool IsSystemInDarkMode()
+    /// <summary>Moves the selection chip and scrolls the ribbon so the selected cell is centered.</summary>
+    public void SetSelectedIndex(int index)
     {
-        try
-        {
-            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
-                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
-            return key?.GetValue("AppsUseLightTheme") is int v && v == 0;
-        }
-        catch (Exception) { return false; }
+        if (index < 0 || index >= Cells.Children.Count) return;
+
+        ((Border)Cells.Children[_selectedIndex]).Background = Brushes.Transparent;
+        ((Border)Cells.Children[index]).Background = SelectionFill;
+        _selectedIndex = index;
+
+        double pitch = EmojiPickerMetrics.CellSize + EmojiPickerMetrics.CellSpacing;
+        double cellCenter = EmojiPickerMetrics.HorizontalInset + index * pitch + EmojiPickerMetrics.CellSize / 2;
+        Ribbon.ScrollToHorizontalOffset(cellCenter - Width / 2);
     }
 
-    public new void Hide()
-    {
-        if (!Dispatcher.CheckAccess())
-        {
-            Dispatcher.BeginInvoke(() => Hide());
-            return;
-        }
-        Visibility = Visibility.Hidden;
-    }
-
-    private void PositionAt(ScreenRect anchor)
+    private void PositionAt(ScreenRect caretRect, double width, double height)
     {
         if (_source is null) return;
-        var matrix = _source.CompositionTarget!.TransformToDevice;
-        int pxW = (int)Math.Ceiling(ActualWidth * matrix.M11);
-        int pxH = (int)Math.Ceiling(ActualHeight * matrix.M22);
-        // Below the caret by a couple pixels (the ghost text owns the right-of-caret
-        // band; the emoji panel sits underneath so they don't fight for the same px).
-        int x = (int)anchor.X;
-        int y = (int)anchor.Bottom + 4;
 
-        // Keep on-monitor: if we'd run past the right edge, hug it.
-        var pt = new POINT { x = (int)anchor.X, y = (int)anchor.Y };
-        var hmon = MonitorFromPoint(pt, 1);
-        var mi = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
-        if (GetMonitorInfo(hmon, ref mi))
+        // Metrics are device independent units while caret and monitor rectangles are physical pixels.
+        var toDevice = _source.CompositionTarget!.TransformToDevice;
+        double pixelWidth = Math.Ceiling(width * toDevice.M11);
+        double pixelHeight = Math.Ceiling(height * toDevice.M22);
+
+        var caretCenter = new POINT
         {
-            if (x + pxW > mi.rcWork.right) x = mi.rcWork.right - pxW - 4;
-            if (x < mi.rcWork.left) x = mi.rcWork.left + 4;
-            if (y + pxH > mi.rcWork.bottom)
-            {
-                // Flip above the caret.
-                y = (int)anchor.Y - pxH - 4;
-            }
-        }
+            x = (int)(caretRect.X + caretRect.Width / 2),
+            y = (int)(caretRect.Y + caretRect.Height / 2),
+        };
+        var info = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
+        if (!GetMonitorInfo(MonitorFromPoint(caretCenter, MONITOR_DEFAULTTONEAREST), ref info)) return;
 
-        SetWindowPos(_source.Handle, HWND_TOPMOST, x, y, pxW, pxH,
+        var work = info.rcWork;
+        var frame = EmojiPickerPanelLayout.Frame(
+            caretRect,
+            pixelWidth,
+            pixelHeight,
+            new ScreenRect(work.left, work.top, work.right - work.left, work.bottom - work.top));
+
+        SetWindowPos(_source.Handle, HWND_TOPMOST, (int)frame.X, (int)frame.Y, (int)frame.Width, (int)frame.Height,
             SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
-
-    // ----- Win32 P/Invoke (mirrors GhostOverlayWindow.) -----
 
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT { public int x; public int y; }

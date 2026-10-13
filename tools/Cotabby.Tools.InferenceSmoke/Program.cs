@@ -64,7 +64,8 @@ var fakeField = new FocusedField
     IsSingleLine = false,
     IsSecure = false,
 };
-var request = SuggestionRequestFactory.Build(fakeField, "smoke");
+var request = SuggestionRequestFactory.Build(
+    fakeField, "smoke", SuggestionSettings.Default with { AllowMultiLine = true });
 
 Console.WriteLine();
 Console.WriteLine("Prompt prefix (tail):");

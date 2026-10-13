@@ -3,27 +3,35 @@ using Cotabby.Core.Focus;
 using Cotabby.Core.Input;
 using Cotabby.Core.Insertion;
 using Cotabby.Core.Overlay;
+using Cotabby.Core.Support;
 using Microsoft.Extensions.Logging;
 
 namespace Cotabby.Core.Suggestions;
 
 /// <summary>
-/// Top-level orchestrator that ties the keyboard hook, focus tracker, suggestion
-/// engine, overlay, and inserter together. Mirrors the macOS
-/// <c>SuggestionCoordinator</c>; this single class corresponds to the
-/// <c>+Lifecycle</c>, <c>+Input</c>, <c>+Prediction</c>, and <c>+Acceptance</c>
-/// extension files in the macOS port.
+/// Ties the keyboard hook, focus tracker, engine, overlay and inserter together.
 /// </summary>
 /// <remarks>
-/// Threading: keyboard events arrive on the hook thread, UIA events on a UIA
-/// pool thread. The coordinator marshals all session mutations through a single
-/// SynchronizationContext (the UI thread) so the state machine never sees racy
-/// reads of <see cref="_session"/>. Pure decision logic stays in
-/// <see cref="SuggestionSessionReconciler"/> / <see cref="SuggestionAvailability"/>
-/// so this class only owns wiring.
+/// Key events arrive on the hook thread. Session state is only touched on the UI
+/// context. Focus reads and generation run on the thread pool so UI Automation
+/// never blocks the dispatcher. The hook thread sees the visible suggestion only
+/// through <see cref="_offer"/> and <see cref="_ownership"/>.
 /// </remarks>
 public sealed class SuggestionCoordinator : IAsyncDisposable
 {
+    // The hook fires before the host processes the key, so the field is polled
+    // until the typed text shows up.
+    private const int HostPublishFirstPollMs = 10;
+    private const int HostPublishPollMs = 30;
+    private const int HostPublishCeilingMs = 400;
+    private const int PostInsertSettleMs = 60;
+
+    private static readonly TimeSpan GenerationWatchdog = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan DoubleTapWindow = TimeSpan.FromMilliseconds(300);
+
+    /// <summary>How long the accept key stays owned after the last chunk while the continuation generates.</summary>
+    private static readonly TimeSpan PostExhaustionWindow = TimeSpan.FromMilliseconds(800);
+
     private readonly IKeyboardHook _hook;
     private readonly IFocusTracker _focus;
     private readonly ISuggestionEngine _engine;
@@ -32,35 +40,35 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private readonly SuggestionWorkController _work;
     private readonly ILogger<SuggestionCoordinator> _logger;
     private readonly SynchronizationContext _ui;
+    private readonly Func<bool> _batterySaverOn;
+    private readonly TimeProvider _clock;
+
+    private volatile SuggestionSettings _settings = SuggestionSettings.Default;
+    private volatile Offer? _offer;
+    private volatile AcceptKeyOwnership? _ownership;
 
     private SuggestionSession? _session;
-    private int _sessionPid;
-    private bool _enabled = true;
+    private FocusedField? _sessionField;
+    private bool _sessionAcceptedAny;
+    private (string RequestId, long Timestamp)? _pendingDoubleTap;
+    private AcceptedTail? _lastAcceptedTail;
+    private bool _queuedAccept;
+    private Task _insertChain = Task.CompletedTask;
     private bool _disposed;
-    /// <summary>True while a generation is past its debounce and the engine is producing tokens.</summary>
-    private bool _generationInFlight;
-    /// <summary>Process id of the host that owned focus when the in-flight request fired.</summary>
-    private int _inFlightPid;
-    /// <summary>
-    /// Volatile flag the hook thread reads to decide whether to synchronously
-    /// suppress Tab. A separate primitive from <see cref="_session"/> because
-    /// .NET's memory model doesn't guarantee reference-field visibility across
-    /// threads without explicit fences. Volatile.Write/Read on this int gives
-    /// us a portable acquire/release ordering — Tab acceptance becomes
-    /// deterministic instead of dropping every ~3rd attempt to a stale null.
-    /// </summary>
-    private int _hasVisibleSession; // 0 or 1; written with Volatile.Write
 
-    /// <summary>
-    /// Snapshot of exactly what the overlay last rendered, written on every
-    /// Show/Update and read by the hook-thread Tab fast-path. The streaming
-    /// work can post a chunk-arrival action that mutates <see cref="_session"/>
-    /// between the hook firing Tab and the dispatcher running AcceptAsync;
-    /// without snapshotting the displayed text we'd insert a later/different
-    /// completion than the one the user accepted with their eyes. Writes
-    /// happen on the UI thread; the hook thread does a release-acquire read.
-    /// </summary>
-    private string? _displayedTextSnapshot;
+    // What the field looked like at the last read, plus how many characters the
+    // keys pressed since then should have added. Null means the next read is trusted as is.
+    private FocusedField? _publishBaseline;
+    private int _expectedDelta;
+    private long _keySequence;
+    private int _focusedPid;
+
+    /// <summary>What the hook thread may accept right now.</summary>
+    private sealed record Offer(KeyBinding AcceptWord, KeyBinding AcceptAll);
+
+    private sealed record AcceptKeyOwnership(KeyBinding AcceptWord, long ExpiresAt);
+
+    private sealed record AcceptedTail(string Text, string PrecedingText);
 
     public SuggestionCoordinator(
         IKeyboardHook hook,
@@ -70,7 +78,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         ITextInserter inserter,
         SuggestionWorkController work,
         ILogger<SuggestionCoordinator> logger,
-        SynchronizationContext ui)
+        SynchronizationContext ui,
+        Func<bool>? batterySaverOn = null,
+        TimeProvider? clock = null)
     {
         _hook = hook;
         _focus = focus;
@@ -80,67 +90,24 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         _work = work;
         _logger = logger;
         _ui = ui;
+        _batterySaverOn = batterySaverOn ?? (() => false);
+        _clock = clock ?? TimeProvider.System;
     }
 
-    /// <summary>Whether suggestions are globally enabled. Tray toggle binds here.</summary>
-    public bool Enabled
+    public SuggestionMetrics Metrics { get; } = new();
+
+    /// <summary>True while an inline feature such as the emoji picker owns the keyboard.</summary>
+    public Func<bool>? InlineCaptureActive { get; set; }
+
+    public SuggestionSettings Settings
     {
-        get => _enabled;
+        get => _settings;
         set
         {
-            if (_enabled == value) return;
-            _enabled = value;
-            if (!value) CancelSession("disabled");
+            _settings = value;
+            Post(() => CancelSession("settings changed"));
         }
     }
-
-    /// <summary>
-    /// Case-insensitive process-name blocklist (no .exe). When a focused field's
-    /// host is in this set we suppress suggestions for it. Settable from the
-    /// settings UI; null/empty disables the check.
-    /// </summary>
-    public ISet<string>? BlockedApps { get; set; }
-
-    /// <summary>
-    /// Per-request max-token overrides driven by the completion length preset.
-    /// Null falls back to the factory defaults.
-    /// </summary>
-    public int? MaxTokensSingleLine { get; set; }
-
-    /// <summary>See <see cref="MaxTokensSingleLine"/>.</summary>
-    public int? MaxTokensMultiLine { get; set; }
-
-    /// <summary>
-    /// When false, even multi-line fields receive a single-line request
-    /// (the engine stops on the first newline). Default true mirrors the
-    /// macOS port's "Allow multi-line suggestions" toggle.
-    /// </summary>
-    public bool AllowMultiLineSuggestions { get; set; } = true;
-
-    /// <summary>
-    /// Optional accept-whole-suggestion key character (case-insensitive).
-    /// Mirrors the macOS default of Backtick: pressing it with a visible
-    /// suggestion inserts the entire remaining text, while Tab honors
-    /// <see cref="AcceptanceGranularity"/>.
-    /// </summary>
-    public char? AlternateAcceptKey { get; set; }
-
-    /// <summary>
-    /// "word" (default) or "phrase". Governs how much of the suggestion a
-    /// Tab press takes; the alternate key always takes everything. Mirrors
-    /// the macOS AcceptanceGranularity setting.
-    /// </summary>
-    public string AcceptanceGranularity { get; set; } = "word";
-
-    /// <summary>When false, trailing punctuation is left as its own chunk on
-    /// word accepts. Mirrors macOS "Accept Punctuation With Word".</summary>
-    public bool AcceptPunctuationWithWord { get; set; } = true;
-
-    /// <summary>The user's name for persona conditioning. Flows into requests.</summary>
-    public string UserName { get; set; } = "";
-
-    /// <summary>Language conditioning sentence for the prompt preface.</summary>
-    public string LanguageInstruction { get; set; } = "";
 
     public void Start()
     {
@@ -167,576 +134,406 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     {
         Post(() =>
         {
-            // Compare host process, not AutomationElement reference: UIA returns
-            // a fresh AutomationElement instance on every focus event even when
-            // focus stayed on the same conceptual field (Monaco/Electron in
-            // particular re-fire focus when their internal AX tree mutates),
-            // and ReferenceEquals on those instances is always false.
-            int newPid = field?.ProcessId ?? 0;
-
-            if (_session is not null && (field is null || newPid != _sessionPid))
-            {
-                CancelSession("focus changed to different process");
-            }
-
-            // Also abort any in-flight work whose request was for a different
-            // process — otherwise the in-flight generation keeps streaming for
-            // the OLD window's prefix and eventually pops a stale overlay over
-            // the new window. The work's Post handler also re-checks before
-            // touching state, but cancelling immediately frees CPU sooner.
-            if (_generationInFlight && _inFlightPid != 0 && newPid != _inFlightPid)
-            {
-                _logger.LogInformation("Focus moved (oldPid={Old}, newPid={New}); cancelling in-flight work.",
-                    _inFlightPid, newPid);
-                _work.Cancel();
-                _generationInFlight = false;
-                _inFlightPid = 0;
-            }
+            // UIA hands out a fresh element for every focus event, so identity is the host process.
+            int pid = field?.ProcessId ?? 0;
+            bool sameHost = pid != 0 && (_focusedPid == 0 || pid == _focusedPid);
+            _focusedPid = pid;
+            if (sameHost) return;
+            _publishBaseline = null;
+            _expectedDelta = 0;
+            CancelSession("focus moved");
         });
     }
 
     private void OnKeyEvent(object? sender, KeyEventArgs args)
     {
-        if (!_enabled) return;
+        var ev = args.Event;
+        if (!ev.IsKeyDown || args.Suppress) return;
 
-        // Read the cross-thread visibility flag (release-acquire ordered).
-        bool hasSession = Volatile.Read(ref _hasVisibleSession) != 0;
-
-        _logger.LogDebug("Key kind={Kind} char={Char} down={Down} mod={Mod} session={HasSession}",
-            args.Event.Kind, (int)args.Event.Character, args.Event.IsKeyDown,
-            args.Event.HasNonShiftModifier, hasSession);
-
-        // Tab (or user-configured alternate key) + visible session => accept.
-        // We suppress synchronously here because that's the only way to eat
-        // the key before it reaches the host app, and Post AcceptAsync to the
-        // dispatcher so it runs single-threaded with the rest of the state
-        // machine.
-        bool isTabAccept = args.Event.Kind == KeyKind.Tab && args.Event.IsKeyDown;
-        bool isAltAccept = AlternateAcceptKey is { } alt
-            && args.Event.Kind == KeyKind.Character
-            && args.Event.IsKeyDown
-            && char.ToLowerInvariant(args.Event.Character) == char.ToLowerInvariant(alt);
-        if (hasSession && (isTabAccept || isAltAccept))
+        if (InlineCaptureActive?.Invoke() == true)
         {
-            args.Suppress = true;
-            // Snapshot the displayed text right now, on the hook thread. Any
-            // chunk that streams in between this point and AcceptAsync running
-            // would otherwise mutate _session.VisibleText and cause us to
-            // insert something the user didn't accept. Stop the engine
-            // immediately for the same reason.
-            string textToInsert = Volatile.Read(ref _displayedTextSnapshot) ?? string.Empty;
-            bool whole = isAltAccept;
-            _work.Cancel();
-            _logger.LogInformation(
-                "Accept fast-path (whole={Whole}): snapshot len={Len} text=\"{Text}\"",
-                whole, textToInsert.Length, EscapeFull(textToInsert));
-            Post(() => AcceptAsync(textToInsert, whole).ContinueWith(LogFault, TaskScheduler.Default));
+            Post(() => CancelSession("inline capture active"));
             return;
         }
 
-        Post(() => HandleEvent(args.Event));
+        if (_offer is { } offer)
+        {
+            bool word = offer.AcceptWord.Matches(ev);
+            bool all = !word && offer.AcceptAll.Matches(ev);
+            if (word || all)
+            {
+                // Suppressing here is the only way to eat the key before the host sees it.
+                args.Suppress = true;
+                _work.Cancel();
+                Post(() => Accept(all, ev.IsRepeat));
+                return;
+            }
+        }
+        else if (_ownership is { } ownership
+                 && ownership.AcceptWord.Matches(ev)
+                 && _clock.GetTimestamp() < ownership.ExpiresAt)
+        {
+            args.Suppress = true;
+            Post(() => _queuedAccept = _ownership is not null);
+            return;
+        }
+
+        Post(() => HandleEvent(ev));
     }
 
     private void HandleEvent(KeyboardEvent ev)
     {
-        if (_session is not null)
+        if (ev.Kind == KeyKind.Other) return;
+
+        _pendingDoubleTap = null;
+        _ownership = null;
+        _queuedAccept = false;
+
+        if (SuggestionAvailability.DisabledReason(_settings, _clock.GetUtcNow(), _batterySaverOn()) is { } reason)
         {
-            var result = SuggestionSessionReconciler.Apply(_session, ev);
+            CancelSession(reason);
+            return;
+        }
+
+        TrackForHostPublish(ev);
+
+        if (_session is { } session)
+        {
+            var result = SuggestionSessionReconciler.Apply(session, ev);
             switch (result.Outcome)
             {
-                case SuggestionSessionReconciler.Outcome.Accept:
-                    // The hook-thread fast-path missed this Tab (volatile flag
-                    // wasn't yet set when the key fired). Accept on the pump
-                    // where state is consistent. The host already received the
-                    // raw Tab — that's a one-frame cosmetic glitch we accept
-                    // in exchange for deterministic insertion. Snapshot the
-                    // displayed text now so we still insert what's on screen
-                    // even though we missed the fast-path snapshot.
-                    {
-                        string acceptText = _displayedTextSnapshot ?? _session.VisibleText;
-                        AcceptAsync(acceptText, whole: false).ContinueWith(LogFault, TaskScheduler.Default);
-                    }
-                    return;
-                case SuggestionSessionReconciler.Outcome.AdvanceVisible when result.Next is { } next:
-                    _session = next;
-                    if (next.VisibleText.Length == 0)
-                    {
-                        Volatile.Write(ref _hasVisibleSession, 0);
-                    }
-                    Volatile.Write(ref _displayedTextSnapshot, next.VisibleText);
-                    _overlay.Update(next.VisibleText);
-                    if (next.VisibleText.Length == 0 && next.IsComplete)
-                    {
-                        CancelSession("consumed");
-                    }
-                    return;
-                case SuggestionSessionReconciler.Outcome.Cancel:
-                    CancelSession("reconciler");
-                    // fall through to potentially trigger a new request
-                    break;
                 case SuggestionSessionReconciler.Outcome.Ignore:
                     return;
+                case SuggestionSessionReconciler.Outcome.Advance when result.Next is { VisibleText.Length: > 0 } next:
+                    _session = next;
+                    _overlay.Update(next.VisibleText);
+                    return;
+                default:
+                    CancelSession("typing invalidated the suggestion");
+                    break;
             }
         }
-
-        if (SuggestionAvailability.ShouldCancel(ev))
+        else if (SuggestionAvailability.ClearsSuggestion(ev))
         {
-            CancelSession("availability cancel");
-            return;
+            _work.Cancel();
         }
 
-        var field = _focus.Refresh();
-        if (field is null)
+        if (SuggestionAvailability.SchedulesPrediction(ev))
         {
-            _logger.LogDebug("No focused field at trigger-decision time.");
-            return;
+            SchedulePrediction(ev.Kind == KeyKind.Character ? ev.Character : null);
         }
-        if (!SuggestionAvailability.ShouldRequest(field, ev, BlockedApps))
-        {
-            _logger.LogDebug("ShouldRequest false: secure={Sec} textLen={Len} host={Host} blocked={Blocked}",
-                field.IsSecure, field.Text.Length, field.ProcessName,
-                BlockedApps?.Contains(field.ProcessName) ?? false);
-            return;
-        }
-
-        // Match upstream Cotabby behavior: every new keystroke cancels the
-        // prior debounce/work and reschedules a fresh one. Without this, the
-        // FIRST keystroke captures the prefix for the entire typing burst and
-        // ~5s later we surface a completion for context that no longer exists
-        // ("ork" appearing after the user already typed "ork" themselves and
-        // moved on). The cancel-prior path lets Submit replace pending work,
-        // and the work function snapshots the *live* focus at debounce expiry.
-        _logger.LogInformation("Triggering suggestion: host={Host} textLen={Len} caret={Caret}",
-            field.ProcessName, field.Text.Length, field.CaretOffset);
-        TriggerGeneration(field);
     }
 
-    private void TriggerGeneration(FocusedField fieldAtTrigger)
+    private void TrackForHostPublish(KeyboardEvent ev)
     {
-        var reqId = "req_" + Guid.NewGuid().ToString("N")[..8];
-        var pid = fieldAtTrigger.ProcessId;
-
-        // Capture the prefix synchronously at trigger time. The PostAsync +
-        // _focus.Refresh() round-trip we used to do inside the work function
-        // adds 100-300ms of UIA overhead per request, which combined with
-        // 250ms of debounce means the next keystroke almost always cancels
-        // the engine BEFORE it can produce a chunk. Now we lock the snapshot
-        // here; if the user keeps typing during the debounce window, Submit's
-        // cancel-prior takes care of dropping the stale request.
-        var request = SuggestionRequestFactory.Build(
-            fieldAtTrigger, reqId, MaxTokensSingleLine, MaxTokensMultiLine,
-            UserName, LanguageInstruction);
-
-        // Honor the "Allow multi-line suggestions" toggle by forcing the
-        // single-line stop on multi-line fields when the user has opted out.
-        // Done here, not in the factory, because the override is a settings
-        // concern that the factory shouldn't know about.
-        if (!AllowMultiLineSuggestions && !request.SingleLine)
+        _keySequence++;
+        if (ev.HasNonShiftModifier || ev.Kind is not (KeyKind.Character or KeyKind.Backspace))
         {
-            request = request with { SingleLine = true };
+            // Enter, navigation and shortcuts change the text in ways a count cannot predict.
+            _publishBaseline = null;
+            _expectedDelta = 0;
         }
-        var anchor = fieldAtTrigger.CaretRect;
-        var element = fieldAtTrigger.ElementHandle;
-        var field = fieldAtTrigger;
-
-        _logger.LogInformation(
-            "Scheduled request {ReqId} pid={Pid} prefix={Len} host={Host} anchor={X},{Y}",
-            reqId, pid, request.Prefix.Length, request.HostApp,
-            (int)anchor.X, (int)anchor.Y);
-
-        _generationInFlight = true;
-        _inFlightPid = pid;
-        _ = _work.Submit(async ct =>
+        else if (ev.Kind == KeyKind.Character)
         {
-            _logger.LogInformation("Firing request {ReqId} (post-debounce).", reqId);
-
-            try
-            {
-                if (!_engine.IsReady)
-                {
-                    _logger.LogWarning("Engine not ready when work fired for {ReqId}.", reqId);
-                    return;
-                }
-
-                var sw = Stopwatch.StartNew();
-                string accumulated = string.Empty;
-                bool overlayShown = false;
-                var lastPosted = DateTime.MinValue;
-                var minInterval = TimeSpan.FromMilliseconds(50);
-
-                // Watchdog: cap any single generation at 10 seconds. Without
-                // this a hung engine call leaves _generationInFlight=true
-                // forever and the next keystroke is silently dropped — that's
-                // the "Notepad randomly stops showing suggestions" symptom.
-                // The engine surfaces its result as one final chunk, so the
-                // watchdog must cover a full 50-token decode on the slowest
-                // supported hardware (CPU-only laptop); anything past 10s is
-                // a wedge to be killed, not a slow-but-recoverable generation.
-                using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, watchdog.Token);
-                var combinedToken = linked.Token;
-
-            int chunkSeq = 0;
-            await foreach (var chunk in _engine.GenerateAsync(request, combinedToken).ConfigureAwait(false))
-            {
-                if (ct.IsCancellationRequested)
-                {
-                    _logger.LogInformation(
-                        "Req {ReqId} aborted by cancel after {Chunks} chunks ({Chars} chars).",
-                        reqId, chunkSeq, accumulated.Length);
-                    return;
-                }
-                chunkSeq++;
-                accumulated += chunk.Text;
-
-                // Quality gating happens in the engine (constrained decode +
-                // one-shot normalizer); the coordinator only keeps the
-                // insert-time StripDegenerateTail firewall. The old streaming
-                // hard-cap/char-run truncation belonged to the instruct-model
-                // era and silently dropped legitimate completions.
-                if (!chunk.IsFinal && string.IsNullOrEmpty(chunk.Text)) continue;
-
-                // Always Post the first chunk (so overlay appears ASAP) and the
-                // final chunk (so trailing text isn't dropped). Throttle the
-                // middle.
-                bool isFirstShow = !overlayShown;
-                if (!isFirstShow && !chunk.IsFinal)
-                {
-                    var now = DateTime.UtcNow;
-                    if (now - lastPosted < minInterval) continue;
-                    lastPosted = now;
-                }
-                else
-                {
-                    lastPosted = DateTime.UtcNow;
-                }
-
-                var ctSnapshot = combinedToken;
-                Post(() =>
-                {
-                    if (ctSnapshot.IsCancellationRequested) return;
-
-                    if (_session is not null && _session.RequestId != reqId)
-                    {
-                        _logger.LogDebug("Chunk for stale req {ReqId} (current session is {Cur}); dropping.",
-                            reqId, _session.RequestId);
-                        return;
-                    }
-
-                    if (_session is null)
-                    {
-                        if (string.IsNullOrEmpty(accumulated))
-                        {
-                            _logger.LogDebug("First chunk empty for {ReqId}; skipping show.", reqId);
-                            return;
-                        }
-
-                        // Re-read the live caret to anchor the overlay where
-                        // the user *is*. The work CTS is already cancelled by
-                        // OnFocusChanged if the user Alt-Tabbed away, so we
-                        // don't double-check the PID here — the
-                        // ctSnapshot.IsCancellationRequested guard above
-                        // covers that. Trying to be too strict here was
-                        // dropping legitimate completions when UIA returned a
-                        // null or zero-rect for a frame.
-                        var live = _focus.Refresh();
-                        var liveAnchor = (live is not null && !live.CaretRect.IsEmpty)
-                            ? live.CaretRect : anchor;
-                        int livePid = live?.ProcessId ?? field.ProcessId;
-
-                        _session = new SuggestionSession
-                        {
-                            RequestId = reqId,
-                            ElementHandle = element,
-                            OriginalPrefix = request.Prefix,
-                            ConsumedChars = 0,
-                            VisibleText = accumulated,
-                            IsComplete = chunk.IsFinal,
-                            AnchorRect = liveAnchor,
-                        };
-                        _sessionPid = livePid;
-                        Volatile.Write(ref _hasVisibleSession, 1);
-                        Volatile.Write(ref _displayedTextSnapshot, accumulated);
-                        _overlay.Show(accumulated, liveAnchor);
-                        overlayShown = true;
-                        _logger.LogInformation(
-                            "Overlay shown req={ReqId} text=\"{Text}\" hex={Hex} anchor={X},{Y}",
-                            reqId, EscapeFull(accumulated), HexDump(accumulated),
-                            (int)liveAnchor.X, (int)liveAnchor.Y);
-                    }
-                    else
-                    {
-                        _session = _session with
-                        {
-                            VisibleText = accumulated,
-                            IsComplete = chunk.IsFinal,
-                        };
-                        Volatile.Write(ref _displayedTextSnapshot, accumulated);
-                        if (overlayShown) _overlay.Update(accumulated);
-                        else { _overlay.Show(accumulated, _session.AnchorRect); overlayShown = true; }
-                        _logger.LogInformation(
-                            "Overlay updated req={ReqId} text=\"{Text}\" hex={Hex}",
-                            reqId, EscapeFull(accumulated), HexDump(accumulated));
-                    }
-                });
-            }
-
-                sw.Stop();
-                _logger.LogInformation("Request {ReqId} finished in {Ms} ms.", reqId, sw.ElapsedMilliseconds);
-            }
-            finally
-            {
-                Post(() => _generationInFlight = false);
-            }
-        });
+            _expectedDelta++;
+        }
+        else if (ev.Kind == KeyKind.Backspace)
+        {
+            _expectedDelta--;
+        }
     }
 
-    private async Task AcceptAsync(string textToInsert, bool whole)
+    private void SchedulePrediction(char? typed)
     {
-        var session = _session;
-        if (session is null)
+        var requestId = "req_" + Guid.NewGuid().ToString("N")[..8];
+        var settings = _settings;
+        var baseline = _publishBaseline;
+        int delta = _expectedDelta;
+        long sequence = _keySequence;
+        _ = _work.Submit(ct => PredictAsync(requestId, settings, baseline, delta, typed, sequence, ct));
+    }
+
+    private async Task PredictAsync(
+        string requestId, SuggestionSettings settings, FocusedField? baseline, int delta, char? typed,
+        long sequence, CancellationToken ct)
+    {
+        try
         {
-            _logger.LogInformation("AcceptAsync: session null, nothing to insert.");
+            var field = await WaitForHostPublishAsync(baseline, delta, typed, ct).ConfigureAwait(false);
+            if (field is null) return;
+            Post(() =>
+            {
+                if (_keySequence != sequence) return;
+                _publishBaseline = field;
+                _expectedDelta = 0;
+            });
+
+            if (SuggestionAvailability.DisabledReason(settings, field) is { } reason)
+            {
+                _logger.LogDebug("Request {ReqId} skipped: {Reason}", requestId, reason);
+                return;
+            }
+            if (!SuggestionAvailability.HasTextToContinue(field) || !_engine.IsReady) return;
+
+            var request = SuggestionRequestFactory.Build(field, requestId, settings);
+            var stopwatch = Stopwatch.StartNew();
+            string text = await GenerateAsync(request, ct).ConfigureAwait(false);
+            if (text.Length == 0 || ct.IsCancellationRequested) return;
+
+            // Generation took a while. Show the suggestion only if the text it continues is still there.
+            var live = _focus.Refresh();
+            if (live is null || live.ProcessId != field.ProcessId || PrecedingText(live) != PrecedingText(field))
+            {
+                _logger.LogInformation("Request {ReqId} dropped because the field changed during generation.", requestId);
+                return;
+            }
+
+            int latencyMs = (int)stopwatch.ElapsedMilliseconds;
+            Post(() => Present(requestId, text, live, latencyMs, ct));
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Request {ReqId} failed.", requestId);
+        }
+    }
+
+    private async Task<FocusedField?> WaitForHostPublishAsync(
+        FocusedField? baseline, int delta, char? typed, CancellationToken ct)
+    {
+        int waited = 0;
+        int interval = HostPublishFirstPollMs;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var field = _focus.Refresh();
+            if (field is null) return null;
+            if (waited >= HostPublishCeilingMs || HasPublished(field, baseline, delta, typed, waited)) return field;
+            await Task.Delay(interval, ct).ConfigureAwait(false);
+            waited += interval;
+            interval = HostPublishPollMs;
+        }
+    }
+
+    private static bool HasPublished(FocusedField field, FocusedField? baseline, int delta, char? typed, int waited)
+    {
+        var preceding = PrecedingText(field);
+        if (typed is { } c && (preceding.Length == 0 || preceding[^1] != c)) return false;
+        if (baseline is null || baseline.ProcessId != field.ProcessId) return waited > 0 || typed is not null;
+
+        int expected = PrecedingText(baseline).Length + delta;
+        return delta switch
+        {
+            > 0 => preceding.Length >= expected,
+            < 0 => preceding.Length <= expected,
+            _ => true,
+        };
+    }
+
+    private async Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct)
+    {
+        using var watchdog = new CancellationTokenSource(GenerationWatchdog);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, watchdog.Token);
+        var text = string.Empty;
+        try
+        {
+            await foreach (var chunk in _engine.GenerateAsync(request, linked.Token).ConfigureAwait(false))
+            {
+                text += chunk.Text;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            if (!ct.IsCancellationRequested) _logger.LogWarning("Request {ReqId} hit the watchdog.", request.RequestId);
+            return string.Empty;
+        }
+        return text;
+    }
+
+    private void Present(string requestId, string text, FocusedField field, int latencyMs, CancellationToken ct)
+    {
+        if (ct.IsCancellationRequested || _session is not null) return;
+
+        var preceding = PrecedingText(field);
+        if (_lastAcceptedTail is { } tail
+            && AcceptanceChunker.IsStaleAcceptanceEcho(text, tail.Text, preceding, tail.PrecedingText))
+        {
+            _logger.LogInformation("Request {ReqId} dropped as an echo of the last accepted chunk.", requestId);
             return;
         }
-        if (string.IsNullOrEmpty(textToInsert))
+        _lastAcceptedTail = null;
+
+        _session = new SuggestionSession { RequestId = requestId, VisibleText = text, AnchorRect = field.CaretRect };
+        _sessionField = field;
+        _sessionAcceptedAny = false;
+        PublishOffer();
+        _overlay.Show(text, field.CaretRect);
+        Metrics.RecordShown(latencyMs);
+        _logger.LogInformation("Suggestion shown req={ReqId} latency={Ms}ms chars={Chars}", requestId, latencyMs, text.Length);
+        _logger.LogDebug("Suggestion text req={ReqId} \"{Text}\"", requestId, LogText.Escape(text));
+
+        bool acceptQueued = _queuedAccept;
+        _ownership = null;
+        _queuedAccept = false;
+        if (acceptQueued) Accept(all: false, isRepeat: true);
+    }
+
+    private void Accept(bool all, bool isRepeat)
+    {
+        if (_session is not { } session || _sessionField is not { } field)
         {
-            _logger.LogInformation("AcceptAsync: snapshot empty (req={ReqId}), skip insert.",
-                session.RequestId);
+            // The press raced the accept that exhausted the suggestion, so it belongs to the continuation.
+            _queuedAccept = !all && _ownership is not null;
             return;
         }
 
-        var field = _focus.Refresh();
-        if (field is null)
+        var settings = _settings;
+        bool doubleTapApplies = settings.DoubleTapAcceptsAll
+            && !isRepeat
+            && !ShortcutResolver.OverridesAcceptAll(field.ProcessName, settings.ShortcutOverrides);
+        long now = _clock.GetTimestamp();
+        if (!all && doubleTapApplies
+            && _pendingDoubleTap is { } pending
+            && pending.RequestId == session.RequestId
+            && _clock.GetElapsedTime(pending.Timestamp, now) <= DoubleTapWindow)
         {
-            _logger.LogInformation("AcceptAsync: no focused field at accept time, cancel.");
-            CancelSession("no field at accept");
-            return;
+            all = true;
         }
+        _pendingDoubleTap = null;
 
-        // FINAL FIREWALL before SendInput. If by some path a degenerate
-        // suggestion slipped through the engine's guards, trim it here.
-        var visible = StripDegenerateTail(textToInsert);
-        if (string.IsNullOrEmpty(visible))
-        {
-            _logger.LogInformation("AcceptAsync: snapshot was all degenerate after trim, skip insert.");
-            CancelSession("accepted");
-            return;
-        }
-
-        // Chunking mirrors the macOS acceptance model: Tab takes one word (or
-        // phrase), the alternate key takes the whole remaining suggestion.
-        string chunk = whole
+        string visible = session.VisibleText;
+        string chunk = all
             ? visible
-            : AcceptanceGranularity == "phrase"
-                ? SuggestionSessionReconciler.NextAcceptancePhrase(visible, AcceptPunctuationWithWord)
-                : SuggestionSessionReconciler.NextAcceptanceChunk(visible, AcceptPunctuationWithWord);
+            : settings.Granularity == AcceptanceGranularity.Phrase
+                ? AcceptanceChunker.NextPhrase(visible, settings.AcceptPunctuationWithWord)
+                : AcceptanceChunker.NextChunk(visible, settings.AcceptPunctuationWithWord);
         if (chunk.Length == 0) chunk = visible;
+        if (settings.AddSpaceAfterAccept) chunk = AcceptanceChunker.ConsumingTrailingSpace(chunk, visible);
+
         string remaining = visible[chunk.Length..];
+        bool exhausted = string.IsNullOrWhiteSpace(remaining);
+        bool firstChunk = !_sessionAcceptedAny;
 
-        var caret = Math.Clamp(field.CaretOffset, 0, field.Text.Length);
-        string livePreceding = field.Text[..caret];
-        string insertion = SuggestionSessionReconciler.InsertionChunk(chunk, livePreceding);
-
-        _logger.LogInformation(
-            "AcceptAsync: whole={Whole} chunk=\"{Chunk}\" insertion=\"{Ins}\" remaining={Rem} chars.",
-            whole, EscapeFull(chunk), EscapeFull(insertion), remaining.Length);
-
-        bool exhausted = remaining.Trim().Length == 0;
         if (exhausted)
         {
-            CancelSession("accepted");
+            ClearSession();
+            // Keep owning the accept key so a fast follow-up press is queued for the
+            // continuation instead of leaking into the host.
+            _ownership = new AcceptKeyOwnership(
+                ShortcutResolver.AcceptWord(field.ProcessName, settings.ShortcutOverrides, settings.AcceptWord),
+                now + (long)(PostExhaustionWindow.TotalSeconds * _clock.TimestampFrequency));
         }
         else
         {
-            // Advance the session in place: the un-accepted tail stays as
-            // ghost text and the next Tab keeps consuming it.
-            _session = session with
-            {
-                VisibleText = remaining,
-                ConsumedChars = session.ConsumedChars + chunk.Length,
-            };
-            Volatile.Write(ref _displayedTextSnapshot, remaining);
+            _session = session with { VisibleText = remaining };
+            _sessionAcceptedAny = true;
             _overlay.Update(remaining);
+            if (!all && doubleTapApplies) _pendingDoubleTap = (session.RequestId, now);
         }
 
+        _insertChain = _insertChain
+            .ContinueWith(
+                _ => InsertAcceptedAsync(session.RequestId, chunk, exhausted, firstChunk, settings),
+                TaskScheduler.Default)
+            .Unwrap();
+    }
+
+    private async Task InsertAcceptedAsync(
+        string requestId, string chunk, bool exhausted, bool firstChunk, SuggestionSettings settings)
+    {
         try
         {
-            if (insertion.Length > 0)
+            var field = _focus.Refresh();
+            if (field is null)
             {
-                var ok = await _inserter.InsertAsync(field, insertion, CancellationToken.None).ConfigureAwait(false);
-                _logger.LogInformation("AcceptAsync: inserter returned ok={Ok}", ok);
+                Post(() => CancelSession("no field at accept"));
+                return;
             }
 
-            // Give the host ~60ms to publish the inserted text back into UIA,
-            // then re-read the caret so the remaining ghost text re-anchors
-            // where the user now is (or, when exhausted, so the next
-            // suggestion can flow immediately — the upstream post-exhaustion
-            // continuation).
-            await Task.Delay(60).ConfigureAwait(false);
+            string preceding = PrecedingText(field);
+            string insertion = AcceptanceChunker.InsertionChunk(chunk, preceding);
+            if (exhausted && settings.AddSpaceAfterAccept)
+            {
+                insertion = AcceptanceChunker.AppendingTrailingSpace(insertion);
+            }
+
+            if (insertion.Length > 0
+                && !await _inserter.InsertAsync(field, insertion, CancellationToken.None).ConfigureAwait(false))
+            {
+                Post(() => CancelSession("insertion failed"));
+                return;
+            }
+            Metrics.RecordAccepted(chunk, firstChunk);
+            _logger.LogInformation(
+                "Accepted req={ReqId} chars={Chars} exhausted={Exhausted}", requestId, insertion.Length, exhausted);
+            _logger.LogDebug("Accepted text req={ReqId} \"{Inserted}\"", requestId, LogText.Escape(insertion));
+
+            if (exhausted)
+            {
+                Post(() =>
+                {
+                    _lastAcceptedTail = new AcceptedTail(chunk, preceding);
+                    _publishBaseline = field;
+                    _expectedDelta = insertion.Length;
+                    SchedulePrediction(typed: null);
+                });
+                return;
+            }
+
+            // Give the host a moment to publish the insert, then move the ghost to the new caret.
+            await Task.Delay(PostInsertSettleMs).ConfigureAwait(false);
+            var after = _focus.Refresh();
+            if (after is null || after.CaretRect.IsEmpty) return;
             Post(() =>
             {
-                var after = _focus.Refresh();
-                if (after is null) return;
-                if (!exhausted && _session is { } live && live.RequestId == session.RequestId)
-                {
-                    if (!after.CaretRect.IsEmpty)
-                    {
-                        _session = live with { AnchorRect = after.CaretRect };
-                        _overlay.Show(live.VisibleText, after.CaretRect);
-                    }
-                }
-                else if (exhausted && _enabled)
-                {
-                    TriggerGeneration(after);
-                }
+                if (_session is not { } live || live.RequestId != requestId) return;
+                _session = live with { AnchorRect = after.CaretRect };
+                _sessionField = after;
+                _overlay.Show(live.VisibleText, after.CaretRect);
             });
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Insertion threw.");
+            _logger.LogError(ex, "Accept failed for {ReqId}.", requestId);
+            Post(() => CancelSession("accept failed"));
         }
+    }
+
+    private void PublishOffer()
+    {
+        var settings = _settings;
+        var process = _sessionField?.ProcessName;
+        _offer = new Offer(
+            ShortcutResolver.AcceptWord(process, settings.ShortcutOverrides, settings.AcceptWord),
+            ShortcutResolver.AcceptAll(process, settings.ShortcutOverrides, settings.AcceptAll));
+    }
+
+    private void ClearSession()
+    {
+        _session = null;
+        _sessionField = null;
+        _offer = null;
+        _overlay.Hide();
     }
 
     private void CancelSession(string reason)
     {
-        if (_session is null && !_generationInFlight) return;
-        _logger.LogInformation("Cancel session ({Reason}).", reason);
-        _session = null;
-        _sessionPid = 0;
-        _generationInFlight = false;
-        _inFlightPid = 0;
-        Volatile.Write(ref _hasVisibleSession, 0);
-        Volatile.Write(ref _displayedTextSnapshot, null);
-        _overlay.Hide();
+        if (_session is not null) _logger.LogInformation("Suggestion cleared ({Reason}).", reason);
+        _pendingDoubleTap = null;
+        _ownership = null;
+        _queuedAccept = false;
+        ClearSession();
         _work.Cancel();
     }
 
-    private static string Preview(string s) => s.Length <= 40 ? s : s[..40] + "…";
-
-    /// <summary>
-    /// Escape control chars and newlines so a single-line log entry shows the
-    /// FULL string verbatim. Used by the detailed-monitoring path so we can
-    /// reconstruct exactly what the engine produced vs what the inserter sent
-    /// vs what the host received.
-    /// </summary>
-    private static string EscapeFull(string s)
-    {
-        if (string.IsNullOrEmpty(s)) return s;
-        var sb = new System.Text.StringBuilder(s.Length + 8);
-        foreach (var c in s)
-        {
-            switch (c)
-            {
-                case '\n': sb.Append("\\n"); break;
-                case '\r': sb.Append("\\r"); break;
-                case '\t': sb.Append("\\t"); break;
-                case '"':  sb.Append("\\\""); break;
-                case '\\': sb.Append("\\\\"); break;
-                default:
-                    if (c < 0x20 || c == 0x7F) sb.Append($"\\x{(int)c:X2}");
-                    else sb.Append(c);
-                    break;
-            }
-        }
-        return sb.ToString();
-    }
-
-    /// <summary>UTF-16 hex dump of <paramref name="s"/>. Lets us spot doubled
-    /// chars, invisible whitespace, or off-by-one differences between snapshot
-    /// and inserter at a glance.</summary>
-    private static string HexDump(string s)
-    {
-        if (string.IsNullOrEmpty(s)) return "";
-        var sb = new System.Text.StringBuilder(s.Length * 5);
-        for (int i = 0; i < s.Length; i++)
-        {
-            if (i > 0) sb.Append(' ');
-            sb.Append(((int)s[i]).ToString("X4"));
-        }
-        return sb.ToString();
-    }
-
-    /// <summary>True if the tail of <paramref name="s"/> ends with 5+ identical
-    /// non-whitespace chars — a degenerate run that should be stripped.</summary>
-    private static bool HasTrailingCharRun(string s, int threshold)
-    {
-        if (s.Length <= threshold) return false;
-        char last = s[^1];
-        if (last == ' ' || last == '\t' || last == '\n' || last == '\r') return false;
-        int count = 0;
-        for (int i = s.Length - 1; i >= 0 && count <= threshold; i--)
-        {
-            if (s[i] != last) return false;
-            count++;
-        }
-        return count > threshold;
-    }
-
-    /// <summary>Find the first index of a run of 5+ identical non-whitespace
-    /// chars anywhere in <paramref name="s"/>, or -1 if none. Used to truncate
-    /// the suggestion before an interior degenerate run reaches the host —
-    /// degeneration that the engine's tail-only check missed when the run was
-    /// split across many small chunks.</summary>
-    private static int FindInteriorRunStart(string s, int threshold)
-    {
-        if (s.Length <= threshold) return -1;
-        int runStart = 0;
-        for (int i = 1; i < s.Length; i++)
-        {
-            if (s[i] != s[runStart])
-            {
-                runStart = i;
-                continue;
-            }
-            int runLen = i - runStart + 1;
-            if (runLen > threshold)
-            {
-                char c = s[runStart];
-                if (c != ' ' && c != '\t' && c != '\n' && c != '\r') return runStart;
-            }
-        }
-        return -1;
-    }
-
-    /// <summary>
-    /// Pre-insertion firewall: if the suggestion contains a degenerate run
-    /// (5+ identical non-whitespace chars) anywhere, truncate at the start of
-    /// the run. If after trimming nothing useful is left, return empty so
-    /// AcceptAsync skips insertion entirely.
-    /// </summary>
-    private static string StripDegenerateTail(string s)
-    {
-        if (string.IsNullOrEmpty(s)) return s;
-        int idx = FindInteriorRunStart(s, 4);
-        if (idx >= 0) s = s[..idx];
-        return s.TrimEnd();
-    }
+    private static string PrecedingText(FocusedField field) =>
+        field.Text[..Math.Clamp(field.CaretOffset, 0, field.Text.Length)];
 
     private void Post(Action action)
     {
         if (SynchronizationContext.Current == _ui) action();
         else _ui.Post(_ => action(), null);
-    }
-
-    private Task PostAsync(Action action)
-    {
-        if (SynchronizationContext.Current == _ui)
-        {
-            try { action(); return Task.CompletedTask; }
-            catch (Exception ex) { return Task.FromException(ex); }
-        }
-        var tcs = new TaskCompletionSource();
-        _ui.Post(_ =>
-        {
-            try { action(); tcs.SetResult(); }
-            catch (Exception ex) { tcs.SetException(ex); }
-        }, null);
-        return tcs.Task;
-    }
-
-    private void LogFault(Task t)
-    {
-        if (t.Exception is { } ex) _logger.LogError(ex, "Background task faulted.");
     }
 }

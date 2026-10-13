@@ -1,5 +1,6 @@
 using System.Net.Http;
-using System.Threading;
+using Cotabby.App.Emoji;
+using Cotabby.App.Macros;
 using Cotabby.App.Overlay;
 using Cotabby.App.Settings;
 using Cotabby.Core.Focus;
@@ -9,162 +10,195 @@ using Cotabby.Core.Models;
 using Cotabby.Core.Overlay;
 using Cotabby.Core.Suggestions;
 using Cotabby.Inference;
+using Cotabby.Inference.OpenAICompatible;
 using Cotabby.Win32.Focus;
 using Cotabby.Win32.Input;
 using Cotabby.Win32.Insertion;
+using Cotabby.Win32.Power;
+using Cotabby.Win32.Security;
+using Cotabby.Win32.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Cotabby.App.Hosting;
 
 /// <summary>
-/// Composition root. Mirrors the macOS port's <c>CotabbyAppEnvironment</c>:
-/// constructs the long-lived object graph once at startup so SwiftUI / WPF
-/// views never instantiate services themselves.
+/// Composition root. Builds the long-lived object graph once at startup and
+/// pushes settings changes into it.
 /// </summary>
 public sealed class AppHost : IAsyncDisposable
 {
-    public IServiceProvider Services { get; }
+    public static string LogPath { get; } = System.IO.Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Cotabby", "logs", "cotabby.log");
+
+    /// <summary>Debug logs include typed and suggested text, so they are opt-in.</summary>
+    private static readonly bool DebugLogging = Environment.GetEnvironmentVariable("COTABBY_DEBUG_LOG") == "1";
+
+    private readonly ServiceProvider _services;
+    private readonly IKeyboardHook _hook;
+    private readonly SuggestionWorkController _work;
+    private readonly SuggestionEngineRouter _router;
+    private readonly SynchronizationContext _ui;
+    private readonly ILogger _logger;
+    private readonly GhostOverlayWindow _macroPreview;
+
     public SuggestionCoordinator Coordinator { get; }
     public LlamaRuntimeManager Runtime { get; }
     public ModelDownloader Downloader { get; }
     public SettingsStore SettingsStore { get; }
-    public AppSettings Settings { get; }
+    public AppSettings Settings { get; private set; }
     public GhostOverlayWindow Overlay { get; }
+    public EmojiPickerController EmojiPicker { get; }
+    public MacroController Macros { get; }
+    public OpenAICompatibleSuggestionEngine Endpoint { get; }
+    public OpenAICompatibleApiClient EndpointClient { get; }
+    public IOpenAICompatibleCredentialStore EndpointCredentials { get; }
 
-    /// <summary>
-    /// Optional emoji picker controller — registered from <c>App.OnStartup</c>
-    /// after the popup window is realized. Kept on the host so the settings
-    /// UI can toggle <see cref="EmojiPickerController.Enabled"/>.
-    /// </summary>
-    public Cotabby.App.Emoji.EmojiPickerController? EmojiPicker { get; private set; }
+    /// <summary>Raised on the UI thread after settings were applied, so open windows and the tray can refresh.</summary>
+    public event Action? SettingsApplied;
 
-    public void RegisterEmojiPicker(Cotabby.App.Emoji.EmojiPickerController picker)
+    public AppHost(
+        SynchronizationContext ui, GhostOverlayWindow overlay, GhostOverlayWindow macroPreview,
+        EmojiPopupWindow emojiPopup)
     {
-        EmojiPicker = picker;
-    }
+        _ui = ui;
+        Overlay = overlay;
+        _macroPreview = macroPreview;
 
-    public AppHost(SynchronizationContext uiContext, GhostOverlayWindow overlay)
-    {
         var sc = new ServiceCollection();
-
         sc.AddLogging(b =>
         {
-            b.SetMinimumLevel(LogLevel.Debug);
+            b.SetMinimumLevel(DebugLogging ? LogLevel.Debug : LogLevel.Information);
             b.AddDebug();
-            b.AddSimpleConsole(opts =>
-            {
-                opts.SingleLine = true;
-                opts.TimestampFormat = "HH:mm:ss.fff ";
-            });
-            // File sink so detailed monitoring lands somewhere stable
-            // regardless of how the user launched the exe. Path is fixed at
-            // C:\tmp\cotabby-live.log to match the existing tail tooling.
-            b.AddProvider(new FileLoggerProvider(@"C:\tmp\cotabby-live.log"));
+            b.AddProvider(new FileLoggerProvider(LogPath));
         });
-
-        sc.AddSingleton<HttpClient>(_ =>
+        sc.AddSingleton(_ =>
         {
-            var h = new HttpClient
-            {
-                Timeout = TimeSpan.FromMinutes(30), // GGUF downloads are big
-            };
-            h.DefaultRequestHeaders.UserAgent.ParseAdd("Cotabby-Windows/0.1 (+https://github.com/Msde-7/cotabby-windows)");
-            return h;
+            // GGUF downloads are large, so the timeout is generous.
+            var http = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd(
+                "Cotabby-Windows/0.2 (+https://github.com/Msde-7/cotabby-windows)");
+            return http;
         });
-
         sc.AddSingleton<SettingsStore>();
-        sc.AddSingleton(provider => provider.GetRequiredService<SettingsStore>().Load());
-
         sc.AddSingleton<IFocusTracker, UiaFocusTracker>();
         sc.AddSingleton<IKeyboardHook, KeyboardHook>();
         sc.AddSingleton<ITextInserter, SendInputTextInserter>();
-
         sc.AddSingleton<LlamaRuntimeManager>();
         sc.AddSingleton<ModelDownloader>();
-        sc.AddSingleton<ISuggestionEngine, LlamaSuggestionEngine>();
+        sc.AddSingleton<LlamaSuggestionEngine>();
+        sc.AddSingleton<OpenAICompatibleApiClient>(_ => new OpenAICompatibleApiClient());
+        sc.AddSingleton<IOpenAICompatibleCredentialStore>(_ => new DpapiOpenAICompatibleCredentialStore());
+        _services = sc.BuildServiceProvider();
 
-        sc.AddSingleton<IOverlayPresenter>(_ => overlay);
-        sc.AddSingleton(uiContext);
+        SettingsStore = _services.GetRequiredService<SettingsStore>();
+        Settings = SettingsStore.Load();
+        Runtime = _services.GetRequiredService<LlamaRuntimeManager>();
+        Downloader = _services.GetRequiredService<ModelDownloader>();
+        EndpointClient = _services.GetRequiredService<OpenAICompatibleApiClient>();
+        EndpointCredentials = _services.GetRequiredService<IOpenAICompatibleCredentialStore>();
 
-        sc.AddSingleton(provider =>
-        {
-            var settings = provider.GetRequiredService<AppSettings>();
-            return new SuggestionWorkController(TimeSpan.FromMilliseconds(settings.DebounceMs));
-        });
-        sc.AddSingleton<SuggestionCoordinator>();
+        var loggers = _services.GetRequiredService<ILoggerFactory>();
+        _logger = loggers.CreateLogger("Cotabby.App");
+        _hook = _services.GetRequiredService<IKeyboardHook>();
+        var focus = _services.GetRequiredService<IFocusTracker>();
+        var inserter = _services.GetRequiredService<ITextInserter>();
 
-        Services = sc.BuildServiceProvider();
-        Coordinator = Services.GetRequiredService<SuggestionCoordinator>();
-        Runtime = Services.GetRequiredService<LlamaRuntimeManager>();
-        Downloader = Services.GetRequiredService<ModelDownloader>();
-        SettingsStore = Services.GetRequiredService<SettingsStore>();
-        Settings = Services.GetRequiredService<AppSettings>();
-        Overlay = overlay;
+        Endpoint = new OpenAICompatibleSuggestionEngine(
+            EndpointClient, EndpointCredentials, EndpointSettings,
+            loggers.CreateLogger<OpenAICompatibleSuggestionEngine>());
+        _router = new SuggestionEngineRouter(_services.GetRequiredService<LlamaSuggestionEngine>(), Endpoint);
+        _work = new SuggestionWorkController(TimeSpan.FromMilliseconds(Settings.DebounceMs));
 
-        ApplyRuntimeSettings();
+        IcuWordBreaker.Install();
+
+        // Inline features subscribe to the hook first so they see each key before the coordinator.
+        EmojiPicker = new EmojiPickerController(
+            _hook, focus, inserter, emojiPopup, overlay.Dispatcher,
+            loggers.CreateLogger<EmojiPickerController>());
+        Macros = new MacroController(_hook, focus, inserter, macroPreview, loggers.CreateLogger<MacroController>());
+        _hook.KeyEvent += OnGlobalToggleKey;
+
+        Coordinator = new SuggestionCoordinator(
+            _hook, focus, _router, overlay, inserter, _work,
+            loggers.CreateLogger<SuggestionCoordinator>(), ui,
+            batterySaverOn: () => PowerStatus.IsBatterySaverOn);
+        Coordinator.InlineCaptureActive = () => EmojiPicker.IsCapturing || Macros.IsCapturing;
+        Coordinator.Metrics.Restore(Settings.WordsAccepted);
+
+        ApplySettings();
     }
 
-    /// <summary>
-    /// Push the user-visible settings into the long-lived runtime (coordinator,
-    /// launch-at-login). Idempotent — call after editing <see cref="Settings"/>
-    /// (and before <see cref="PersistSettings"/>) to make the change take effect
-    /// without restarting the app.
-    /// </summary>
-    public void ApplyRuntimeSettings()
+    private OpenAICompatibleEndpointSettings EndpointSettings => new(
+        Settings.EndpointBaseUrl,
+        Settings.EndpointModel,
+        Settings.EndpointUsesChatApi ? OpenAICompatibleApiMode.ChatCompletions : OpenAICompatibleApiMode.Completions);
+
+    /// <summary>Pushes <see cref="Settings"/> into the running app and saves them.</summary>
+    public void PersistSettings()
     {
-        Coordinator.Enabled = Settings.Enabled;
-
-        var (single, multi) = CompletionLengthPreset.Tokens(Settings.CompletionLengthPreset);
-        Coordinator.MaxTokensSingleLine = single;
-        Coordinator.MaxTokensMultiLine = multi;
-        Coordinator.AllowMultiLineSuggestions = Settings.AllowMultiLine;
-        Coordinator.AlternateAcceptKey = ParseAlternateAcceptKey(Settings.AcceptSuggestionKey);
-        Coordinator.AcceptanceGranularity = Settings.AcceptanceMode == "phrase" ? "phrase" : "word";
-        Coordinator.AcceptPunctuationWithWord = Settings.AcceptPunctuationWithWord;
-        Coordinator.UserName = Settings.UserName;
-        Coordinator.LanguageInstruction =
-            Cotabby.Core.Support.BaseCompletionPromptRenderer.LanguageInstruction(Settings.Languages) ?? "";
-
-        if (EmojiPicker is not null)
-        {
-            EmojiPicker.Enabled = Settings.EmojiPickerEnabled;
-        }
-
-        if (Settings.BlockedApps is { Count: > 0 } list)
-        {
-            Coordinator.BlockedApps = new HashSet<string>(list, StringComparer.OrdinalIgnoreCase);
-        }
-        else
-        {
-            Coordinator.BlockedApps = null;
-        }
-
-        // Best-effort. The registry write fails silently in restricted
-        // environments — settings UI shows the actual queried state on next
-        // open so we don't mislead the user.
-        LaunchAtLogin.Set(Settings.LaunchAtLogin);
+        ApplySettings();
+        Settings.WordsAccepted = Coordinator.Metrics.WordsAccepted;
+        SettingsStore.Save(Settings);
     }
 
-    /// <summary>
-    /// Try to load the resident model if already cached, but never auto-download.
-    /// The user explicitly triggers a download through the settings window so we
-    /// don't burn ~400MB of their bandwidth on first launch. If the configured
-    /// model isn't cached we leave the runtime cold and return false.
-    /// </summary>
+    /// <summary>Restores every preference to its default. The chosen model and onboarding state stay.</summary>
+    public void ResetSettings()
+    {
+        Settings = new AppSettings
+        {
+            ActiveModelId = Settings.ActiveModelId,
+            ShowFirstRunWelcome = Settings.ShowFirstRunWelcome,
+            WordsAccepted = Coordinator.Metrics.WordsAccepted,
+        };
+        PersistSettings();
+    }
+
+    private void ApplySettings()
+    {
+        // An expired pause is dropped so the tray stops showing it.
+        if (Settings.Pause?.IsActive(DateTimeOffset.Now) == false) Settings.Pause = null;
+
+        Coordinator.Settings = Settings.ToSuggestionSettings();
+        _work.Debounce = TimeSpan.FromMilliseconds(Math.Clamp(Settings.DebounceMs, 0, 500));
+        _router.UseEndpoint = Settings.Engine == EngineKind.Endpoint;
+        Endpoint.UpdateSettings(EndpointSettings);
+        EmojiPicker.Enabled = Settings.EmojiPickerEnabled;
+        EmojiPicker.CommitKey = Settings.AcceptWord;
+        EmojiPicker.PreferredSkinTone = Settings.EmojiSkinTone;
+        EmojiPicker.PreferredGender = Settings.EmojiGender;
+        Macros.Enabled = Settings.MacrosEnabled;
+        Macros.CommitKey = Settings.AcceptWord;
+        Overlay.ApplyAppearance(Settings);
+        _macroPreview.ApplyAppearance(Settings);
+        LaunchAtLogin.Set(Settings.LaunchAtLogin);
+        SettingsApplied?.Invoke();
+    }
+
+    private void OnGlobalToggleKey(object? sender, KeyEventArgs args)
+    {
+        if (!args.Event.IsKeyDown || args.Event.IsRepeat || !Settings.GlobalToggle.Matches(args.Event)) return;
+        args.Suppress = true;
+        _ui.Post(_ =>
+        {
+            Settings.Enabled = !Settings.Enabled;
+            Settings.Pause = null;
+            PersistSettings();
+        }, null);
+    }
+
+    public void LogError(Exception ex, string message) => _logger.LogError(ex, "{Message}", message);
+
+    /// <summary>Loads the selected model if it is already on disk. Never downloads.</summary>
     public async Task<bool> TryLoadCachedAsync(CancellationToken ct)
     {
         var model = ResolveActiveModel();
         if (!ModelDownloader.IsCached(model)) return false;
-        var path = ModelDownloader.LocalPath(model);
-        await Runtime.LoadAsync(model, path, ct).ConfigureAwait(false);
+        await Runtime.LoadAsync(model, ModelDownloader.LocalPath(model), ct).ConfigureAwait(false);
         return Runtime.IsReady;
     }
 
-    /// <summary>
-    /// Download (if needed) and load the configured model. Driven from the
-    /// settings window where the user is paying attention to the progress bar.
-    /// </summary>
+    /// <summary>Downloads the selected model if needed, then loads it.</summary>
     public async Task<bool> EnsureModelReadyAsync(IProgress<ModelDownloader.Progress>? progress, CancellationToken ct)
     {
         var model = ResolveActiveModel();
@@ -172,54 +206,27 @@ public sealed class AppHost : IAsyncDisposable
         {
             await Downloader.DownloadAsync(model, progress, ct).ConfigureAwait(false);
         }
-        var path = ModelDownloader.LocalPath(model);
-        await Runtime.LoadAsync(model, path, ct).ConfigureAwait(false);
+        await Runtime.LoadAsync(model, ModelDownloader.LocalPath(model), ct).ConfigureAwait(false);
         return Runtime.IsReady;
     }
 
     private CotabbyModel ResolveActiveModel()
     {
-        var settings = Settings;
-        var model = (settings.ActiveModelId is { } id ? ModelCatalog.FindById(id) : null)
-                    ?? ModelCatalog.All[0];
-        if (settings.ActiveModelId != model.Id)
-        {
-            settings.ActiveModelId = model.Id;
-            SettingsStore.Save(settings);
-        }
+        var model = (Settings.ActiveModelId is { } id ? ModelCatalog.FindById(id) : null) ?? ModelCatalog.All[0];
+        Settings.ActiveModelId = model.Id;
         return model;
-    }
-
-    public void PersistSettings()
-    {
-        ApplyRuntimeSettings();
-        SettingsStore.Save(Settings);
-    }
-
-    /// <summary>
-    /// Parse the user's "accept whole suggestion" preference into a single
-    /// character the coordinator can compare against keyboard events. Accepts
-    /// either a one-character string ("`") or a friendly name ("Backtick").
-    /// Anything else means "unbound".
-    /// </summary>
-    private static char? ParseAlternateAcceptKey(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw)) return null;
-        var s = raw.Trim();
-        if (s.Length == 1 && !char.IsControl(s[0])) return s[0];
-        return s.ToLowerInvariant() switch
-        {
-            "backtick" or "grave" or "graveaccent" or "tick" => '`',
-            "tilde" => '~',
-            "backslash" => '\\',
-            _ => null,
-        };
     }
 
     public async ValueTask DisposeAsync()
     {
-        EmojiPicker?.Dispose();
+        Settings.WordsAccepted = Coordinator.Metrics.WordsAccepted;
+        SettingsStore.Save(Settings);
+        _hook.KeyEvent -= OnGlobalToggleKey;
+        EmojiPicker.Dispose();
+        Macros.Dispose();
         await Coordinator.DisposeAsync().ConfigureAwait(false);
         await Runtime.DisposeAsync().ConfigureAwait(false);
+        EndpointClient.Dispose();
+        await _services.DisposeAsync().ConfigureAwait(false);
     }
 }

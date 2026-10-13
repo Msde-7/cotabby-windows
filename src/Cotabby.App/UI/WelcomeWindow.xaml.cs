@@ -67,8 +67,8 @@ public partial class WelcomeWindow : Window
         var s = _host.Settings;
         WelcomeNameBox.Text = s.UserName;
         BuildLanguageChips();
-        ModePhrase.IsChecked = s.AcceptanceMode == "phrase";
-        ModeWord.IsChecked = s.AcceptanceMode != "phrase";
+        ModePhrase.IsChecked = s.AcceptanceMode == Cotabby.Core.Suggestions.AcceptanceGranularity.Phrase;
+        ModeWord.IsChecked = s.AcceptanceMode == Cotabby.Core.Suggestions.AcceptanceGranularity.Word;
         _templateModelId = TemplateModelIds.Contains(s.ActiveModelId ?? "")
             ? s.ActiveModelId!
             : "tabby-2-mini";
@@ -560,7 +560,9 @@ public partial class WelcomeWindow : Window
     private void OnModeChanged(object sender, RoutedEventArgs e)
     {
         if (!_loaded) return;
-        _host.Settings.AcceptanceMode = ModePhrase.IsChecked == true ? "phrase" : "word";
+        _host.Settings.AcceptanceMode = ModePhrase.IsChecked == true
+            ? Cotabby.Core.Suggestions.AcceptanceGranularity.Phrase
+            : Cotabby.Core.Suggestions.AcceptanceGranularity.Word;
         _host.PersistSettings();
     }
 }

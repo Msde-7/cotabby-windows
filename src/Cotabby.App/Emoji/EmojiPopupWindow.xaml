@@ -9,24 +9,30 @@
         ShowActivated="False"
         Focusable="False"
         IsHitTestVisible="False"
-        SizeToContent="Height"
-        Width="300"
         ResizeMode="NoResize">
-    <!-- Mirrors the macOS EmojiPickerView: fixed 300-wide panel, radius 10,
-         header line showing the live :query, then 30px rows. -->
-    <Border x:Name="Panel" CornerRadius="10" Padding="0"
-            Background="#F51F1F1F" BorderBrush="#26FFFFFF" BorderThickness="1">
+    <!-- Dark HUD chrome with the typed query row above a horizontal ribbon of ranked glyphs. -->
+    <Border CornerRadius="10" BorderBrush="#1FFFFFFF" BorderThickness="1">
+        <Border.Background>
+            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                <GradientStop Color="#FF2B2B2B" Offset="0" />
+                <GradientStop Color="#FF1C1C1C" Offset="1" />
+            </LinearGradientBrush>
+        </Border.Background>
         <StackPanel>
-            <Border x:Name="HeaderBand" Height="26" Padding="10,0">
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock x:Name="HeaderColon" Text=":" FontSize="12" FontWeight="Medium"
-                               FontFamily="Cascadia Mono, Consolas" Foreground="#FF9A9A9A" />
-                    <TextBlock x:Name="HeaderQuery" Text="" FontSize="12" FontWeight="Medium"
-                               FontFamily="Cascadia Mono, Consolas" Foreground="#FFE8E8E8" />
-                </StackPanel>
-            </Border>
-            <Border x:Name="HeaderDivider" Height="1" Background="#1AFFFFFF" />
-            <StackPanel x:Name="Items" Orientation="Vertical" Margin="4,4,4,4" />
+            <StackPanel x:Name="QueryRow" Orientation="Horizontal"
+                        TextElement.FontFamily="Cascadia Mono, Consolas"
+                        TextElement.FontSize="12" TextElement.FontWeight="Medium">
+                <TextBlock Text=":" Foreground="#80FFFFFF" VerticalAlignment="Center" />
+                <TextBlock x:Name="QueryText" Foreground="#F2FFFFFF" VerticalAlignment="Center" />
+            </StackPanel>
+            <Grid x:Name="RibbonRow">
+                <ScrollViewer x:Name="Ribbon"
+                              HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="Cells" Orientation="Horizontal" VerticalAlignment="Center" />
+                </ScrollViewer>
+                <TextBlock x:Name="EmptyLabel" Text="No emoji" FontFamily="Segoe UI" FontSize="12"
+                           Foreground="#80FFFFFF" VerticalAlignment="Center" />
+            </Grid>
         </StackPanel>
     </Border>
 </Window>

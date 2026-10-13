@@ -52,6 +52,9 @@ public sealed class KeyboardHook : IKeyboardHook
     // it's cleared per-call to keep the dead-key state from leaking across taps.
     private readonly byte[] _keyState = new byte[256];
 
+    // Keys currently down, used to tell auto-repeat from a second press.
+    private readonly HashSet<uint> _heldKeys = new();
+
     public KeyboardHook(ILogger<KeyboardHook> logger) => _logger = logger;
 
     public event EventHandler<KeyEventArgs>? KeyEvent;
@@ -179,18 +182,20 @@ public sealed class KeyboardHook : IKeyboardHook
                 return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
             }
 
-            var (kind, ch) = Classify(data.vkCode, data.scanCode);
-            bool nonShiftMod = (GetKeyState(VK_CONTROL) & 0x8000) != 0
-                || (GetKeyState(VK_MENU) & 0x8000) != 0
-                || (GetKeyState(VK_LWIN) & 0x8000) != 0
-                || (GetKeyState(VK_RWIN) & 0x8000) != 0;
+            var modifiers = CurrentModifiers();
+            var (kind, ch) = Classify(data.vkCode, data.scanCode, modifiers);
+            bool isRepeat = isDown && !_heldKeys.Add(data.vkCode);
+            if (isUp) _heldKeys.Remove(data.vkCode);
 
             var evt = new KeyboardEvent
             {
                 Kind = kind,
                 Character = ch,
-                HasNonShiftModifier = nonShiftMod,
+                HasNonShiftModifier = (modifiers & ~KeyModifiers.Shift) != 0,
                 IsKeyDown = isDown,
+                VirtualKey = (int)data.vkCode,
+                Modifiers = modifiers,
+                IsRepeat = isRepeat,
             };
 
             var args = new KeyEventArgs(evt);
@@ -218,7 +223,19 @@ public sealed class KeyboardHook : IKeyboardHook
         return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
     }
 
-    private (KeyKind kind, char ch) Classify(uint vk, uint scanCode)
+    private static KeyModifiers CurrentModifiers()
+    {
+        var modifiers = KeyModifiers.None;
+        if (IsDown(VK_CONTROL)) modifiers |= KeyModifiers.Control;
+        if (IsDown(VK_MENU)) modifiers |= KeyModifiers.Alt;
+        if (IsDown(VK_SHIFT)) modifiers |= KeyModifiers.Shift;
+        if (IsDown(VK_LWIN) || IsDown(VK_RWIN)) modifiers |= KeyModifiers.Win;
+        return modifiers;
+    }
+
+    private static bool IsDown(int vk) => (GetKeyState(vk) & 0x8000) != 0;
+
+    private (KeyKind kind, char ch) Classify(uint vk, uint scanCode, KeyModifiers modifiers)
     {
         switch (vk)
         {
@@ -234,16 +251,8 @@ public sealed class KeyboardHook : IKeyboardHook
                 return (KeyKind.Other, '\0');
         }
 
-        // Translate to a printable character honoring the current keyboard layout
-        // and modifier state. Skip ToUnicodeEx if any non-shift modifier is held —
-        // we don't want Ctrl+A to surface as 'a' for the coordinator.
-        if ((GetKeyState(VK_CONTROL) & 0x8000) != 0
-            || (GetKeyState(VK_MENU) & 0x8000) != 0
-            || (GetKeyState(VK_LWIN) & 0x8000) != 0
-            || (GetKeyState(VK_RWIN) & 0x8000) != 0)
-        {
-            return (KeyKind.Other, '\0');
-        }
+        // Ctrl+A must not surface as the character a.
+        if ((modifiers & ~KeyModifiers.Shift) != 0) return (KeyKind.Other, '\0');
 
         Array.Clear(_keyState);
         GetKeyboardState(_keyState);

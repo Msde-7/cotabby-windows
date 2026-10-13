@@ -37,6 +37,21 @@ public sealed record FocusedField
 
     /// <summary>True if the field is a password field — suggestions must be suppressed.</summary>
     public required bool IsSecure { get; init; }
+
+    /// <summary>True when a non-empty range of text is selected.</summary>
+    public bool HasSelection { get; init; }
+
+    /// <summary>Accessible name of the field, usually its visible label or placeholder.</summary>
+    public string Label { get; init; } = "";
+
+    /// <summary>Help text or placeholder the host exposes for the field.</summary>
+    public string HelpText { get; init; } = "";
+
+    /// <summary>Automation id. In Chromium hosts this is the DOM id.</summary>
+    public string AutomationId { get; init; } = "";
+
+    /// <summary>Class name. In Chromium hosts this is the DOM class list.</summary>
+    public string ClassName { get; init; } = "";
 }
 
 /// <summary>Screen rectangle in physical pixels.</summary>
