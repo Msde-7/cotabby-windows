@@ -226,6 +226,7 @@ public sealed class UiaFocusTracker : IFocusTracker
             HelpText = helpText,
             AutomationId = info.AutomationId ?? string.Empty,
             ClassName = info.ClassName ?? string.Empty,
+            WindowTitle = ForegroundWindowTitle(),
         };
     }
 
@@ -290,6 +291,14 @@ public sealed class UiaFocusTracker : IFocusTracker
 
     private static ScreenRect ToScreenRect(System.Windows.Rect r) =>
         new(r.X, r.Y, r.Width, r.Height);
+
+    private static unsafe string ForegroundWindowTitle()
+    {
+        const int MaxTitleChars = 256;
+        char* buffer = stackalloc char[MaxTitleChars];
+        int length = NativeMethods.GetWindowText(NativeMethods.GetForegroundWindow(), buffer, MaxTitleChars);
+        return length > 0 ? new string(buffer, 0, length) : string.Empty;
+    }
 
     private static string TryGetProcessName(int pid)
     {

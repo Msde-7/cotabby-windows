@@ -52,6 +52,9 @@ public sealed record FocusedField
 
     /// <summary>Class name. In Chromium hosts this is the DOM class list.</summary>
     public string ClassName { get; init; } = "";
+
+    /// <summary>Title of the window that holds the field.</summary>
+    public string WindowTitle { get; init; } = "";
 }
 
 /// <summary>Screen rectangle in physical pixels.</summary>

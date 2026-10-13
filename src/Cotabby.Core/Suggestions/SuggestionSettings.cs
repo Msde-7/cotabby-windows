@@ -30,6 +30,12 @@ public sealed record SuggestionSettings
 
     public bool SuggestInIntegratedTerminals { get; init; }
 
+    /// <summary>Quiet time after a key before predicting, used until a generation has been timed.</summary>
+    public int DebounceMs { get; init; } = 20;
+
+    /// <summary>True when requests go to a configured endpoint instead of the local model.</summary>
+    public bool UsesEndpoint { get; init; }
+
     public SuggestionWordRange WordRange { get; init; } = SuggestionWordCountPreset.TwelveToTwenty.Range();
 
     public bool AllowMultiLine { get; init; }
@@ -60,6 +66,9 @@ public sealed record SuggestionSettings
 
     /// <summary>Lets recently copied text that relates to the writing into the prompt.</summary>
     public bool ClipboardContext { get; init; }
+
+    /// <summary>Tells the model what kind of app and window the text is written in.</summary>
+    public bool SurfaceContext { get; init; } = true;
 
     /// <summary>
     /// Token budget for a request, sized for the upper word bound in the user's languages. It is

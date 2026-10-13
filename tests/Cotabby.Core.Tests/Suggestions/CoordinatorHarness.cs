@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Cotabby.Core.Context;
 using Cotabby.Core.Input;
 using Cotabby.Core.Spelling;
 using Cotabby.Core.Suggestions;
@@ -21,14 +22,15 @@ public abstract class CoordinatorHarness : IAsyncDisposable
     protected SuggestionCoordinator Coordinator { get; }
     protected bool BatterySaver { get; set; }
 
-    protected CoordinatorHarness(TypoCorrectionAdvisor? typos = null)
+    protected CoordinatorHarness(TypoCorrectionAdvisor? typos = null, IClipboardReader? clipboard = null)
     {
         Coordinator = new SuggestionCoordinator(
             Hook, Focus, Engine, Overlay, Focus,
             new SuggestionWorkController(TimeSpan.FromMilliseconds(5)),
             NullLogger<SuggestionCoordinator>.Instance, _pump,
             batterySaverOn: () => BatterySaver,
-            typos: typos);
+            typos: typos,
+            clipboard: clipboard);
         Coordinator.Start();
         Focus.Focus(Fields.Text(""));
     }

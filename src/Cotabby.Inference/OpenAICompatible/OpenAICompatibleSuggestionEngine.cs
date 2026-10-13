@@ -44,6 +44,8 @@ public sealed class OpenAICompatibleSuggestionEngine : ISuggestionEngine
 
     public bool IsReady => _endpoint.Configuration is not null;
 
+    public bool SpacingIsExact => false;
+
     /// <summary>Why the current settings cannot generate, or null when they can.</summary>
     public string? UnavailableReason =>
         _endpoint.Error is { } error ? OpenAICompatibleEndpointException.Describe(error) : null;

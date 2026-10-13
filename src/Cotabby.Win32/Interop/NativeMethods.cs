@@ -196,4 +196,35 @@ internal static partial class NativeMethods
 
     [LibraryImport("user32.dll")]
     public static partial IntPtr GetForegroundWindow();
+
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowTextW")]
+    public static unsafe partial int GetWindowText(IntPtr hWnd, char* lpString, int nMaxCount);
+
+    // Clipboard
+
+    public const uint CF_UNICODETEXT = 13;
+
+    [LibraryImport("user32.dll")]
+    public static partial uint GetClipboardSequenceNumber();
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool OpenClipboard(IntPtr hWndNewOwner);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CloseClipboard();
+
+    [LibraryImport("user32.dll")]
+    public static partial IntPtr GetClipboardData(uint uFormat);
+
+    [LibraryImport("kernel32.dll")]
+    public static partial IntPtr GlobalLock(IntPtr hMem);
+
+    [LibraryImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GlobalUnlock(IntPtr hMem);
+
+    [LibraryImport("kernel32.dll")]
+    public static partial nuint GlobalSize(IntPtr hMem);
 }

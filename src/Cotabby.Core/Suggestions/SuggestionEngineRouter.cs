@@ -24,6 +24,8 @@ public sealed class SuggestionEngineRouter : ISuggestionEngine
 
     public bool IsReady => Active.IsReady;
 
+    public bool SpacingIsExact => Active.SpacingIsExact;
+
     public IAsyncEnumerable<SuggestionChunk> GenerateAsync(SuggestionRequest request, CancellationToken ct) =>
         Active.GenerateAsync(request, ct);
 

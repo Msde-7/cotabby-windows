@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Cotabby.Core.Context;
 using Cotabby.Core.Focus;
 using Cotabby.Core.Input;
 using Cotabby.Core.Insertion;
@@ -44,6 +45,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private readonly Func<bool> _batterySaverOn;
     private readonly TimeProvider _clock;
     private readonly TypoCorrectionAdvisor? _typos;
+    private readonly ClipboardContextSource? _clipboard;
+    private readonly SuggestionDismissalMemory _dismissals = new();
 
     private volatile SuggestionSettings _settings = SuggestionSettings.Default;
     private volatile Offer? _offer;
@@ -55,6 +58,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private (string RequestId, long Timestamp)? _pendingDoubleTap;
     private AcceptedTail? _lastAcceptedTail;
     private bool _queuedAccept;
+
+    /// <summary>Text an automatic fix was last applied to. It stops a fix the host ignored from repeating.</summary>
+    private volatile string? _lastAutoFixedText;
     private Task _insertChain = Task.CompletedTask;
     private bool _disposed;
 
@@ -83,7 +89,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         SynchronizationContext ui,
         Func<bool>? batterySaverOn = null,
         TimeProvider? clock = null,
-        TypoCorrectionAdvisor? typos = null)
+        TypoCorrectionAdvisor? typos = null,
+        IClipboardReader? clipboard = null)
     {
         _hook = hook;
         _focus = focus;
@@ -96,6 +103,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         _batterySaverOn = batterySaverOn ?? (() => false);
         _clock = clock ?? TimeProvider.System;
         _typos = typos;
+        _clipboard = clipboard is null ? null : new ClipboardContextSource(clipboard, _clock);
     }
 
     public SuggestionMetrics Metrics { get; } = new();
@@ -109,6 +117,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         set
         {
             _settings = value;
+            UpdateDebounce(value, lastLatencyMs: null);
             Post(() => CancelSession("settings changed"));
         }
     }
@@ -203,6 +212,13 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
         if (_session is { } session)
         {
+            if (ev.Kind == KeyKind.Escape && session.Correction is null && _sessionField is { } dismissedIn)
+            {
+                _dismissals.Record(
+                    (ulong)dismissedIn.ProcessId, PrecedingText(dismissedIn), TrailingText(dismissedIn),
+                    session.VisibleText, Now());
+            }
+
             var result = SuggestionSessionReconciler.Apply(session, ev);
             switch (result.Outcome)
             {
@@ -211,6 +227,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 case SuggestionSessionReconciler.Outcome.Advance when result.Next is { VisibleText.Length: > 0 } next:
                     _session = next;
                     _overlay.Update(next.VisibleText);
+                    _ = ReanchorAsync(next.RequestId, HostPublishPollMs);
                     return;
                 default:
                     CancelSession("typing invalidated the suggestion");
@@ -282,23 +299,32 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             string preceding = PrecedingText(field);
             if (await HandleTypoAsync(requestId, settings, field, preceding, ct).ConfigureAwait(false)) return;
             if (!settings.SuggestWithinWords && CaretWordContext.UnfinishedWord(preceding) is not null) return;
+            // A completion inside a token would duplicate or splice what follows the caret.
+            if (CaretTokenPosition.IsInsideToken(preceding, TrailingText(field))) return;
             if (!_engine.IsReady) return;
 
-            var request = SuggestionRequestFactory.Build(field, requestId, settings);
+            var request = SuggestionRequestFactory.Build(
+                field, requestId, settings, settings.ClipboardContext ? _clipboard?.For(field) : null);
             var stopwatch = Stopwatch.StartNew();
             string text = await GenerateAsync(request, ct).ConfigureAwait(false);
+            int latencyMs = (int)stopwatch.ElapsedMilliseconds;
+            UpdateDebounce(settings, latencyMs);
             if (text.Length == 0 || ct.IsCancellationRequested) return;
 
             // Generation took a while. Show the suggestion only if the text it continues is still there.
             var live = _focus.Refresh();
-            if (live is null || live.ProcessId != field.ProcessId || PrecedingText(live) != PrecedingText(field))
+            if (live is null || live.ProcessId != field.ProcessId || PrecedingText(live) != preceding)
             {
                 _logger.LogInformation("Request {ReqId} dropped because the field changed during generation.", requestId);
                 return;
             }
+            if (CompletionFinalizer.VisibleText(text, live, settings, _engine.SpacingIsExact, _typos) is not { } visible)
+            {
+                _logger.LogInformation("Request {ReqId} dropped by the final presentation checks.", requestId);
+                return;
+            }
 
-            int latencyMs = (int)stopwatch.ElapsedMilliseconds;
-            Post(() => Present(requestId, text, live, latencyMs, ct));
+            Post(() => Present(requestId, visible, live, latencyMs, ct));
         }
         catch (OperationCanceledException)
         {
@@ -308,6 +334,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             _logger.LogWarning(ex, "Request {ReqId} failed.", requestId);
         }
     }
+
+    /// <summary>Paces the next request by how long the engine just took.</summary>
+    private void UpdateDebounce(SuggestionSettings settings, int? lastLatencyMs) =>
+        _work.Debounce = TimeSpan.FromMilliseconds(
+            DebouncePolicy.Milliseconds(lastLatencyMs, settings.DebounceMs, settings.UsesEndpoint));
 
     /// <summary>
     /// Runs the typo gate on the word just committed. Returns true when the gate
@@ -325,6 +356,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 return false;
 
             case TypoGateAction.ApplyCorrection when advice.Replacement is { } fix:
+                if (_lastAutoFixedText == preceding) return true;
+                _lastAutoFixedText = preceding;
                 await _inserter.ReplaceAsync(field, fix.DeletingUtf16Count, fix.ReplacementText, ct).ConfigureAwait(false);
                 Post(RestartPrediction);
                 return true;
@@ -406,6 +439,12 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         if (ct.IsCancellationRequested || _session is not null) return;
 
         var preceding = PrecedingText(field);
+        if (correction is null
+            && _dismissals.Suppresses((ulong)field.ProcessId, preceding, TrailingText(field), text, Now()))
+        {
+            _logger.LogInformation("Request {ReqId} dropped because the user dismissed it here.", requestId);
+            return;
+        }
         if (_lastAcceptedTail is { } tail
             && AcceptanceChunker.IsStaleAcceptanceEcho(text, tail.Text, preceding, tail.PrecedingText))
         {
@@ -546,17 +585,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 return;
             }
 
-            // Give the host a moment to publish the insert, then move the ghost to the new caret.
-            await Task.Delay(PostInsertSettleMs).ConfigureAwait(false);
-            var after = _focus.Refresh();
-            if (after is null || after.CaretRect.IsEmpty) return;
-            Post(() =>
-            {
-                if (_session is not { } live || live.RequestId != requestId) return;
-                _session = live with { AnchorRect = after.CaretRect };
-                _sessionField = after;
-                _overlay.Show(live.VisibleText, after.CaretRect);
-            });
+            await ReanchorAsync(requestId, PostInsertSettleMs).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -582,6 +611,21 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         {
             _logger.LogError(ex, "Applying a correction failed.");
         }
+    }
+
+    /// <summary>Moves the ghost to the caret once the host has published an insert or a typed key.</summary>
+    private async Task ReanchorAsync(string requestId, int settleMs)
+    {
+        await Task.Delay(settleMs).ConfigureAwait(false);
+        var after = _focus.Refresh();
+        if (after is null || after.CaretRect.IsEmpty) return;
+        Post(() =>
+        {
+            if (_session is not { } live || live.RequestId != requestId) return;
+            _session = live with { AnchorRect = after.CaretRect };
+            _sessionField = after;
+            _overlay.Show(live.VisibleText, after.CaretRect, isCorrection: live.Correction is not null);
+        });
     }
 
     private void PublishOffer()
@@ -610,6 +654,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         ClearSession();
         _work.Cancel();
     }
+
+    private double Now() => _clock.GetTimestamp() / (double)_clock.TimestampFrequency;
+
+    private static string TrailingText(FocusedField field) =>
+        field.Text[Math.Clamp(field.CaretOffset, 0, field.Text.Length)..];
 
     private static string PrecedingText(FocusedField field) =>
         field.Text[..Math.Clamp(field.CaretOffset, 0, field.Text.Length)];

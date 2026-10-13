@@ -12,6 +12,7 @@ using Cotabby.Core.Spelling;
 using Cotabby.Core.Suggestions;
 using Cotabby.Inference;
 using Cotabby.Inference.OpenAICompatible;
+using Cotabby.Win32.Clipboard;
 using Cotabby.Win32.Focus;
 using Cotabby.Win32.Input;
 using Cotabby.Win32.Insertion;
@@ -21,6 +22,7 @@ using Cotabby.Win32.Spelling;
 using Cotabby.Win32.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Win32;
 
 namespace Cotabby.App.Hosting;
 
@@ -38,7 +40,6 @@ public sealed class AppHost : IAsyncDisposable
 
     private readonly ServiceProvider _services;
     private readonly IKeyboardHook _hook;
-    private readonly SuggestionWorkController _work;
     private readonly SuggestionEngineRouter _router;
     private readonly SynchronizationContext _ui;
     private readonly ILogger _logger;
@@ -86,6 +87,7 @@ public sealed class AppHost : IAsyncDisposable
         sc.AddSingleton<SettingsStore>();
         sc.AddSingleton<IFocusTracker, UiaFocusTracker>();
         sc.AddSingleton<IKeyboardHook, KeyboardHook>();
+        sc.AddSingleton<ClipboardTextReader>();
         sc.AddSingleton<ITextInserter, SendInputTextInserter>();
         sc.AddSingleton<LlamaRuntimeManager>();
         sc.AddSingleton<ModelDownloader>();
@@ -111,7 +113,6 @@ public sealed class AppHost : IAsyncDisposable
             EndpointClient, EndpointCredentials, EndpointSettings,
             loggers.CreateLogger<OpenAICompatibleSuggestionEngine>());
         _router = new SuggestionEngineRouter(_services.GetRequiredService<LlamaSuggestionEngine>(), Endpoint);
-        _work = new SuggestionWorkController(TimeSpan.FromMilliseconds(Settings.DebounceMs));
 
         IcuWordBreaker.Install();
 
@@ -121,13 +122,15 @@ public sealed class AppHost : IAsyncDisposable
             loggers.CreateLogger<EmojiPickerController>());
         Macros = new MacroController(_hook, focus, inserter, macroPreview, loggers.CreateLogger<MacroController>());
         _hook.KeyEvent += OnGlobalToggleKey;
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
 
         Coordinator = new SuggestionCoordinator(
-            _hook, focus, _router, overlay, inserter, _work,
+            _hook, focus, _router, overlay, inserter, new SuggestionWorkController(TimeSpan.Zero),
             loggers.CreateLogger<SuggestionCoordinator>(), ui,
             batterySaverOn: () => PowerStatus.IsBatterySaverOn,
             typos: new TypoCorrectionAdvisor(
-                _spelling, new SpellingLanguageResolver(), new WindowsSpellChecker(_spelling)));
+                _spelling, new SpellingLanguageResolver(), new WindowsSpellChecker(_spelling)),
+            clipboard: _services.GetRequiredService<ClipboardTextReader>());
         Coordinator.InlineCaptureActive = () => EmojiPicker.IsCapturing || Macros.IsCapturing;
         Coordinator.Metrics.Restore(Settings.WordsAccepted);
 
@@ -165,7 +168,6 @@ public sealed class AppHost : IAsyncDisposable
         if (Settings.Pause?.IsActive(DateTimeOffset.Now) == false) Settings.Pause = null;
 
         Coordinator.Settings = Settings.ToSuggestionSettings();
-        _work.Debounce = TimeSpan.FromMilliseconds(Math.Clamp(Settings.DebounceMs, 0, 500));
         _router.UseEndpoint = Settings.Engine == EngineKind.Endpoint;
         Endpoint.UpdateSettings(EndpointSettings);
         EmojiPicker.Enabled = Settings.EmojiPickerEnabled;
@@ -219,7 +221,33 @@ public sealed class AppHost : IAsyncDisposable
     {
         var model = (Settings.ActiveModelId is { } id ? ModelCatalog.FindById(id) : null) ?? ModelCatalog.All[0];
         Settings.ActiveModelId = model.Id;
-        return model;
+        return PowerSourceModel() ?? model;
+    }
+
+    /// <summary>The model chosen for the current power source, when that feature is on and the file is present.</summary>
+    private CotabbyModel? PowerSourceModel()
+    {
+        if (!Settings.PowerModelSwitching) return null;
+        var id = PowerStatus.IsOnBattery ? Settings.BatteryModelId : Settings.PluggedInModelId;
+        return ModelCatalog.FindById(id) is { } model && ModelDownloader.IsCached(model) ? model : null;
+    }
+
+    private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode != PowerModes.StatusChange) return;
+        _ui.Post(async _ =>
+        {
+            if (PowerSourceModel() is not { } model || Runtime.ActiveModel?.Id == model.Id) return;
+            try
+            {
+                await TryLoadCachedAsync(CancellationToken.None);
+                SettingsApplied?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                LogError(ex, "Switching models for the power source failed.");
+            }
+        }, null);
     }
 
     public async ValueTask DisposeAsync()
@@ -227,6 +255,7 @@ public sealed class AppHost : IAsyncDisposable
         Settings.WordsAccepted = Coordinator.Metrics.WordsAccepted;
         SettingsStore.Save(Settings);
         _hook.KeyEvent -= OnGlobalToggleKey;
+        SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         EmojiPicker.Dispose();
         Macros.Dispose();
         _spelling.Dispose();

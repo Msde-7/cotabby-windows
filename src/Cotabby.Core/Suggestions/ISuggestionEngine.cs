@@ -11,6 +11,12 @@ public interface ISuggestionEngine
     bool IsReady { get; }
 
     /// <summary>
+    /// True when a completion is the exact text that follows the request's prefix, so its
+    /// leading space or lack of one says whether it starts a new word.
+    /// </summary>
+    bool SpacingIsExact { get; }
+
+    /// <summary>
     /// Stream suggestion chunks. Implementations stop on EOS, max-token cap,
     /// anti-prompt match, or cancellation, and must surface chunks promptly
     /// so the overlay can render token-by-token instead of waiting for the

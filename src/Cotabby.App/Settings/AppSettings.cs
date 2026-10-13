@@ -65,6 +65,9 @@ public sealed class AppSettings
 
     // Context
     public bool ClipboardContext { get; set; }
+
+    /// <summary>Tells the model which app and window the text is being written in.</summary>
+    public bool IncludeAppContext { get; set; } = true;
     public string ExtendedContext { get; set; } = "";
 
     // Shortcuts
@@ -108,6 +111,9 @@ public sealed class AppSettings
         PauseOnBatterySaver = PauseOnBatterySaver,
         BlockedApps = new HashSet<string>(BlockedApps, StringComparer.OrdinalIgnoreCase),
         SuggestInIntegratedTerminals = SuggestInIntegratedTerminals,
+        DebounceMs = Math.Clamp(DebounceMs, 0, 500),
+        UsesEndpoint = Engine == EngineKind.Endpoint,
+        SurfaceContext = IncludeAppContext,
         WordRange = new SuggestionWordRange(WordRange.Low, WordRange.High),
         AllowMultiLine = AllowMultiLine,
         AcceptWord = AcceptWord,

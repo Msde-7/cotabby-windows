@@ -44,12 +44,6 @@ public sealed class TrayController : IDisposable
             item.Click += (_, _) => Update(s => s.Pause = PauseState.For(duration, DateTimeOffset.Now));
             _pauseMenu.Items.Add(item);
         }
-        foreach (var model in ModelCatalog.All)
-        {
-            var item = new MenuItem { Header = model.DisplayName, ToolTip = model.Subtitle, Tag = model.Id };
-            item.Click += (_, _) => _ = SwitchModelAsync(model.Id);
-            _modelMenu.Items.Add(item);
-        }
         foreach (var preset in WordCountPreset.All)
         {
             var item = new MenuItem { Header = preset.Label, Tag = preset.Id };
@@ -110,7 +104,7 @@ public sealed class TrayController : IDisposable
             ?? (!settings.Enabled ? "Cotabby is off"
                 : paused ? settings.Pause!.StatusText(now)
                 : settings.Engine == EngineKind.Endpoint ? $"Endpoint · {settings.EndpointModel}"
-                : _host.Runtime.ActiveModel is { } model ? $"Ready · {model.DisplayName}"
+                : _host.Runtime.ActiveModel is { } active ? $"Ready · {active.DisplayName}"
                 : "No model loaded");
         _tray.ToolTipText = $"Cotabby · {_statusItem.Header}";
 
@@ -121,6 +115,14 @@ public sealed class TrayController : IDisposable
         _enabledItem.IsChecked = settings.Enabled;
         _pauseMenu.Visibility = settings.Enabled && !paused ? Visibility.Visible : Visibility.Collapsed;
         _resumeItem.Visibility = settings.Enabled && paused ? Visibility.Visible : Visibility.Collapsed;
+        // Rebuilt each time so a model dropped into the folder shows up without a restart.
+        _modelMenu.Items.Clear();
+        foreach (var model in ModelCatalog.Available())
+        {
+            var item = new MenuItem { Header = model.DisplayName, ToolTip = model.Subtitle, Tag = model.Id };
+            item.Click += (_, _) => _ = SwitchModelAsync(model.Id);
+            _modelMenu.Items.Add(item);
+        }
         Check(_modelMenu, settings.ActiveModelId);
         Check(_lengthMenu, settings.UseCustomWordRange ? null : settings.CompletionLengthPreset);
     }

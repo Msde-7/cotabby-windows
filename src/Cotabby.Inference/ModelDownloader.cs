@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using Cotabby.Core.Models;
 using Microsoft.Extensions.Logging;
@@ -5,12 +6,13 @@ using Microsoft.Extensions.Logging;
 namespace Cotabby.Inference;
 
 /// <summary>
-/// Streams a model file from its Hugging Face URL into the local cache, with
-/// HTTP <c>Range</c> resume support so a half-finished download survives a
-/// crash or a tray-quit.
+/// Streams a model file into the local cache. A partial download is kept and
+/// resumed with an HTTP range request on the next attempt.
 /// </summary>
 public sealed class ModelDownloader
 {
+    private static readonly byte[] GgufMagic = "GGUF"u8.ToArray();
+
     private readonly HttpClient _http;
     private readonly ILogger<ModelDownloader> _logger;
 
@@ -22,107 +24,94 @@ public sealed class ModelDownloader
 
     public sealed record Progress(long BytesDownloaded, long? TotalBytes);
 
-    /// <summary>
-    /// Resolve the local path that <paramref name="model"/> would download to,
-    /// regardless of whether the file currently exists.
-    /// </summary>
     public static string LocalPath(CotabbyModel model) =>
         Path.Combine(ModelCatalog.DefaultLocalDirectory(), model.FileName);
 
     /// <summary>
-    /// True if the cached file is at least as large as the model's stated
-    /// approximate size minus a tolerance — a quick "is the download finished"
-    /// check that avoids hashing the whole file on startup.
+    /// True when the model file is in place. A download only reaches its final
+    /// name once it is complete, so presence plus the GGUF signature is enough.
     /// </summary>
-    public static bool IsCached(CotabbyModel model)
-    {
-        var path = LocalPath(model);
-        if (!File.Exists(path)) return false;
-        var len = new FileInfo(path).Length;
-        // Tolerance: HF mirrors occasionally re-quantize so the published
-        // size can drift by a wider margin than the original 5%. We accept
-        // anything at 85% of the catalog estimate or above — a real
-        // half-downloaded .part is at .part, not at the final path.
-        return len >= model.ApproxSizeBytes * 0.85;
-    }
+    public static bool IsCached(CotabbyModel model) => IsGguf(LocalPath(model));
 
-    public async Task DownloadAsync(
-        CotabbyModel model,
-        IProgress<Progress>? progress,
-        CancellationToken ct)
+    public async Task DownloadAsync(CotabbyModel model, IProgress<Progress>? progress, CancellationToken ct)
     {
-        var dir = ModelCatalog.DefaultLocalDirectory();
-        Directory.CreateDirectory(dir);
         var finalPath = LocalPath(model);
-        var partPath = finalPath + ".part";
+        if (IsGguf(finalPath)) return;
+        if (model.IsCustom) throw new FileNotFoundException("The model file is no longer in the models folder.", finalPath);
 
+        Directory.CreateDirectory(ModelCatalog.DefaultLocalDirectory());
+        var partPath = finalPath + ".part";
         long resumeFrom = File.Exists(partPath) ? new FileInfo(partPath).Length : 0;
-        if (File.Exists(finalPath))
-        {
-            _logger.LogInformation("Model {Model} already present at {Path}.", model.Id, finalPath);
-            return;
-        }
 
         using var request = new HttpRequestMessage(HttpMethod.Get, model.DownloadUrl);
-        if (resumeFrom > 0)
-        {
-            request.Headers.Range = new RangeHeaderValue(resumeFrom, null);
-            _logger.LogInformation("Resuming download from byte {Offset}.", resumeFrom);
-        }
+        if (resumeFrom > 0) request.Headers.Range = new RangeHeaderValue(resumeFrom, null);
+        using var response = await _http
+            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
 
-        using var response = await _http.SendAsync(
-            request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-
-        // 416 (Range Not Satisfiable) happens if the existing .part is already
-        // the whole file — promote it and exit.
-        if ((int)response.StatusCode == 416)
+        if (response.StatusCode != HttpStatusCode.RequestedRangeNotSatisfiable)
         {
-            File.Move(partPath, finalPath, overwrite: true);
-            return;
-        }
-        if (!response.IsSuccessStatusCode)
-        {
-            string body = "";
-            try { body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false); } catch { }
-            _logger.LogError(
-                "Download failed: status={Status} url={Url} finalUrl={Final} body={Body}",
-                response.StatusCode, model.DownloadUrl,
-                response.RequestMessage?.RequestUri, body[..Math.Min(body.Length, 200)]);
             response.EnsureSuccessStatusCode();
+            // A server that ignores the range sends the whole file again, so the partial is discarded.
+            bool resumed = response.StatusCode == HttpStatusCode.PartialContent;
+            if (!resumed) resumeFrom = 0;
+            long? total = response.Content.Headers.ContentLength + resumeFrom;
+
+            long downloaded = await CopyAsync(response, partPath, resumed, resumeFrom, total, progress, ct)
+                .ConfigureAwait(false);
+            if (total is { } expected && downloaded != expected)
+            {
+                throw new IOException(
+                    $"The download stopped at {downloaded} of {expected} bytes. Try again to resume it.");
+            }
         }
 
-        long? total = response.Content.Headers.ContentLength;
-        if (total.HasValue && response.StatusCode == System.Net.HttpStatusCode.PartialContent)
+        if (!IsGguf(partPath))
         {
-            total += resumeFrom;
+            File.Delete(partPath);
+            throw new InvalidDataException("The downloaded file is not a GGUF model.");
         }
+        File.Move(partPath, finalPath, overwrite: true);
+        _logger.LogInformation("Model {Model} downloaded to {Path}.", model.Id, finalPath);
+    }
 
-        await using var net = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+    private static async Task<long> CopyAsync(
+        HttpResponseMessage response, string partPath, bool append, long startAt, long? total,
+        IProgress<Progress>? progress, CancellationToken ct)
+    {
+        await using var source = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         await using var file = new FileStream(
-            partPath, FileMode.Append, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true);
+            partPath, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None,
+            bufferSize: 1 << 16, useAsync: true);
 
         var buffer = new byte[1 << 16];
-        long downloaded = resumeFrom;
-        var lastReport = DateTime.UtcNow;
-        while (true)
+        long downloaded = startAt;
+        var lastReport = DateTime.MinValue;
+        int read;
+        while ((read = await source.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
         {
-            ct.ThrowIfCancellationRequested();
-            int read = await net.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false);
-            if (read == 0) break;
             await file.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
             downloaded += read;
-
-            var now = DateTime.UtcNow;
-            if ((now - lastReport) > TimeSpan.FromMilliseconds(250))
+            if (DateTime.UtcNow - lastReport > TimeSpan.FromMilliseconds(250))
             {
                 progress?.Report(new Progress(downloaded, total));
-                lastReport = now;
+                lastReport = DateTime.UtcNow;
             }
         }
         progress?.Report(new Progress(downloaded, total));
+        return downloaded;
+    }
 
-        await file.DisposeAsync().ConfigureAwait(false);
-        File.Move(partPath, finalPath, overwrite: true);
-        _logger.LogInformation("Model {Model} downloaded to {Path}.", model.Id, finalPath);
+    private static bool IsGguf(string path)
+    {
+        try
+        {
+            using var file = File.OpenRead(path);
+            Span<byte> header = stackalloc byte[4];
+            return file.Read(header) == header.Length && header.SequenceEqual(GgufMagic);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 }

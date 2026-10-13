@@ -53,7 +53,7 @@ public sealed class SuggestionCoordinatorTypoTests : CoordinatorHarness
         Type("hello teh ");
 
         await Eventually(() => Focus.Current!.Text == "hello the ", "the typo is fixed in place");
-        await Shown(" world again");
+        await Shown("world again");
     }
 
     [Fact]
@@ -61,10 +61,11 @@ public sealed class SuggestionCoordinatorTypoTests : CoordinatorHarness
     {
         Type("hello teh ");
         await Shown("the");
+        Engine.Completion = _ => "orld again";
 
         Type("w");
 
-        await Shown(" world again");
+        await Shown("orld again");
         Assert.False(Overlay.ShowsCorrection);
     }
 
@@ -73,7 +74,8 @@ public sealed class SuggestionCoordinatorTypoTests : CoordinatorHarness
     {
         Type("hello the ");
 
-        await Shown(" world again");
+        // The field already ends in a space, so the completion's own leading space is dropped.
+        await Shown("world again");
         Assert.False(Overlay.ShowsCorrection);
     }
 }

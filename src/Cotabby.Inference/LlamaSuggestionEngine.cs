@@ -27,6 +27,8 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
 
     public bool IsReady => _runtime.IsReady;
 
+    public bool SpacingIsExact => true;
+
     public async IAsyncEnumerable<SuggestionChunk> GenerateAsync(
         SuggestionRequest request,
         [EnumeratorCancellation] CancellationToken ct)

@@ -1,3 +1,5 @@
+using Cotabby.Core.Support;
+
 namespace Cotabby.Core.Spelling;
 
 /// <summary>
@@ -48,5 +50,20 @@ public sealed class TypoCorrectionAdvisor(
             decision.CorrectedWord,
             requiresTrailingSpace: decision.Action == TypoGateAction.ApplyCorrection);
         return replacement is null ? new TypoAdvice(TypoGateDecision.Suppress) : new TypoAdvice(decision, replacement);
+    }
+
+    /// <summary>Whether a word a completion would produce is known, a fixable typo or an unknown word.</summary>
+    public CompletionSeamGuard.SpellingAssessment Assess(
+        string word, string precedingText, IEnumerable<string> enabledDictionaryCodes)
+    {
+        var languages = SpellingDictionaryCatalog.Languages(enabledDictionaryCodes);
+        if (resolver.Resolve(precedingText, word, languages) is not { } language
+            || !_spellChecker.IsTypo(word, language))
+        {
+            return CompletionSeamGuard.SpellingAssessment.Known;
+        }
+        return corrector.BestCorrection(word, language) is null
+            ? CompletionSeamGuard.SpellingAssessment.UncorrectableTypo
+            : CompletionSeamGuard.SpellingAssessment.CorrectableTypo;
     }
 }

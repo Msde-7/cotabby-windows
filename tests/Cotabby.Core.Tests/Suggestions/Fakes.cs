@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using Cotabby.Core.Context;
 using Cotabby.Core.Focus;
 using Cotabby.Core.Input;
 using Cotabby.Core.Insertion;
@@ -126,6 +127,7 @@ internal sealed class ScriptedEngine : ISuggestionEngine
     public Func<SuggestionRequest, string> Completion { get; set; } = _ => " world again";
     public ConcurrentQueue<SuggestionRequest> Requests { get; } = new();
     public bool IsReady { get; set; } = true;
+    public bool SpacingIsExact => true;
 
     public async IAsyncEnumerable<SuggestionChunk> GenerateAsync(
         SuggestionRequest request, [EnumeratorCancellation] CancellationToken ct)
@@ -134,6 +136,45 @@ internal sealed class ScriptedEngine : ISuggestionEngine
         await Task.Yield();
         yield return new SuggestionChunk(Completion(request), IsFinal: false);
         yield return new SuggestionChunk(string.Empty, IsFinal: true);
+    }
+}
+
+/// <summary>A clipboard whose contents only change when the test copies something.</summary>
+internal sealed class FakeClipboard : IClipboardReader
+{
+    private readonly object _gate = new();
+    private string? _text;
+    private uint _sequenceNumber = 7;
+    private int _reads;
+
+    public FakeClipboard(string? text = null) => _text = text;
+
+    public int Reads
+    {
+        get { lock (_gate) return _reads; }
+    }
+
+    public uint SequenceNumber
+    {
+        get { lock (_gate) return _sequenceNumber; }
+    }
+
+    public string? ReadText()
+    {
+        lock (_gate)
+        {
+            _reads++;
+            return _text;
+        }
+    }
+
+    public void Copy(string text)
+    {
+        lock (_gate)
+        {
+            _text = text;
+            _sequenceNumber++;
+        }
     }
 }
 

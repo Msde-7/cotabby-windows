@@ -1,9 +1,8 @@
 namespace Cotabby.Core.Models;
 
 /// <summary>
-/// A model the user can download and run. Mirrors the macOS port's
-/// hardcoded GGUF list — we keep the same Hugging Face URLs so the two ports
-/// can share the same on-disk caches if both are installed.
+/// A model the app can run. Built-in models carry a download URL. A model the
+/// user dropped into the models folder has none.
 /// </summary>
 public sealed record CotabbyModel
 {
@@ -13,11 +12,12 @@ public sealed record CotabbyModel
     /// <summary>Short human description shown in pickers ("fastest", "recommended").</summary>
     public string Subtitle { get; init; } = "";
 
-    /// <summary>HF download URL for the .gguf file.</summary>
+    /// <summary>Hugging Face URL of the .gguf file, or empty for a model the user supplied.</summary>
     public required string DownloadUrl { get; init; }
 
-    /// <summary>Exact byte count of the served file (captured via HEAD request).
-    /// Used by IsCached() to distinguish a finished download from a stray partial.</summary>
+    public bool IsCustom => DownloadUrl.Length == 0;
+
+    /// <summary>Size of the served file, shown before a download starts.</summary>
     public required long ApproxSizeBytes { get; init; }
 
     /// <summary>Context window to allocate at load time (token count).</summary>
@@ -26,8 +26,14 @@ public sealed record CotabbyModel
     /// <summary>True if the model expects a fill-in-middle prompt template.</summary>
     public required bool SupportsFillInMiddle { get; init; }
 
-    /// <summary>The local filename to use under the models directory.</summary>
-    public string FileName => Path.GetFileName(new Uri(DownloadUrl).AbsolutePath);
+    /// <summary>The file name under the models directory. Built-in models take it from their URL.</summary>
+    public string FileName
+    {
+        get => _fileName ?? Path.GetFileName(new Uri(DownloadUrl).AbsolutePath);
+        init => _fileName = value;
+    }
+
+    private readonly string? _fileName;
 }
 
 /// <summary>
@@ -93,13 +99,50 @@ public static class ModelCatalog
         },
     ];
 
-    public static CotabbyModel? FindById(string id) =>
-        All.FirstOrDefault(m => m.Id == id);
+    private const string CustomIdPrefix = "custom:";
 
-    /// <summary>Default OS path for cached GGUF files: %LOCALAPPDATA%\Cotabby\models.</summary>
-    public static string DefaultLocalDirectory()
+    /// <summary>The built-in models plus every other GGUF file in the models folder.</summary>
+    public static IReadOnlyList<CotabbyModel> Available()
     {
-        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(local, "Cotabby", "models");
+        var directory = DefaultLocalDirectory();
+        if (!Directory.Exists(directory)) return All;
+
+        var builtIn = All.Select(m => m.FileName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var custom = Directory.EnumerateFiles(directory, "*.gguf")
+            .Where(path => !builtIn.Contains(Path.GetFileName(path)))
+            .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
+            .Select(Custom);
+        return [.. All, .. custom];
     }
+
+    public static CotabbyModel? FindById(string id) =>
+        id.StartsWith(CustomIdPrefix, StringComparison.Ordinal)
+            ? Available().FirstOrDefault(m => m.Id == id)
+            : All.FirstOrDefault(m => m.Id == id);
+
+    private static CotabbyModel Custom(string path)
+    {
+        long bytes = new FileInfo(path).Length;
+        return new CotabbyModel
+        {
+            Id = CustomIdPrefix + Path.GetFileName(path),
+            DisplayName = Path.GetFileNameWithoutExtension(path),
+            Subtitle = $"Your own model · {bytes / 1e9:0.0} GB",
+            DownloadUrl = "",
+            FileName = Path.GetFileName(path),
+            ApproxSizeBytes = bytes,
+            ContextLength = 4096,
+            SupportsFillInMiddle = false,
+        };
+    }
+
+    /// <summary>Environment variable that points the model cache at another folder.</summary>
+    public const string DirectoryOverrideVariable = "COTABBY_MODELS_DIR";
+
+    /// <summary>Where GGUF files are cached. Defaults to %LOCALAPPDATA%\Cotabby\models.</summary>
+    public static string DefaultLocalDirectory() =>
+        Environment.GetEnvironmentVariable(DirectoryOverrideVariable) is { Length: > 0 } custom
+            ? custom
+            : Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Cotabby", "models");
 }

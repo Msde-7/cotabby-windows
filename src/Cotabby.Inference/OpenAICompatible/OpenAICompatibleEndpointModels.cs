@@ -139,10 +139,13 @@ public sealed record OpenAICompatibleEndpointConfiguration
         }
 
         // A single-label DNS name is not proof of LAN scope because DNS may resolve it publicly.
-        return host.EndsWith(".local", StringComparison.Ordinal)
-            || host.StartsWith("fc", StringComparison.Ordinal)
-            || host.StartsWith("fd", StringComparison.Ordinal)
-            || (host.StartsWith("fe", StringComparison.Ordinal) && host.Length > 2 && "89ab".Contains(host[2]))
+        // The private IPv6 prefixes only mean something on an address, which always has a colon.
+        // Without that check a public name such as fdic.gov would pass as local.
+        bool privateIpv6 = host.Contains(':')
+            && (host.StartsWith("fc", StringComparison.Ordinal)
+                || host.StartsWith("fd", StringComparison.Ordinal)
+                || (host.StartsWith("fe", StringComparison.Ordinal) && host.Length > 2 && "89ab".Contains(host[2])));
+        return host.EndsWith(".local", StringComparison.Ordinal) || privateIpv6
             ? OpenAICompatibleHostScope.LocalNetwork
             : OpenAICompatibleHostScope.PublicInternet;
     }

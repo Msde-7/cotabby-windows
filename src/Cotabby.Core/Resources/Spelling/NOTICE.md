@@ -1,12 +1,12 @@
 # Bundled Spelling Dictionaries
 
-Cotabby bundles language-specific frequency dictionaries for its Swift port of
+Cotabby bundles language-specific frequency dictionaries for its port of
 [SymSpell](https://github.com/wolfgarbe/SymSpell). The dictionaries remain separate at runtime;
 their corpus counts are never merged or compared across languages.
 
 ## English
 
-`frequency_dictionary_en_82_765.txt` is stored one directory above this notice. It is SymSpell's
+`frequency_dictionary_en_82_765.txt` is stored next to this notice. It is SymSpell's
 English dictionary derived from Google Books Ngram frequencies and SCOWL. Its notice is documented
 in the repository-level `THIRD_PARTY_LICENSES.md`.
 

@@ -172,4 +172,12 @@ public class OpenAICompatibleEndpointConfigurationTests
     [Fact]
     public void ModelSelectionResolver_LeavesAManualIdentifierAloneWhenTheCatalogIsEmpty() =>
         Assert.Null(OpenAICompatibleModelSelectionResolver.PreferredSelection("manual-model", []));
+
+    [Theory]
+    [InlineData("fdic.gov", OpenAICompatibleHostScope.PublicInternet)]
+    [InlineData("fcc.example", OpenAICompatibleHostScope.PublicInternet)]
+    [InlineData("fd12:3456::1", OpenAICompatibleHostScope.LocalNetwork)]
+    [InlineData("fe80::1", OpenAICompatibleHostScope.LocalNetwork)]
+    public void HostScope_TreatsPrivatePrefixesAsLocalOnlyOnAddresses(string host, OpenAICompatibleHostScope expected) =>
+        Assert.Equal(expected, OpenAICompatibleEndpointConfiguration.HostScopeFor(host));
 }

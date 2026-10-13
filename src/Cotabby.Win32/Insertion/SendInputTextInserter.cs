@@ -1,10 +1,11 @@
 using System.Runtime.InteropServices;
-using System.Windows;
 using Cotabby.Core.Focus;
 using Cotabby.Core.Insertion;
 using Cotabby.Core.Support;
+using Cotabby.Win32.Clipboard;
 using Microsoft.Extensions.Logging;
 using static Cotabby.Win32.Interop.NativeMethods;
+using WpfClipboard = System.Windows.Clipboard;
 
 namespace Cotabby.Win32.Insertion;
 
@@ -36,9 +37,15 @@ namespace Cotabby.Win32.Insertion;
 public sealed class SendInputTextInserter : ITextInserter
 {
     private readonly ILogger<SendInputTextInserter> _logger;
+    private readonly ClipboardTextReader? _clipboardContext;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    public SendInputTextInserter(ILogger<SendInputTextInserter> logger) => _logger = logger;
+    /// <param name="clipboardContext">Told about every paste, so it does not take one for a copy by the user.</param>
+    public SendInputTextInserter(ILogger<SendInputTextInserter> logger, ClipboardTextReader? clipboardContext = null)
+    {
+        _logger = logger;
+        _clipboardContext = clipboardContext;
+    }
 
     /// <summary>
     /// Chunks at or below this length go through a single SendInput unicode
@@ -94,6 +101,7 @@ public sealed class SendInputTextInserter : ITextInserter
                 // dispatcher explicitly to be safe.
                 savedClipboard = await OnStaThreadAsync(TryReadClipboardText).ConfigureAwait(false);
 
+                _clipboardContext?.BeginOwnWrite();
                 bool wrote = await OnStaThreadAsync(() => TryWriteClipboardText(text)).ConfigureAwait(false);
                 if (!wrote)
                 {
@@ -116,11 +124,13 @@ public sealed class SendInputTextInserter : ITextInserter
                 // Restore prior clipboard contents (or clear if nothing was
                 // there originally). Always do this even if paste failed so we
                 // don't leave the user's clipboard pointing at our suggestion.
+                bool restored = false;
                 if (savedClipboard is not null)
                 {
-                    try { await OnStaThreadAsync(() => TryWriteClipboardText(savedClipboard)).ConfigureAwait(false); }
+                    try { restored = await OnStaThreadAsync(() => TryWriteClipboardText(savedClipboard)).ConfigureAwait(false); }
                     catch (Exception ex) { _logger.LogWarning(ex, "Clipboard restore failed."); }
                 }
+                _clipboardContext?.EndOwnWrite(restored);
                 if (blocked) BlockInput(false);
             }
 
@@ -156,7 +166,7 @@ public sealed class SendInputTextInserter : ITextInserter
     {
         try
         {
-            return Clipboard.ContainsText() ? Clipboard.GetText() : null;
+            return WpfClipboard.ContainsText() ? WpfClipboard.GetText() : null;
         }
         catch (Exception) { return null; }
     }
@@ -168,7 +178,7 @@ public sealed class SendInputTextInserter : ITextInserter
             // SetDataObject(copy: true) leaves the clipboard owning a separate
             // copy of the string so our process can exit without invalidating
             // the host's just-read paste.
-            Clipboard.SetDataObject(text, copy: true);
+            WpfClipboard.SetDataObject(text, copy: true);
             return true;
         }
         catch (Exception) { return false; }

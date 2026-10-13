@@ -1,7 +1,7 @@
 // End-to-end automated smoke test for the running Cotabby app.
 //
 // Assumes Cotabby.exe is already launched (model loaded) and logging into the
-// path passed as argv[0] (defaults to C:\tmp\cotabby-live.log).
+// path passed as argv[0] (defaults to %LOCALAPPDATA%\Cotabby\logs\cotabby.log).
 //
 // Test:
 //   1. Open Notepad, focus it.
@@ -18,7 +18,10 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 
-string logPath = args.Length > 0 ? args[0] : @"C:\tmp\cotabby-live.log";
+string logPath = args.Length > 0
+    ? args[0]
+    : Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Cotabby", "logs", "cotabby.log");
 Console.WriteLine($"[smoke] Using runtime log: {logPath}");
 
 if (!Win32.IsCotabbyRunning())
@@ -49,7 +52,7 @@ Win32.ShowWindow(hwnd, Win32.SW_RESTORE);
 Win32.SetForegroundWindow(hwnd);
 await Task.Delay(800);
 
-const string text = "def fibonacci(n):\n    if n < 2:\n        return n\n    return ";
+const string text = "Thanks for the update. I will send the report";
 Console.WriteLine($"[smoke] Typing {text.Length} chars into Notepad…");
 foreach (char c in text)
 {
@@ -85,9 +88,9 @@ if (File.Exists(logPath))
     var lines = sr.ReadToEnd().Split('\n').Reverse().Take(80).Reverse().ToList();
     foreach (var line in lines)
     {
-        if (line.Contains("Overlay shown") || line.Contains("Triggering") ||
-            line.Contains("Cancel") || line.Contains("not ready") ||
-            line.Contains("host=Notepad"))
+        if (line.Contains("Suggestion shown") || line.Contains("Accepted") ||
+            line.Contains("cleared") || line.Contains("skipped") ||
+            line.Contains("failed"))
         {
             Console.WriteLine("    " + line.TrimEnd());
         }
