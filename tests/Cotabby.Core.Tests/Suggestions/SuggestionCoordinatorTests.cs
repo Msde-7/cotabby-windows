@@ -95,6 +95,36 @@ public sealed class SuggestionCoordinatorTests : CoordinatorHarness
     }
 
     [Fact]
+    public async Task DismissedSuggestion_IsNotOfferedAgainForTheSameText()
+    {
+        Type("hello");
+        await Shown(" world again");
+        Hook.Press(Keys.Special(KeyKind.Escape, Keys.VkEscape));
+        await Shown("");
+        Engine.Requests.Clear();
+
+        Type(" ");
+
+        await Eventually(() => !Engine.Requests.IsEmpty, "the engine is asked again");
+        await StaysHidden();
+    }
+
+    [Fact]
+    public async Task TypingThroughASuggestion_MovesTheGhostToTheCaret()
+    {
+        Type("hello");
+        await Shown(" world again");
+        var moved = Focus.Current!.CaretRect with { X = 99 };
+
+        Hook.Press(Keys.Char(' '));
+        Focus.Append(" ");
+        Focus.Move(moved);
+
+        await Eventually(() => Overlay.Anchor == moved, "the overlay follows the caret");
+        Assert.Equal("world again", Overlay.Text);
+    }
+
+    [Fact]
     public async Task DoubleTap_TakesTheRestOnTheSecondPress()
     {
         Coordinator.Settings = SuggestionSettings.Default with { DoubleTapAcceptsAll = true };

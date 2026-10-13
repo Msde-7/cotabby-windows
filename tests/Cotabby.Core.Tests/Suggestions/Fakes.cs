@@ -100,6 +100,11 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
         }
     }
 
+    public void Move(ScreenRect caret)
+    {
+        lock (_gate) _field = _field! with { CaretRect = caret };
+    }
+
     public Task<bool> InsertAsync(FocusedField target, string text, CancellationToken ct)
     {
         lock (_gate) Insertions.Add(text);
@@ -188,11 +193,16 @@ internal sealed class RecordingOverlay : IOverlayPresenter
         get { lock (_gate) return _text; }
     }
 
-    public bool ShowsCorrection { get; private set; }
+    public OverlayStyle Style { get; private set; }
 
-    public void Show(string text, ScreenRect anchor, bool isCorrection = false)
+    public bool ShowsCorrection => Style == OverlayStyle.Correction;
+
+    public ScreenRect Anchor { get; private set; }
+
+    public void Show(string text, ScreenRect anchor, OverlayStyle style = OverlayStyle.Inline)
     {
-        ShowsCorrection = isCorrection;
+        Style = style;
+        Anchor = anchor;
         Update(text);
     }
 

@@ -13,6 +13,7 @@
         ResizeMode="NoResize"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True">
+    <Border x:Name="Card" CornerRadius="8" BorderThickness="1">
     <StackPanel x:Name="GhostRow"
                 Orientation="Horizontal"
                 Background="Transparent">
@@ -41,4 +42,5 @@
                        Foreground="#CCFFFFFF" />
         </Border>
     </StackPanel>
+    </Border>
 </Window>

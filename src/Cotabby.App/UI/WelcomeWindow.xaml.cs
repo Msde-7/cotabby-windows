@@ -1,319 +1,167 @@
-using System.Linq;
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
-using System.Windows.Media.Imaging;
-using System.Windows.Shapes;
 using Cotabby.App.Hosting;
+using Cotabby.App.Settings;
+using Cotabby.App.UI.Controls;
 using Cotabby.Core.Models;
+using Cotabby.Core.Suggestions;
 using Cotabby.Inference;
-using Microsoft.Win32;
 
 namespace Cotabby.App.UI;
 
 /// <summary>
-/// First-run wizard matching the macOS original: Welcome → starting-point
-/// templates → profile → keybinds → done. The model download kicks off in the
-/// background the moment the user confirms a template so the remaining steps
-/// never block on the network; the Done step surfaces the progress instead.
+/// First-run wizard with the steps welcome, starting point, personalize, keybinds and done.
+/// The model download starts in the background once a starting point is confirmed, so the
+/// later steps never wait on the network. The done step shows its progress.
 /// </summary>
 public partial class WelcomeWindow : Window
 {
     private readonly AppHost _host;
-
+    private readonly FrameworkElement[] _steps;
+    private readonly (Border Card, Border Badge)[] _templates;
+    private readonly List<ShortcutEditor> _shortcuts = [];
+    private readonly List<Border> _capsules = [];
     private int _step;
-    private FrameworkElement[] _steps = Array.Empty<FrameworkElement>();
-    private readonly List<Border> _capsules = new();
+    private string _templateModelId;
 
-    // Guards persist-on-change handlers during initial population.
-    private bool _loaded;
-
-    private string _templateModelId = "tabby-2-mini";
-    private static readonly string[] TemplateModelIds = { "tabby-2-nano", "tabby-2-mini", "tabby-2-base" };
-
-    // Background model prep state. The sequence number lets a superseded run
-    // (user went back and picked a different template) drop its late results.
+    // Background model preparation. The sequence number lets a run that was superseded,
+    // because the user went back and picked another starting point, drop its late results.
     private CancellationTokenSource? _modelCts;
     private int _ensureSeq;
     private bool _ensureBusy;
+    private string? _lastEnsureFor;
     private string? _modelReadyFor;
     private string? _modelError;
     private int? _modelPercent;
-
-    private static readonly string[] SuggestedLanguages = { "German", "French", "Spanish", "Chinese" };
 
     public WelcomeWindow(AppHost host)
     {
         _host = host;
         InitializeComponent();
+        WindowTheme.Follow(this);
 
-        _steps = new FrameworkElement[] { StepWelcome, StepTemplates, StepProfile, StepKeys, StepDone };
-
-        ApplyTheme();
-        SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
-        SourceInitialized += (_, _) => ApplyTitleBarTheme(IsSystemLight());
-        Closed += (_, _) => SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
-
-        TryLoadLogo();
+        _steps = [StepWelcome, StepTemplates, StepProfile, StepKeys, StepDone];
+        _templates = [(QuickCard, QuickBadge), (EverydayCard, EverydayBadge), (PowerCard, PowerBadge)];
         BuildCapsules();
+        BuildShortcutRows();
         StartSpinner();
 
-        // Seed from current settings so re-running the wizard from the tray is
-        // non-destructive.
-        var s = _host.Settings;
-        WelcomeNameBox.Text = s.UserName;
-        BuildLanguageChips();
-        ModePhrase.IsChecked = s.AcceptanceMode == Cotabby.Core.Suggestions.AcceptanceGranularity.Phrase;
-        ModeWord.IsChecked = s.AcceptanceMode == Cotabby.Core.Suggestions.AcceptanceGranularity.Word;
-        _templateModelId = TemplateModelIds.Contains(s.ActiveModelId ?? "")
-            ? s.ActiveModelId!
-            : "tabby-2-mini";
+        // Seeding from the current settings makes a second run from the tray non-destructive.
+        var settings = _host.Settings;
+        NameBox.Text = settings.UserName;
+        LanguagesHost.Content = new LanguageEditor(host);
+        ModeWord.IsChecked = settings.AcceptanceMode == AcceptanceGranularity.Word;
+        ModePhrase.IsChecked = settings.AcceptanceMode == AcceptanceGranularity.Phrase;
+        _templateModelId = _templates.Any(template => TemplateId(template.Card) == settings.ActiveModelId)
+            ? settings.ActiveModelId!
+            : TemplateId(EverydayCard);
         UpdateTemplateVisuals();
 
-        _loaded = true;
         ShowStep(0);
     }
 
-    public static void ShowFor(AppHost host)
-    {
-        var w = new WelcomeWindow(host);
-        w.Show();
-    }
-
-    // ---------- Theme ----------
-
-    private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e) =>
-        Dispatcher.BeginInvoke(ApplyTheme);
-
-    private void ApplyTheme()
-    {
-        bool light = IsSystemLight();
-        SetBrush("WindowBg", light ? "#F5F5F7" : "#1F1F1F");
-        SetBrush("CardBg", light ? "#FFFFFF" : "#2A2A2A");
-        SetBrush("CardBorder", light ? "#E3E3E3" : "#3D3D3D");
-        SetBrush("TextPrimary", light ? "#1D1D1F" : "#E8E8E8");
-        SetBrush("TextSecondary", light ? "#6E6E73" : "#9A9A9A");
-        SetBrush("InputBg", light ? "#F2F2F4" : "#333333");
-        SetBrush("KeycapBg", light ? "#EFEFF1" : "#3A3A3A");
-        SetBrush("TrackOff", light ? "#D1D1D6" : "#4A4A4A");
-        ApplyTitleBarTheme(light);
-        UpdateCapsules();
-    }
-
-    private void SetBrush(string key, string hex)
-    {
-        var brush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(hex));
-        brush.Freeze();
-        Resources[key] = brush;
-    }
-
-    private static bool IsSystemLight()
-    {
-        try
-        {
-            using var key = Registry.CurrentUser.OpenSubKey(
-                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
-            return key?.GetValue("AppsUseLightTheme") is int v && v != 0;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
-
-    private void ApplyTitleBarTheme(bool light)
-    {
-        // Without DWMWA_USE_IMMERSIVE_DARK_MODE the title bar stays white on a
-        // dark window. Cosmetic only, so failures are ignored.
-        try
-        {
-            var hwnd = new WindowInteropHelper(this).Handle;
-            if (hwnd == IntPtr.Zero) return;
-            int dark = light ? 0 : 1;
-            _ = DwmSetWindowAttribute(hwnd, 20, ref dark, sizeof(int));
-        }
-        catch { /* pre-1809 builds lack the attribute */ }
-    }
-
-    private void TryLoadLogo()
-    {
-        try
-        {
-            var logo = new BitmapImage(new Uri("pack://application:,,,/Assets/CotabbyLogo.png"));
-            LogoBorder.Background = new ImageBrush(logo) { Stretch = Stretch.UniformToFill };
-            LogoFallback.Visibility = Visibility.Collapsed;
-        }
-        catch { /* asset ships separately — the blue-square cat fallback stays */ }
-    }
+    public static void ShowFor(AppHost host) => new WelcomeWindow(host).Show();
 
     // ---------- Step navigation ----------
 
     private void BuildCapsules()
     {
-        CapsulePanel.Children.Clear();
-        _capsules.Clear();
-        for (int i = 0; i < _steps.Length; i++)
+        foreach (var _ in _steps)
         {
-            var capsule = new Border
-            {
-                Height = 6,
-                Width = 18,
-                CornerRadius = new CornerRadius(3),
-                Margin = new Thickness(3, 0, 3, 0),
-            };
+            var capsule = new Border { Height = 6, CornerRadius = new CornerRadius(3), Margin = new Thickness(3, 0, 3, 0) };
             _capsules.Add(capsule);
             CapsulePanel.Children.Add(capsule);
         }
-        UpdateCapsules();
     }
 
-    private void UpdateCapsules()
+    private void ShowStep(int index)
     {
-        for (int i = 0; i < _capsules.Count; i++)
-        {
-            _capsules[i].Width = i == _step ? 28 : 18;
-            if (i <= _step)
-            {
-                _capsules[i].Background = (Brush)FindResource("AccentBrush");
-            }
-            else
-            {
-                _capsules[i].SetResourceReference(Border.BackgroundProperty, "TrackOff");
-            }
-        }
-    }
-
-    private void ShowStep(int idx)
-    {
-        _step = Math.Clamp(idx, 0, _steps.Length - 1);
+        _step = Math.Clamp(index, 0, _steps.Length - 1);
         for (int i = 0; i < _steps.Length; i++)
         {
             _steps[i].Visibility = i == _step ? Visibility.Visible : Visibility.Collapsed;
+            _capsules[i].Width = i == _step ? 28 : 18;
+            _capsules[i].SetResourceReference(Border.BackgroundProperty, i <= _step ? "AccentBrush" : "TrackOff");
         }
 
+        var step = _steps[_step];
         StepCaption.Text = $"Step {_step + 1} of {_steps.Length}";
-        ContinueButton.Content = _step switch
-        {
-            0 => "Get Started",
-            4 => "Start Using Cotabby",
-            _ => "Continue",
-        };
-        // Hidden (not collapsed) so the footer height never jumps between steps.
-        BackButton.Visibility = _step == 0 ? Visibility.Hidden : Visibility.Visible;
-        SkipButton.Visibility = _step == _steps.Length - 1 ? Visibility.Hidden : Visibility.Visible;
+        ContinueButton.Content =
+            step == StepWelcome ? "Get Started"
+            : step == StepDone ? "Start Using Cotabby"
+            : "Continue";
+        // Hidden rather than collapsed so the footer height never jumps between steps.
+        BackButton.Visibility = step == StepWelcome ? Visibility.Hidden : Visibility.Visible;
+        SkipButton.Visibility = step == StepDone ? Visibility.Hidden : Visibility.Visible;
 
-        UpdateCapsules();
-        if (_step == 1) UpdateTemplateStatus();
-        if (_step == 4) UpdateModelStatusUi();
+        if (step == StepTemplates) UpdateTemplateStatus();
+        if (step == StepDone)
+        {
+            DoneKeysText.Text = DoneKeysHint();
+            UpdateModelStatusUi();
+        }
     }
 
     private void OnBack(object sender, RoutedEventArgs e) => ShowStep(_step - 1);
 
     private void OnContinue(object sender, RoutedEventArgs e)
     {
-        switch (_step)
-        {
-            case 1:
-                CommitTemplate();
-                break;
-            case 2:
-                // Name commits when leaving the profile step (and again at
-                // finish, in case the user went back to edit).
-                _host.Settings.UserName = WelcomeNameBox.Text?.Trim() ?? "";
-                break;
-            case 4:
-                Finish();
-                return;
-        }
-        ShowStep(_step + 1);
+        if (_steps[_step] == StepTemplates) CommitTemplate();
+        if (_steps[_step] == StepDone) Finish();
+        else ShowStep(_step + 1);
     }
 
-    private void OnSkip(object sender, RoutedEventArgs e)
-    {
-        // Skip preserves whatever the user already changed; only the first-run
-        // flag is cleared so we don't pester them on next launch.
-        _host.Settings.ShowFirstRunWelcome = false;
-        _host.PersistSettings();
-        Close();
-    }
+    private void OnSkip(object sender, RoutedEventArgs e) => Finish();
 
+    /// <summary>Saves what was entered so far and stops the wizard from showing on the next launch.</summary>
     private void Finish()
     {
-        var s = _host.Settings;
-        s.UserName = WelcomeNameBox.Text?.Trim() ?? "";
-        if (s.Languages.Count == 0) s.Languages.Add("English");
-        s.ShowFirstRunWelcome = false;
+        var settings = _host.Settings;
+        settings.UserName = NameBox.Text.Trim();
+        if (settings.Languages.Count == 0) settings.Languages = [.. LanguageCatalog.DefaultLanguages];
+        settings.ShowFirstRunWelcome = false;
         _host.PersistSettings();
-        // Any in-flight model download keeps running on the host; the tray app
-        // stays alive after this window closes.
+        // A model download that is still running continues on the host after this window closes.
         Close();
     }
 
-    // ---------- Templates ----------
+    // ---------- Starting point ----------
+
+    private static string TemplateId(Border card) => (string)card.Tag;
 
     private void OnTemplateClicked(object sender, MouseButtonEventArgs e)
     {
-        if (sender is Border { Tag: string modelId })
-        {
-            _templateModelId = modelId;
-            UpdateTemplateVisuals();
-            UpdateTemplateStatus();
-        }
+        _templateModelId = TemplateId((Border)sender);
+        UpdateTemplateVisuals();
+        UpdateTemplateStatus();
     }
 
     private void UpdateTemplateVisuals()
     {
-        var cards = new (Border Card, Border Badge, string Id)[]
+        foreach (var (card, badge) in _templates)
         {
-            (QuickCard, QuickBadge, "tabby-2-nano"),
-            (EverydayCard, EverydayBadge, "tabby-2-mini"),
-            (PowerCard, PowerBadge, "tabby-2-base"),
-        };
-        foreach (var (card, badge, id) in cards)
-        {
-            bool selected = id == _templateModelId;
-            if (selected)
-            {
-                card.BorderBrush = (Brush)FindResource("AccentBrush");
-                badge.Background = (Brush)FindResource("AccentTint");
-            }
-            else
-            {
-                card.SetResourceReference(Border.BorderBrushProperty, "CardBorder");
-                badge.SetResourceReference(Border.BackgroundProperty, "KeycapBg");
-            }
+            bool selected = TemplateId(card) == _templateModelId;
+            card.SetResourceReference(Border.BorderBrushProperty, selected ? "AccentBrush" : "CardBorder");
+            badge.SetResourceReference(Border.BackgroundProperty, selected ? "AccentTint" : "KeycapBg");
         }
     }
 
     private void UpdateTemplateStatus()
     {
-        var model = ModelCatalog.FindById(_templateModelId);
-        if (model is null)
+        if (ModelCatalog.FindById(_templateModelId) is not { } model)
         {
             TemplateStatusText.Text = "";
             return;
         }
         bool ready = ModelDownloader.IsCached(model);
-        if (ready)
-        {
-            TemplateStatusText.Text = "Model ready";
-            TemplateStatusText.Foreground = (Brush)FindResource("GreenBrush");
-        }
-        else
-        {
-            TemplateStatusText.Text = $"Will download {FormatGb(model.ApproxSizeBytes)} on Continue";
-            TemplateStatusText.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
-        }
+        TemplateStatusText.Text = ready
+            ? "Model ready"
+            : $"Will download {model.ApproxSizeBytes / 1_000_000_000.0:0.#} GB on Continue";
+        TemplateStatusText.SetResourceReference(TextBlock.ForegroundProperty, ready ? "GreenBrush" : "TextSecondary");
     }
-
-    private static string FormatGb(long bytes) => $"{bytes / 1_000_000_000.0:0.#} GB";
 
     private void CommitTemplate()
     {
@@ -322,15 +170,18 @@ public partial class WelcomeWindow : Window
         StartModelEnsure(_templateModelId);
     }
 
-    // ---------- Background model prep ----------
+    // ---------- Background model preparation ----------
 
     private async void StartModelEnsure(string modelId)
     {
-        if (_modelReadyFor == modelId) { UpdateModelStatusUi(); return; }
-        // Re-confirming the same template must not restart an in-flight download.
+        if (_modelReadyFor == modelId)
+        {
+            UpdateModelStatusUi();
+            return;
+        }
+        // Confirming the same starting point again must not restart a running download.
         if (_ensureBusy && _lastEnsureFor == modelId) return;
 
-        // Skip the round-trip when the runtime already holds this model.
         if (_host.Runtime.IsReady && _host.Runtime.ActiveModel?.Id == modelId)
         {
             _modelReadyFor = modelId;
@@ -384,185 +235,81 @@ public partial class WelcomeWindow : Window
         UpdateModelStatusUi();
     }
 
-    private string? _lastEnsureFor;
-
     private void UpdateModelStatusUi()
     {
-        if (_modelReadyFor is not null)
-        {
-            DoneSpinner.Visibility = Visibility.Collapsed;
-            DoneCheck.Visibility = Visibility.Visible;
-            DoneModelStatus.Text = "Your model is ready";
-            DoneModelStatus.Foreground = (Brush)FindResource("GreenBrush");
-            return;
-        }
-        if (_modelError is not null)
-        {
-            DoneSpinner.Visibility = Visibility.Collapsed;
-            DoneCheck.Visibility = Visibility.Collapsed;
-            DoneModelStatus.Text = "Model setup didn't finish — you can retry from Settings.";
-            DoneModelStatus.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
-            return;
-        }
-        if (_ensureBusy)
-        {
-            DoneSpinner.Visibility = Visibility.Visible;
-            DoneCheck.Visibility = Visibility.Collapsed;
-            DoneModelStatus.Text = _modelPercent is int pct
-                ? $"Downloading your model… {pct}%"
-                : "Preparing your model…";
-            DoneModelStatus.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
-            return;
-        }
-        DoneSpinner.Visibility = Visibility.Collapsed;
-        DoneCheck.Visibility = Visibility.Collapsed;
-        DoneModelStatus.Text = "";
+        bool ready = _modelReadyFor is not null;
+        bool busy = !ready && _modelError is null && _ensureBusy;
+        DoneSpinner.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        DoneCheck.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
+        DoneModelStatus.SetResourceReference(TextBlock.ForegroundProperty, ready ? "GreenBrush" : "TextSecondary");
+        DoneModelStatus.Text =
+            ready ? "Your model is ready"
+            : _modelError is not null ? "Model setup didn't finish. You can retry from Settings."
+            : !busy ? ""
+            : _modelPercent is int percent ? $"Downloading your model… {percent}%"
+            : "Preparing your model…";
     }
 
     private void StartSpinner()
     {
-        // The spinner is mostly hidden; one forever-animation is cheaper than
-        // starting and stopping it on every status flip.
-        var spin = new DoubleAnimation(0, 360, TimeSpan.FromSeconds(1.1))
-        {
-            RepeatBehavior = RepeatBehavior.Forever,
-        };
+        // The spinner is mostly hidden. One endless animation is cheaper than
+        // starting and stopping it on every status change.
+        var spin = new DoubleAnimation(0, 360, TimeSpan.FromSeconds(1.1)) { RepeatBehavior = RepeatBehavior.Forever };
         DoneSpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, spin);
-    }
-
-    // ---------- Profile ----------
-
-    private void BuildLanguageChips()
-    {
-        WelcomeLanguageChips.Children.Clear();
-        foreach (var lang in _host.Settings.Languages.ToList())
-        {
-            var name = lang;
-            WelcomeLanguageChips.Children.Add(BuildChip(name, () => RemoveLanguage(name)));
-        }
-
-        WelcomeLanguageSuggestions.Children.Clear();
-        foreach (var lang in SuggestedLanguages)
-        {
-            if (_host.Settings.Languages.Any(l => l.Equals(lang, StringComparison.OrdinalIgnoreCase)))
-            {
-                continue;
-            }
-            var name = lang;
-            WelcomeLanguageSuggestions.Children.Add(BuildSuggestionChip(name, () => AddLanguage(name)));
-        }
-    }
-
-    private FrameworkElement BuildChip(string text, Action remove)
-    {
-        var content = new StackPanel { Orientation = Orientation.Horizontal };
-        content.Children.Add(new TextBlock
-        {
-            Text = text,
-            FontSize = 12,
-            VerticalAlignment = VerticalAlignment.Center,
-        });
-        var close = new TextBlock
-        {
-            Text = "",
-            FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
-            FontSize = 9,
-            Margin = new Thickness(7, 1, 0, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-            Cursor = Cursors.Hand,
-            ToolTip = "Remove",
-        };
-        close.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
-        close.MouseLeftButtonUp += (_, e) => { e.Handled = true; remove(); };
-        content.Children.Add(close);
-
-        var chip = new Border
-        {
-            CornerRadius = new CornerRadius(12),
-            BorderThickness = new Thickness(1),
-            Padding = new Thickness(10, 4, 8, 4),
-            Margin = new Thickness(0, 0, 6, 6),
-            Child = content,
-        };
-        chip.SetResourceReference(Border.BackgroundProperty, "KeycapBg");
-        chip.SetResourceReference(Border.BorderBrushProperty, "CardBorder");
-        return chip;
-    }
-
-    private FrameworkElement BuildSuggestionChip(string label, Action add)
-    {
-        var cell = new Grid
-        {
-            Margin = new Thickness(0, 0, 6, 6),
-            Cursor = Cursors.Hand,
-            Background = Brushes.Transparent,
-        };
-        // Border can't dash its stroke, so the chip outline is a Rectangle.
-        var outline = new Rectangle
-        {
-            RadiusX = 12,
-            RadiusY = 12,
-            StrokeThickness = 1,
-            StrokeDashArray = new DoubleCollection { 3, 2 },
-            Fill = Brushes.Transparent,
-        };
-        outline.SetResourceReference(Shape.StrokeProperty, "TextSecondary");
-        var text = new TextBlock
-        {
-            Text = "+ " + label,
-            FontSize = 12,
-            Margin = new Thickness(10, 4, 10, 4),
-        };
-        text.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
-        cell.Children.Add(outline);
-        cell.Children.Add(text);
-        cell.MouseLeftButtonUp += (_, _) => add();
-        return cell;
-    }
-
-    private void AddLanguage(string? raw)
-    {
-        var lang = raw?.Trim();
-        if (string.IsNullOrEmpty(lang)) return;
-        var s = _host.Settings;
-        if (s.Languages.Count >= 6) return;
-        if (s.Languages.Any(l => l.Equals(lang, StringComparison.OrdinalIgnoreCase))) return;
-        s.Languages.Add(lang);
-        _host.PersistSettings();
-        BuildLanguageChips();
-    }
-
-    private void RemoveLanguage(string lang)
-    {
-        var s = _host.Settings;
-        s.Languages.RemoveAll(l => l.Equals(lang, StringComparison.OrdinalIgnoreCase));
-        // The prompt renderer expects at least one language.
-        if (s.Languages.Count == 0) s.Languages.Add("English");
-        _host.PersistSettings();
-        BuildLanguageChips();
-    }
-
-    private void OnAddLanguage(object sender, RoutedEventArgs e)
-    {
-        AddLanguage(WelcomeLanguageBox.Text);
-        WelcomeLanguageBox.Text = "";
-    }
-
-    private void OnLanguageBoxKeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key != Key.Enter) return;
-        AddLanguage(WelcomeLanguageBox.Text);
-        WelcomeLanguageBox.Text = "";
     }
 
     // ---------- Keybinds ----------
 
-    private void OnModeChanged(object sender, RoutedEventArgs e)
+    private void BuildShortcutRows()
     {
-        if (!_loaded) return;
-        _host.Settings.AcceptanceMode = ModePhrase.IsChecked == true
-            ? Cotabby.Core.Suggestions.AcceptanceGranularity.Phrase
-            : Cotabby.Core.Suggestions.AcceptanceGranularity.Word;
+        foreach (var shortcut in new[] { GlobalShortcut.AcceptWord, GlobalShortcut.AcceptAll, GlobalShortcut.Toggle })
+        {
+            var editor = new ShortcutEditor(shortcut, () => _host.Settings, ChangeShortcut)
+            {
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            _shortcuts.Add(editor);
+            ShortcutRows.Children.Add(new Grid { Children = { Ui.Text(shortcut.Name), editor } }.Styled("SettingRow"));
+            ShortcutRows.Children.Add(Ui.Separator());
+        }
+        RefreshShortcuts();
+    }
+
+    private void ChangeShortcut(Action<AppSettings> change)
+    {
+        change(_host.Settings);
         _host.PersistSettings();
+        RefreshShortcuts();
+    }
+
+    /// <summary>Refreshes every editor, because one binding can change how another one reads.</summary>
+    private void RefreshShortcuts()
+    {
+        foreach (var editor in _shortcuts) editor.Refresh();
+    }
+
+    private void OnModeClicked(object sender, RoutedEventArgs e)
+    {
+        _host.Settings.AcceptanceMode = ModePhrase.IsChecked == true
+            ? AcceptanceGranularity.Phrase
+            : AcceptanceGranularity.Word;
+        _host.PersistSettings();
+    }
+
+    private string DoneKeysHint()
+    {
+        var settings = _host.Settings;
+        bool word = settings.AcceptWord.IsBound;
+        bool full = GlobalShortcut.AcceptAll.Binding(settings).IsBound || (settings.DoubleTapAcceptsAll && word);
+        string wordKey = GlobalShortcut.AcceptWord.Label(settings);
+        string fullKey = GlobalShortcut.AcceptAll.Label(settings);
+        return (word, full) switch
+        {
+            (true, true) => $"Start typing anywhere.\nPress {wordKey} to accept a word, {fullKey} for the full suggestion.",
+            (true, false) => $"Start typing anywhere.\nPress {wordKey} to accept.",
+            (false, true) => $"Start typing anywhere.\nPress {fullKey} to accept the full suggestion.",
+            _ => "Start typing anywhere.",
+        };
     }
 }

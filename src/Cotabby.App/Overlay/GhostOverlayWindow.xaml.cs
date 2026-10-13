@@ -24,8 +24,12 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     private const double FontSizePerCaretHeight = 0.78;
     private const double MinFontSize = 11;
     private const double MaxFontSize = 48;
-    private const string CorrectionPrefix = "→ ";
+    private const double CardFontSize = 14;
+    private const double CardGapPx = 4;
     private static readonly Color CorrectionColor = Color.FromRgb(0x22, 0xC5, 0x5E);
+    private static readonly Color CardTextColor = Color.FromRgb(0xE8, 0xE8, 0xE8);
+    private static readonly Brush CardFill = Frozen(Color.FromArgb(0xF2, 0x1E, 0x1E, 0x1E));
+    private static readonly Brush CardStroke = Frozen(Color.FromRgb(0x4D, 0x4D, 0x4D));
 
     private HwndSource? _source;
     private Color? _userColor;
@@ -33,7 +37,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     private double _sizeMultiplier = 1.0;
     private bool _showHint = true;
     private Duration _fadeIn = Duration.Automatic;
-    private bool _isCorrection;
+    private OverlayStyle _style;
 
     // UIA flips between the real line height and a coarser fallback while a suggestion
     // is visible. Holding the larger reading keeps the ghost from shrinking mid-suggestion.
@@ -69,22 +73,22 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
             style | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
     }
 
-    public void Show(string text, ScreenRect anchor, bool isCorrection = false)
+    public void Show(string text, ScreenRect anchor, OverlayStyle style = OverlayStyle.Inline)
     {
         if (!Dispatcher.CheckAccess())
         {
-            Dispatcher.BeginInvoke(() => Show(text, anchor, isCorrection));
+            Dispatcher.BeginInvoke(() => Show(text, anchor, style));
             return;
         }
 
         bool wasVisible = Visibility == Visibility.Visible;
-        ApplyFontSize(anchor);
-        if (_isCorrection != isCorrection)
+        if (_style != style)
         {
-            _isCorrection = isCorrection;
+            _style = style;
             ApplyPalette();
         }
-        SetText(isCorrection ? CorrectionPrefix + text : text);
+        ApplyFontSize(anchor);
+        SetText(text);
         Visibility = Visibility.Visible;
         UpdateLayout();
         PositionAt(anchor);
@@ -127,6 +131,12 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
 
     private void ApplyFontSize(ScreenRect anchor)
     {
+        // A card is not lined up with the host's text, so it keeps one readable size.
+        if (_style != OverlayStyle.Inline)
+        {
+            GhostText.FontSize = CardFontSize * _sizeMultiplier;
+            return;
+        }
         if (anchor.Height <= 1) return;
         _stableCaretHeightPx = Math.Max(_stableCaretHeightPx, anchor.Height);
 
@@ -139,8 +149,19 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     private void ApplyPalette()
     {
         bool dark = SystemTheme.IsDark;
-        var text = _isCorrection ? CorrectionColor : _userColor ?? (dark ? Color.FromRgb(0xA6, 0xA6, 0xA6) : Color.FromRgb(0x73, 0x73, 0x73));
-        GhostText.Foreground = new SolidColorBrush(Color.FromArgb((byte)Math.Round(_opacity * 0xCC), text.R, text.G, text.B));
+        bool card = _style != OverlayStyle.Inline;
+        Card.Background = card ? CardFill : Brushes.Transparent;
+        Card.BorderBrush = card ? CardStroke : Brushes.Transparent;
+        Card.Padding = card ? new Thickness(10, 6, 10, 6) : default;
+
+        var text = _style switch
+        {
+            OverlayStyle.Correction => CorrectionColor,
+            OverlayStyle.Popup => CardTextColor,
+            _ => _userColor ?? (dark ? Color.FromRgb(0xA6, 0xA6, 0xA6) : Color.FromRgb(0x73, 0x73, 0x73)),
+        };
+        byte alpha = card ? (byte)0xFF : (byte)Math.Round(_opacity * 0xCC);
+        GhostText.Foreground = new SolidColorBrush(Color.FromArgb(alpha, text.R, text.G, text.B));
 
         TabKeycap.Background = Brush(dark ? 0x2E : 0xF2);
         TabKeycap.BorderBrush = Brush(dark ? 0x4D : 0xCC);
@@ -155,8 +176,10 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
 
         double width = ActualWidth * target.TransformToDevice.M11;
         double height = ActualHeight * target.TransformToDevice.M22;
-        double x = anchor.Right + 1;
-        double y = anchor.Y + Math.Max(0, (anchor.Height - height) / 2.0);
+        // Inline text continues the line at the caret. A card sits just under the caret's line.
+        bool card = _style != OverlayStyle.Inline;
+        double x = card ? anchor.X : anchor.Right + 1;
+        double y = card ? anchor.Bottom + CardGapPx : anchor.Y + Math.Max(0, (anchor.Height - height) / 2.0);
 
         // Keep the whole overlay inside the work area of the monitor under the caret.
         var area = WorkAreaAt(anchor);
@@ -167,6 +190,13 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
 
         SetWindowPos(_source.Handle, HWND_TOPMOST, (int)x, (int)y, (int)width, (int)height,
             SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    }
+
+    private static Brush Frozen(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
     }
 
     private static RECT WorkAreaAt(ScreenRect anchor)

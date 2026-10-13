@@ -31,7 +31,11 @@ if (!Win32.IsCotabbyRunning())
 }
 Console.WriteLine("[smoke] Cotabby.exe is running.");
 
-Process.Start(new ProcessStartInfo("notepad.exe") { UseShellExecute = true });
+// A fresh file keeps text that Notepad restores from earlier sessions out of the run.
+string scratchFile = Path.Combine(Path.GetTempPath(), $"cotabby-smoke-{Guid.NewGuid():N}.txt");
+File.WriteAllText(scratchFile, "");
+long logStart = File.Exists(logPath) ? new FileInfo(logPath).Length : 0;
+Process.Start(new ProcessStartInfo("notepad.exe", $"\"{scratchFile}\"") { UseShellExecute = true });
 Console.WriteLine("[smoke] Launched notepad.exe (may be Win11 stub → Store app, PID may not match).");
 
 // Win11 Notepad has both a legacy and a Store version; the launched PID is
@@ -52,10 +56,23 @@ Win32.ShowWindow(hwnd, Win32.SW_RESTORE);
 Win32.SetForegroundWindow(hwnd);
 await Task.Delay(800);
 
+// Windows may refuse to hand over the foreground while someone is using another app.
+// Synthetic keys go to whatever has focus, so nothing is typed unless Notepad really has it.
+if (Win32.GetForegroundWindow() != hwnd)
+{
+    Console.Error.WriteLine("[smoke] Notepad did not get the foreground. Nothing was typed. Run this while the PC is idle.");
+    return 4;
+}
+
 const string text = "Thanks for the update. I will send the report";
 Console.WriteLine($"[smoke] Typing {text.Length} chars into Notepad…");
 foreach (char c in text)
 {
+    if (Win32.GetForegroundWindow() != hwnd)
+    {
+        Console.Error.WriteLine("[smoke] Focus left Notepad. Stopped typing.");
+        return 4;
+    }
     if (c == '\n')
     {
         Win32.SendVk(0x0D); // Enter
@@ -79,31 +96,23 @@ foreach (var w in overlays)
     Console.WriteLine($"           hwnd=0x{(long)w.Handle:X} cls='{w.ClassName}' rect={w.Rect}");
 }
 
-Console.WriteLine();
-Console.WriteLine("[smoke] Tail of runtime log (filtered):");
+// The overlay is the pass signal. The log line is written when it is shown.
+bool shown = false;
 if (File.Exists(logPath))
 {
     using var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+    fs.Seek(logStart, SeekOrigin.Begin);
     using var sr = new StreamReader(fs);
-    var lines = sr.ReadToEnd().Split('\n').Reverse().Take(80).Reverse().ToList();
-    foreach (var line in lines)
+    foreach (var line in sr.ReadToEnd().Split('\n'))
     {
-        if (line.Contains("Suggestion shown") || line.Contains("Accepted") ||
-            line.Contains("cleared") || line.Contains("skipped") ||
-            line.Contains("failed"))
-        {
-            Console.WriteLine("    " + line.TrimEnd());
-        }
+        if (!line.Contains("Suggestion") && !line.Contains("Request") && !line.Contains("Accepted")) continue;
+        Console.WriteLine("    " + line.TrimEnd());
+        shown |= line.Contains("Suggestion shown");
     }
 }
-else
-{
-    Console.WriteLine("    (log file not found)");
-}
 
-int exitCode = overlays.Any() ? 0 : 1;
-Console.WriteLine();
-Console.WriteLine($"[smoke] DONE — exit={exitCode}");
+int exitCode = shown ? 0 : 1;
+Console.WriteLine($"[smoke] DONE, exit={exitCode}");
 return exitCode;
 
 static partial class Win32
@@ -209,6 +218,9 @@ static partial class Win32
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool SetForegroundWindow(IntPtr hWnd);
+
+    [LibraryImport("user32.dll")]
+    public static partial IntPtr GetForegroundWindow();
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

@@ -463,7 +463,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         _sessionField = field;
         _sessionAcceptedAny = false;
         PublishOffer();
-        _overlay.Show(text, field.CaretRect, isCorrection: correction is not null);
+        _overlay.Show(text, field.CaretRect, StyleFor(field, correction));
         if (correction is null) Metrics.RecordShown(latencyMs);
         _logger.LogInformation("Suggestion shown req={ReqId} latency={Ms}ms chars={Chars}", requestId, latencyMs, text.Length);
         _logger.LogDebug("Suggestion text req={ReqId} \"{Text}\"", requestId, LogText.Escape(text));
@@ -624,9 +624,12 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             if (_session is not { } live || live.RequestId != requestId) return;
             _session = live with { AnchorRect = after.CaretRect };
             _sessionField = after;
-            _overlay.Show(live.VisibleText, after.CaretRect, isCorrection: live.Correction is not null);
+            _overlay.Show(live.VisibleText, after.CaretRect, StyleFor(after, live.Correction));
         });
     }
+
+    private OverlayStyle StyleFor(FocusedField field, TypoCorrection? correction) =>
+        OverlayStylePolicy.StyleFor(_settings.DisplayMode, field, correction is not null);
 
     private void PublishOffer()
     {

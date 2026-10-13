@@ -120,7 +120,7 @@ public sealed class MacroController : IDisposable
             {
                 if (ReferenceEquals(_result, result) && field is not null)
                 {
-                    _preview.Show(" " + result.PreviewText, field.CaretRect);
+                    _preview.Show(result.PreviewText, field.CaretRect, OverlayStyle.Popup);
                 }
             }
         });

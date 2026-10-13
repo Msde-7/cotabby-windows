@@ -29,6 +29,9 @@ public sealed record FocusedField
     /// <summary>Caret screen rectangle in physical pixels (DPI-aware).</summary>
     public required ScreenRect CaretRect { get; init; }
 
+    /// <summary>True when the host gave no caret rectangle and <see cref="CaretRect"/> is the field's own.</summary>
+    public bool CaretIsEstimated { get; init; }
+
     /// <summary>Field bounding rectangle in physical pixels.</summary>
     public required ScreenRect FieldRect { get; init; }
 

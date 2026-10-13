@@ -13,189 +13,47 @@
         SnapsToDevicePixels="True"
         TextOptions.TextFormattingMode="Display">
     <Window.Resources>
-        <!-- Theme brushes: dark defaults; ApplyTheme() swaps values at runtime. -->
-        <SolidColorBrush x:Key="WindowBg" Color="#1F1F1F" />
-        <SolidColorBrush x:Key="CardBg" Color="#2A2A2A" />
-        <SolidColorBrush x:Key="CardBorder" Color="#3D3D3D" />
-        <SolidColorBrush x:Key="TextPrimary" Color="#E8E8E8" />
-        <SolidColorBrush x:Key="TextSecondary" Color="#9A9A9A" />
-        <SolidColorBrush x:Key="InputBg" Color="#333333" />
-        <SolidColorBrush x:Key="KeycapBg" Color="#3A3A3A" />
-        <SolidColorBrush x:Key="TrackOff" Color="#4A4A4A" />
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Theme.xaml" />
+            </ResourceDictionary.MergedDictionaries>
 
-        <SolidColorBrush x:Key="AccentBrush" Color="#007AFF" />
-        <SolidColorBrush x:Key="AccentTint" Color="#26007AFF" />
-        <SolidColorBrush x:Key="AccentTintSoft" Color="#1F007AFF" />
-        <SolidColorBrush x:Key="GreenBrush" Color="#22C55E" />
-        <SolidColorBrush x:Key="GreenTint" Color="#1F22C55E" />
+            <SolidColorBrush x:Key="AccentTintSoft" Color="#1F007AFF" />
+            <SolidColorBrush x:Key="GreenTint" Color="#1F22C55E" />
 
-        <Style x:Key="Caption" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="12" />
-            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
-            <Setter Property="TextWrapping" Value="Wrap" />
-        </Style>
-        <Style x:Key="RowLabel" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="13" />
-            <Setter Property="VerticalAlignment" Value="Center" />
-        </Style>
-        <Style x:Key="StepTitle" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="20" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-        </Style>
-
-        <Style x:Key="Card" TargetType="Border">
-            <Setter Property="Background" Value="{DynamicResource CardBg}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource CardBorder}" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="10" />
-            <Setter Property="Padding" Value="14,3" />
-        </Style>
-        <Style x:Key="RowSep" TargetType="Border">
-            <Setter Property="Height" Value="1" />
-            <Setter Property="Background" Value="{DynamicResource CardBorder}" />
-        </Style>
-        <Style x:Key="SettingRow" TargetType="Grid">
-            <Setter Property="MinHeight" Value="44" />
-        </Style>
-        <Style x:Key="TemplateCard" TargetType="Border">
-            <Setter Property="Background" Value="{DynamicResource CardBg}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource CardBorder}" />
-            <Setter Property="BorderThickness" Value="2" />
-            <Setter Property="CornerRadius" Value="16" />
-            <Setter Property="Padding" Value="12" />
-            <Setter Property="Cursor" Value="Hand" />
-        </Style>
-
-        <Style x:Key="Btn" TargetType="Button">
-            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
-            <Setter Property="Background" Value="{DynamicResource KeycapBg}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource CardBorder}" />
-            <Setter Property="Padding" Value="12,5" />
-            <Setter Property="FontSize" Value="12" />
-            <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="VerticalAlignment" Value="Center" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd" CornerRadius="6"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="1"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Opacity" Value="0.85" />
-                            </Trigger>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter Property="Opacity" Value="0.45" />
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-        <Style x:Key="AccentBtn" TargetType="Button" BasedOn="{StaticResource Btn}">
-            <Setter Property="Background" Value="{StaticResource AccentBrush}" />
-            <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-            <Setter Property="Foreground" Value="White" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="FontSize" Value="14" />
-        </Style>
-        <Style x:Key="LinkBtn" TargetType="Button">
-            <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
-            <Setter Property="FontSize" Value="13" />
-            <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="Padding" Value="8,4" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Bd" Background="Transparent" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Opacity" Value="0.7" />
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <Style x:Key="Input" TargetType="TextBox">
-            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
-            <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
-            <Setter Property="Background" Value="{DynamicResource InputBg}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource CardBorder}" />
-            <Setter Property="FontSize" Value="13" />
-            <Setter Property="Padding" Value="8,6" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="TextBox">
-                        <Border x:Name="Bd" CornerRadius="6"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="1">
-                            <Grid>
-                                <!-- Placeholder: Tag doubles as hint text. -->
-                                <TextBlock x:Name="Hint" Text="{TemplateBinding Tag}"
-                                           Margin="{TemplateBinding Padding}" FontSize="13"
-                                           Foreground="{DynamicResource TextSecondary}"
-                                           Visibility="Collapsed" IsHitTestVisible="False" />
-                                <ScrollViewer x:Name="PART_ContentHost"
-                                              Margin="{TemplateBinding Padding}"
-                                              VerticalAlignment="Center" />
-                            </Grid>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="Text" Value="">
-                                <Setter TargetName="Hint" Property="Visibility" Value="Visible" />
-                            </Trigger>
-                            <Trigger Property="IsKeyboardFocused" Value="True">
-                                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <Style x:Key="Segment" TargetType="RadioButton">
-            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
-            <Setter Property="FontSize" Value="12" />
-            <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="RadioButton">
-                        <Border x:Name="Bd" CornerRadius="5" Padding="14,4" Background="Transparent">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentBrush}" />
-                                <Setter Property="Foreground" Value="White" />
-                                <Setter Property="FontWeight" Value="SemiBold" />
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <Style x:Key="Keycap" TargetType="Border">
-            <Setter Property="CornerRadius" Value="6" />
-            <Setter Property="Background" Value="{DynamicResource KeycapBg}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource CardBorder}" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Padding" Value="8,3" />
-            <Setter Property="VerticalAlignment" Value="Center" />
-        </Style>
-        <Style x:Key="KeycapText" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="12" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-        </Style>
+            <Style x:Key="StepTitle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="20" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+            </Style>
+            <Style x:Key="TemplateCard" TargetType="Border">
+                <Setter Property="Background" Value="{DynamicResource CardBg}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource CardBorder}" />
+                <Setter Property="BorderThickness" Value="2" />
+                <Setter Property="CornerRadius" Value="16" />
+                <Setter Property="Padding" Value="12" />
+                <Setter Property="Cursor" Value="Hand" />
+            </Style>
+            <Style x:Key="LinkBtn" TargetType="Button">
+                <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+                <Setter Property="FontSize" Value="13" />
+                <Setter Property="Cursor" Value="Hand" />
+                <Setter Property="Padding" Value="8,4" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="Bd" Background="Transparent" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Bd" Property="Opacity" Value="0.7" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+        </ResourceDictionary>
     </Window.Resources>
 
     <Grid Margin="28,16,28,22">
@@ -205,7 +63,7 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Progress capsules + step caption; Skip floats top-right. -->
+        <!-- Progress capsules and the step caption. Skip floats at the top right. -->
         <Grid Grid.Row="0">
             <StackPanel HorizontalAlignment="Center">
                 <StackPanel x:Name="CapsulePanel" Orientation="Horizontal"
@@ -221,23 +79,23 @@
         <!-- ========================= STEP BODIES ========================= -->
         <Grid Grid.Row="1" Margin="0,10,0,10">
 
-            <!-- Step 1: Welcome -->
+            <!-- Step 1. Welcome -->
             <StackPanel x:Name="StepWelcome" VerticalAlignment="Center"
                         HorizontalAlignment="Center" Visibility="Collapsed">
-                <Border x:Name="LogoBorder" Width="72" Height="72" CornerRadius="16"
-                        Background="{StaticResource AccentBrush}" HorizontalAlignment="Center">
-                    <TextBlock x:Name="LogoFallback" Text="🐱" FontFamily="Segoe UI Emoji"
-                               FontSize="34" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                <Border Width="72" Height="72" CornerRadius="16" HorizontalAlignment="Center">
+                    <Border.Background>
+                        <ImageBrush ImageSource="/Cotabby;component/Assets/CotabbyLogo.png" Stretch="UniformToFill" />
+                    </Border.Background>
                 </Border>
                 <TextBlock Text="Welcome to Cotabby" FontSize="28" FontWeight="SemiBold"
                            HorizontalAlignment="Center" Margin="0,22,0,0" />
-                <TextBlock Text="AI autocomplete in any text field, all done locally."
+                <TextBlock Text="Ghost-text autocomplete in every app, generated entirely on your PC."
                            FontSize="15" Foreground="{DynamicResource TextSecondary}"
                            HorizontalAlignment="Center" TextAlignment="Center"
-                           TextWrapping="Wrap" MaxWidth="380" Margin="0,10,0,0" />
+                           TextWrapping="Wrap" MaxWidth="320" Margin="0,10,0,0" />
             </StackPanel>
 
-            <!-- Step 2: Starting point templates -->
+            <!-- Step 2. Starting point templates -->
             <StackPanel x:Name="StepTemplates" VerticalAlignment="Center" Visibility="Collapsed">
                 <TextBlock Style="{StaticResource StepTitle}" Text="Choose a starting point" />
                 <TextBlock Style="{StaticResource Caption}" FontSize="13" Margin="0,6,0,18"
@@ -306,65 +164,39 @@
                            Foreground="{DynamicResource TextSecondary}" />
             </StackPanel>
 
-            <!-- Step 3: Profile -->
+            <!-- Step 3. Personalize -->
             <StackPanel x:Name="StepProfile" VerticalAlignment="Center" Visibility="Collapsed">
-                <TextBlock Style="{StaticResource StepTitle}" Text="Tell Cotabby about yourself" />
+                <TextBlock Style="{StaticResource StepTitle}" Text="Make it yours" />
                 <TextBlock Style="{StaticResource Caption}" FontSize="13" Margin="0,6,0,18"
-                           Text="This personalizes your suggestions. Everything here is optional." />
+                           Text="Cotabby writes in your languages and can address you by name." />
 
-                <TextBlock Style="{StaticResource RowLabel}" Text="Name" />
-                <TextBox x:Name="WelcomeNameBox" Style="{StaticResource Input}"
-                         Tag="What should Cotabby call you?" Margin="0,8,0,0"
-                         MaxWidth="340" MinWidth="340" HorizontalAlignment="Left" />
+                <TextBlock Style="{StaticResource RowLabel}" Text="Your name" />
+                <TextBox x:Name="NameBox" Style="{StaticResource Input}"
+                         Tag="What should Cotabby call you? (Optional)" Margin="0,8,0,0"
+                         Width="340" HorizontalAlignment="Left" />
 
-                <TextBlock Style="{StaticResource RowLabel}" Text="Languages" Margin="0,20,0,0" />
-                <WrapPanel x:Name="WelcomeLanguageChips" Margin="0,10,0,0" />
-                <Grid Margin="0,2,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" MaxWidth="240" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-                    <TextBox x:Name="WelcomeLanguageBox" Style="{StaticResource Input}"
-                             Tag="Add a language…" KeyDown="OnLanguageBoxKeyDown" />
-                    <Button Grid.Column="1" Style="{StaticResource Btn}" Content="Add"
-                            Margin="8,0,0,0" Click="OnAddLanguage" />
-                </Grid>
-                <WrapPanel x:Name="WelcomeLanguageSuggestions" Margin="0,12,0,0" />
+                <TextBlock Style="{StaticResource RowLabel}" Text="Languages" Margin="0,20,0,10" />
+                <ContentControl x:Name="LanguagesHost" Focusable="False" />
             </StackPanel>
 
-            <!-- Step 4: Keybinds -->
+            <!-- Step 4. Keybinds -->
             <StackPanel x:Name="StepKeys" VerticalAlignment="Center" Visibility="Collapsed">
-                <TextBlock Style="{StaticResource StepTitle}" Text="Keybinds" />
+                <TextBlock Style="{StaticResource StepTitle}" Text="Learn your keys" />
                 <TextBlock Style="{StaticResource Caption}" FontSize="13" Margin="0,6,0,18"
-                           Text="You can change these later in Settings." />
-                <Border Style="{StaticResource Card}">
+                           Text="Accept suggestions without leaving the keyboard. You can change these anytime in Settings." />
+                <Border Style="{StaticResource Card}" Padding="14,3" Margin="0">
                     <StackPanel>
-                        <Grid Style="{StaticResource SettingRow}">
-                            <TextBlock Style="{StaticResource RowLabel}" Text="Accept Word" />
-                            <Border Style="{StaticResource Keycap}" HorizontalAlignment="Right">
-                                <TextBlock Style="{StaticResource KeycapText}" Text="Tab" />
-                            </Border>
-                        </Grid>
-                        <Border Style="{StaticResource RowSep}" />
-                        <Grid Style="{StaticResource SettingRow}">
-                            <TextBlock Style="{StaticResource RowLabel}" Text="Accept Entire Suggestion" />
-                            <Border Style="{StaticResource Keycap}" HorizontalAlignment="Right" MinWidth="30">
-                                <TextBlock Style="{StaticResource KeycapText}" TextAlignment="Center" Text="`" />
-                            </Border>
-                        </Grid>
-                        <Border Style="{StaticResource RowSep}" />
+                        <!-- One row per shortcut, added in code. -->
+                        <StackPanel x:Name="ShortcutRows" />
                         <Grid Style="{StaticResource SettingRow}">
                             <TextBlock Style="{StaticResource RowLabel}" Text="Acceptance Mode" />
                             <Border CornerRadius="7" Background="{DynamicResource InputBg}" Padding="2"
                                     HorizontalAlignment="Right" VerticalAlignment="Center">
                                 <StackPanel Orientation="Horizontal">
                                     <RadioButton x:Name="ModeWord" Style="{StaticResource Segment}"
-                                                 GroupName="WelcomeMode" Content="Word"
-                                                 Checked="OnModeChanged" />
+                                                 Content="Word" Click="OnModeClicked" />
                                     <RadioButton x:Name="ModePhrase" Style="{StaticResource Segment}"
-                                                 GroupName="WelcomeMode" Content="Phrase"
-                                                 Checked="OnModeChanged" />
+                                                 Content="Phrase" Click="OnModeClicked" />
                                 </StackPanel>
                             </Border>
                         </Grid>
@@ -372,7 +204,7 @@
                 </Border>
             </StackPanel>
 
-            <!-- Step 5: Done -->
+            <!-- Step 5. Done -->
             <StackPanel x:Name="StepDone" VerticalAlignment="Center"
                         HorizontalAlignment="Center" Visibility="Collapsed">
                 <Border Width="64" Height="64" CornerRadius="32"
@@ -383,10 +215,9 @@
                 </Border>
                 <TextBlock Text="You're all set" FontSize="28" FontWeight="SemiBold"
                            HorizontalAlignment="Center" Margin="0,20,0,0" />
-                <TextBlock FontSize="13" Foreground="{DynamicResource TextSecondary}"
+                <TextBlock x:Name="DoneKeysText" FontSize="13" Foreground="{DynamicResource TextSecondary}"
                            HorizontalAlignment="Center" TextAlignment="Center"
-                           TextWrapping="Wrap" MaxWidth="400" Margin="0,10,0,0"
-                           Text="Start typing anywhere. Press Tab to accept a word, ` for the full suggestion." />
+                           TextWrapping="Wrap" MaxWidth="400" Margin="0,10,0,0" />
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,22,0,0">
                     <TextBlock x:Name="DoneSpinner" Text="&#xE895;"
                                FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="13"
@@ -405,14 +236,16 @@
                                Foreground="{DynamicResource TextSecondary}"
                                VerticalAlignment="Center" />
                 </StackPanel>
-                <TextBlock Style="{StaticResource Caption}" HorizontalAlignment="Center"
-                           Margin="0,18,0,0" Text="Find Cotabby in your system tray." />
+                <TextBlock FontSize="13" FontWeight="SemiBold" HorizontalAlignment="Center"
+                           Margin="0,22,0,0" Text="Cotabby lives in your system tray" />
+                <TextBlock Style="{StaticResource Caption}" HorizontalAlignment="Center" Margin="0,4,0,0"
+                           Text="Click the cat to pause suggestions, switch models, or open Settings." />
             </StackPanel>
         </Grid>
 
         <!-- ========================= FOOTER ========================= -->
         <StackPanel Grid.Row="2">
-            <Button x:Name="ContinueButton" Style="{StaticResource AccentBtn}" Height="40"
+            <Button x:Name="ContinueButton" Style="{StaticResource AccentBtn}" Height="40" FontSize="14"
                     Margin="24,0" Content="Get Started" Click="OnContinue" />
             <Button x:Name="BackButton" Style="{StaticResource LinkBtn}" Content="Back"
                     HorizontalAlignment="Center" Margin="0,8,0,0" Click="OnBack" />

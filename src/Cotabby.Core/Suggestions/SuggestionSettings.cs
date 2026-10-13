@@ -1,4 +1,5 @@
 using Cotabby.Core.Input;
+using Cotabby.Core.Overlay;
 using Cotabby.Core.Spelling;
 using Cotabby.Core.Support;
 
@@ -50,6 +51,8 @@ public sealed record SuggestionSettings
     public AcceptanceGranularity Granularity { get; init; }
     public bool AcceptPunctuationWithWord { get; init; } = true;
     public bool AddSpaceAfterAccept { get; init; }
+
+    public SuggestionDisplayMode DisplayMode { get; init; }
 
     /// <summary>When off, a new suggestion waits for the word being typed to be finished.</summary>
     public bool SuggestWithinWords { get; init; } = true;

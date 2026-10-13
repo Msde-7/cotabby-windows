@@ -4,8 +4,10 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Cotabby.Core.Emoji;
 using Cotabby.Core.Input;
+using Cotabby.Core.Overlay;
 using Cotabby.Core.Spelling;
 using Cotabby.Core.Suggestions;
+using Cotabby.Inference.OpenAICompatible;
 using Cotabby.Core.Support;
 
 namespace Cotabby.App.Settings;
@@ -34,7 +36,7 @@ public sealed class AppSettings
     // Engine
     public EngineKind Engine { get; set; } = EngineKind.Local;
     public string? ActiveModelId { get; set; }
-    public string EndpointBaseUrl { get; set; } = "";
+    public string EndpointBaseUrl { get; set; } = OpenAICompatibleEndpointConfiguration.DefaultBaseUrl;
     public string EndpointModel { get; set; } = "";
     public bool EndpointUsesChatApi { get; set; }
     public int DebounceMs { get; set; } = 20;
@@ -87,6 +89,7 @@ public sealed class AppSettings
     public double GhostTextOpacity { get; set; } = 1.0;
     public double GhostTextSizeMultiplier { get; set; } = 1.0;
     public bool ShowAcceptanceHint { get; set; } = true;
+    public SuggestionDisplayMode DisplayMode { get; set; }
     public bool FadeInSuggestions { get; set; } = true;
     public double FadeInSeconds { get; set; } = 0.10;
 
@@ -123,6 +126,7 @@ public sealed class AppSettings
         Granularity = AcceptanceMode,
         AcceptPunctuationWithWord = AcceptPunctuationWithWord,
         AddSpaceAfterAccept = AddSpaceAfterAccept,
+        DisplayMode = DisplayMode,
         SuggestWithinWords = SuggestWithinWords,
         Typos = new TypoGateSettings(SuppressCompletionsOnTypo, OfferTypoCorrections, AutoFixTypos),
         SpellingDictionaries = SpellingDictionaryCatalog.Normalize(SpellingDictionaries),

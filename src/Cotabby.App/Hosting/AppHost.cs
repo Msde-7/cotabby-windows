@@ -58,7 +58,7 @@ public sealed class AppHost : IAsyncDisposable
     public OpenAICompatibleApiClient EndpointClient { get; }
     public IOpenAICompatibleCredentialStore EndpointCredentials { get; }
 
-    /// <summary>Raised on the UI thread after settings were applied, so open windows and the tray can refresh.</summary>
+    /// <summary>Raised on the UI thread after settings were applied or a model was loaded, so open windows and the tray can refresh.</summary>
     public event Action? SettingsApplied;
 
     public AppHost(
@@ -201,8 +201,7 @@ public sealed class AppHost : IAsyncDisposable
     {
         var model = ResolveActiveModel();
         if (!ModelDownloader.IsCached(model)) return false;
-        await Runtime.LoadAsync(model, ModelDownloader.LocalPath(model), ct).ConfigureAwait(false);
-        return Runtime.IsReady;
+        return await LoadAsync(model, ct).ConfigureAwait(false);
     }
 
     /// <summary>Downloads the selected model if needed, then loads it.</summary>
@@ -213,7 +212,14 @@ public sealed class AppHost : IAsyncDisposable
         {
             await Downloader.DownloadAsync(model, progress, ct).ConfigureAwait(false);
         }
+        return await LoadAsync(model, ct).ConfigureAwait(false);
+    }
+
+    private async Task<bool> LoadAsync(CotabbyModel model, CancellationToken ct)
+    {
         await Runtime.LoadAsync(model, ModelDownloader.LocalPath(model), ct).ConfigureAwait(false);
+        // The tray and any open window show which model is loaded.
+        _ui.Post(_ => SettingsApplied?.Invoke(), null);
         return Runtime.IsReady;
     }
 
@@ -241,7 +247,6 @@ public sealed class AppHost : IAsyncDisposable
             try
             {
                 await TryLoadCachedAsync(CancellationToken.None);
-                SettingsApplied?.Invoke();
             }
             catch (Exception ex)
             {

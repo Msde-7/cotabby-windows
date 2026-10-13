@@ -189,7 +189,7 @@ sealed class RecordingOverlay : IOverlayPresenter
 
     public string Text => _text;
 
-    public void Show(string text, ScreenRect anchor, bool isCorrection = false) => _text = text;
+    public void Show(string text, ScreenRect anchor, OverlayStyle style = OverlayStyle.Inline) => _text = text;
     public void Update(string text) => _text = text;
     public void Hide() => _text = "";
 }

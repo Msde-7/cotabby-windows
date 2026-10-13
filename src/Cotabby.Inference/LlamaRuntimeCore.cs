@@ -235,7 +235,7 @@ public sealed class LlamaRuntimeCore : IDisposable
             {
                 token = SelectToken(
                     logits, options.TopK, RepetitionGuard.BlockedTokens(sampledIds, NoRepeatNgramSize),
-                    forceWordContinuation: options.ForceWordContinuation && step == 0, scratch);
+                    forceWordContinuation: options.ForceWordContinuation && step == 0, options.SingleLine, scratch);
             }
             else
             {
@@ -248,12 +248,6 @@ public sealed class LlamaRuntimeCore : IDisposable
             if (chosen.IsEndOfGeneration(Vocab)) { stopReason = "eos"; break; }
 
             var piece = scratch.AsSpan(0, WritePiece(chosen, scratch));
-            if (options.SingleLine && piece.IndexOf((byte)'\n') >= 0)
-            {
-                stopReason = "single_line";
-                break;
-            }
-
             bool replayWasComplete = buffer.ReplayComplete;
             buffer.Append(piece);
             if (buffer.HasReplayMismatch)
@@ -306,7 +300,7 @@ public sealed class LlamaRuntimeCore : IDisposable
     /// </summary>
     private LLamaToken? SelectToken(
         ReadOnlySpan<float> logits, int topK, HashSet<int> blocked,
-        bool forceWordContinuation, byte[] scratch)
+        bool forceWordContinuation, bool singleLine, byte[] scratch)
     {
         if (topK <= 0) return null;
         int k = Math.Min(topK, logits.Length);
@@ -345,7 +339,10 @@ public sealed class LlamaRuntimeCore : IDisposable
             int byteLen = WritePiece(token, scratch);
             if (byteLen == 0) continue;
 
-            if (forceWordContinuation && !ContinuesWordMidStream(scratch.AsSpan(0, byteLen))) continue;
+            var piece = scratch.AsSpan(0, byteLen);
+            // A single-line field cannot take a line break, so the next best token continues the line.
+            if (singleLine && piece.IndexOf((byte)'\n') >= 0) continue;
+            if (forceWordContinuation && !ContinuesWordMidStream(piece)) continue;
             return token;
         }
         return null;

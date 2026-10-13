@@ -204,7 +204,6 @@ public sealed class UiaFocusTracker : IFocusTracker
         string helpText = info.HelpText ?? string.Empty;
         bool isSecure = info.IsPassword
             || SecureFieldDetector.IsSecure(label, helpText, info.LocalizedControlType);
-        bool isSingleLine = info.ControlType == ControlType.Edit;
 
         var (text, caretOffset, hasSelection) = ReadTextAndCaret(element);
         var caretRect = ReadCaretRect(element);
@@ -218,8 +217,9 @@ public sealed class UiaFocusTracker : IFocusTracker
             Text = text,
             CaretOffset = caretOffset,
             CaretRect = caretRect.IsEmpty ? fieldRect : caretRect,
+            CaretIsEstimated = caretRect.IsEmpty,
             FieldRect = fieldRect,
-            IsSingleLine = isSingleLine,
+            IsSingleLine = FieldShape.IsSingleLine(info.ControlType == ControlType.Edit, fieldRect, caretRect),
             IsSecure = isSecure,
             HasSelection = hasSelection,
             Label = label,
