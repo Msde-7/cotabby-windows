@@ -3,7 +3,6 @@ using Cotabby.Core.Input;
 using Cotabby.Core.Insertion;
 using Cotabby.Core.Macros;
 using Cotabby.Core.Overlay;
-using Cotabby.Win32.Insertion;
 using Microsoft.Extensions.Logging;
 
 namespace Cotabby.App.Macros;
@@ -132,7 +131,7 @@ public sealed class MacroController : IDisposable
         try
         {
             if (_focus.Refresh() is not { } field) return;
-            await KeySender.ReplaceBeforeCaretAsync(_inserter, field, deleteCount, result.InsertionText);
+            await _inserter.ReplaceAsync(field, deleteCount, result.InsertionText, CancellationToken.None);
             _logger.LogInformation("Macro committed (replaced {Count} chars).", deleteCount);
         }
         catch (Exception ex)

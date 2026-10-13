@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Cotabby.Core.Emoji;
 using Cotabby.Core.Input;
+using Cotabby.Core.Spelling;
 using Cotabby.Core.Suggestions;
 
 namespace Cotabby.App.Settings;
@@ -37,6 +38,11 @@ public sealed class AppSettings
     public bool EndpointUsesChatApi { get; set; }
     public int DebounceMs { get; set; } = 20;
 
+    /// <summary>Switches the local model with the power source. An empty id keeps the active model.</summary>
+    public bool PowerModelSwitching { get; set; }
+    public string BatteryModelId { get; set; } = "";
+    public string PluggedInModelId { get; set; } = "";
+
     // Writing
     public string UserName { get; set; } = "";
     public List<string> Languages { get; set; } = [.. LanguageCatalog.DefaultLanguages];
@@ -45,9 +51,20 @@ public sealed class AppSettings
     public int CustomLowWords { get; set; } = 5;
     public int CustomHighWords { get; set; } = 15;
     public bool AllowMultiLine { get; set; }
+    public bool SuggestWithinWords { get; set; } = true;
     public bool AcceptPunctuationWithWord { get; set; } = true;
     public bool AddSpaceAfterAccept { get; set; }
     public AcceptanceGranularity AcceptanceMode { get; set; }
+
+    // Corrections
+    public bool SuppressCompletionsOnTypo { get; set; } = true;
+    public bool OfferTypoCorrections { get; set; } = true;
+    public bool AutoFixTypos { get; set; }
+    public List<string> SpellingDictionaries { get; set; } = [.. SpellingDictionaryCatalog.DefaultEnabledCodes];
+
+    // Context
+    public bool ClipboardContext { get; set; }
+    public string ExtendedContext { get; set; } = "";
 
     // Shortcuts
     public KeyBinding AcceptWord { get; set; } = KeyBinding.Tab;
@@ -99,6 +116,9 @@ public sealed class AppSettings
         Granularity = AcceptanceMode,
         AcceptPunctuationWithWord = AcceptPunctuationWithWord,
         AddSpaceAfterAccept = AddSpaceAfterAccept,
+        SuggestWithinWords = SuggestWithinWords,
+        Typos = new TypoGateSettings(SuppressCompletionsOnTypo, OfferTypoCorrections, AutoFixTypos),
+        SpellingDictionaries = SpellingDictionaryCatalog.Normalize(SpellingDictionaries),
         UserName = UserName,
         Languages = LanguageCatalog.Normalize(Languages),
     };

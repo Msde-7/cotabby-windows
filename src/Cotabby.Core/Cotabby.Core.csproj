@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Resources\Emoji\emoji.json" />
+    <Content Include="Resources\Spelling\**" Exclude="Resources\Spelling\.gitattributes" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

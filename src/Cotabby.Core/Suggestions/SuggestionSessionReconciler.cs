@@ -28,7 +28,9 @@ public static class SuggestionSessionReconciler
 
         switch (ev.Kind)
         {
-            case KeyKind.Character when session.VisibleText.Length > 0 && session.VisibleText[0] == ev.Character:
+            // A correction replaces a word as a unit, so typing never advances it.
+            case KeyKind.Character when session.Correction is null
+                && session.VisibleText.Length > 0 && session.VisibleText[0] == ev.Character:
                 return new(Outcome.Advance, session with { VisibleText = session.VisibleText[1..] });
 
             case KeyKind.Character or KeyKind.Tab or KeyKind.Backspace or KeyKind.Delete

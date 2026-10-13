@@ -308,14 +308,14 @@ public sealed class EmojiPickerSessionTests : IDisposable
     }
 
     [Fact]
-    public void QueryUpdateFollowsTheCaret()
+    public void CaretUpdateRepositionsThePanel()
     {
-        Type(":sm");
-        _focus.Field = Field(caretX: 90);
+        Type(":smi");
+        var moved = Field(caretX: 90);
 
-        Type("i");
+        _sut.UpdateCaret(moved);
 
-        Assert.Equal(_focus.Field.CaretRect, _panel.CaretRect);
+        Assert.Equal(moved.CaretRect, _panel.CaretRect);
     }
 
     [Fact]

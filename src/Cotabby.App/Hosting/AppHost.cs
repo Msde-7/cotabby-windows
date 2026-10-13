@@ -8,6 +8,7 @@ using Cotabby.Core.Input;
 using Cotabby.Core.Insertion;
 using Cotabby.Core.Models;
 using Cotabby.Core.Overlay;
+using Cotabby.Core.Spelling;
 using Cotabby.Core.Suggestions;
 using Cotabby.Inference;
 using Cotabby.Inference.OpenAICompatible;
@@ -16,6 +17,7 @@ using Cotabby.Win32.Input;
 using Cotabby.Win32.Insertion;
 using Cotabby.Win32.Power;
 using Cotabby.Win32.Security;
+using Cotabby.Win32.Spelling;
 using Cotabby.Win32.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -41,6 +43,7 @@ public sealed class AppHost : IAsyncDisposable
     private readonly SynchronizationContext _ui;
     private readonly ILogger _logger;
     private readonly GhostOverlayWindow _macroPreview;
+    private readonly SymSpellCorrector _spelling = new();
 
     public SuggestionCoordinator Coordinator { get; }
     public LlamaRuntimeManager Runtime { get; }
@@ -122,7 +125,9 @@ public sealed class AppHost : IAsyncDisposable
         Coordinator = new SuggestionCoordinator(
             _hook, focus, _router, overlay, inserter, _work,
             loggers.CreateLogger<SuggestionCoordinator>(), ui,
-            batterySaverOn: () => PowerStatus.IsBatterySaverOn);
+            batterySaverOn: () => PowerStatus.IsBatterySaverOn,
+            typos: new TypoCorrectionAdvisor(
+                _spelling, new SpellingLanguageResolver(), new WindowsSpellChecker(_spelling)));
         Coordinator.InlineCaptureActive = () => EmojiPicker.IsCapturing || Macros.IsCapturing;
         Coordinator.Metrics.Restore(Settings.WordsAccepted);
 
@@ -224,6 +229,7 @@ public sealed class AppHost : IAsyncDisposable
         _hook.KeyEvent -= OnGlobalToggleKey;
         EmojiPicker.Dispose();
         Macros.Dispose();
+        _spelling.Dispose();
         await Coordinator.DisposeAsync().ConfigureAwait(false);
         await Runtime.DisposeAsync().ConfigureAwait(false);
         EndpointClient.Dispose();

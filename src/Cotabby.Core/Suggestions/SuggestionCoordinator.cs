@@ -3,6 +3,7 @@ using Cotabby.Core.Focus;
 using Cotabby.Core.Input;
 using Cotabby.Core.Insertion;
 using Cotabby.Core.Overlay;
+using Cotabby.Core.Spelling;
 using Cotabby.Core.Support;
 using Microsoft.Extensions.Logging;
 
@@ -42,6 +43,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private readonly SynchronizationContext _ui;
     private readonly Func<bool> _batterySaverOn;
     private readonly TimeProvider _clock;
+    private readonly TypoCorrectionAdvisor? _typos;
 
     private volatile SuggestionSettings _settings = SuggestionSettings.Default;
     private volatile Offer? _offer;
@@ -80,7 +82,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         ILogger<SuggestionCoordinator> logger,
         SynchronizationContext ui,
         Func<bool>? batterySaverOn = null,
-        TimeProvider? clock = null)
+        TimeProvider? clock = null,
+        TypoCorrectionAdvisor? typos = null)
     {
         _hook = hook;
         _focus = focus;
@@ -92,6 +95,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         _ui = ui;
         _batterySaverOn = batterySaverOn ?? (() => false);
         _clock = clock ?? TimeProvider.System;
+        _typos = typos;
     }
 
     public SuggestionMetrics Metrics { get; } = new();
@@ -273,7 +277,12 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 _logger.LogDebug("Request {ReqId} skipped: {Reason}", requestId, reason);
                 return;
             }
-            if (!SuggestionAvailability.HasTextToContinue(field) || !_engine.IsReady) return;
+            if (!SuggestionAvailability.HasTextToContinue(field)) return;
+
+            string preceding = PrecedingText(field);
+            if (await HandleTypoAsync(requestId, settings, field, preceding, ct).ConfigureAwait(false)) return;
+            if (!settings.SuggestWithinWords && CaretWordContext.UnfinishedWord(preceding) is not null) return;
+            if (!_engine.IsReady) return;
 
             var request = SuggestionRequestFactory.Build(field, requestId, settings);
             var stopwatch = Stopwatch.StartNew();
@@ -298,6 +307,44 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         {
             _logger.LogWarning(ex, "Request {ReqId} failed.", requestId);
         }
+    }
+
+    /// <summary>
+    /// Runs the typo gate on the word just committed. Returns true when the gate
+    /// replaced the completion with a suppression, an offer or an automatic fix.
+    /// </summary>
+    private async Task<bool> HandleTypoAsync(
+        string requestId, SuggestionSettings settings, FocusedField field, string preceding, CancellationToken ct)
+    {
+        if (_typos is null) return false;
+        var advice = _typos.Advise(preceding, settings.SpellingDictionaries, settings.Typos);
+        var decision = advice.Decision;
+        switch (decision.Action)
+        {
+            case TypoGateAction.Proceed:
+                return false;
+
+            case TypoGateAction.ApplyCorrection when advice.Replacement is { } fix:
+                await _inserter.ReplaceAsync(field, fix.DeletingUtf16Count, fix.ReplacementText, ct).ConfigureAwait(false);
+                Post(RestartPrediction);
+                return true;
+
+            case TypoGateAction.OfferCorrection:
+                var correction = new TypoCorrection(decision.Word!, decision.CorrectedWord!);
+                Post(() => Present(requestId, decision.CorrectedWord!, field, latencyMs: 0, ct, correction));
+                return true;
+
+            default:
+                return true;
+        }
+    }
+
+    /// <summary>Predicts again after an edit whose size the key count cannot describe.</summary>
+    private void RestartPrediction()
+    {
+        _publishBaseline = null;
+        _expectedDelta = 0;
+        SchedulePrediction(typed: null);
     }
 
     private async Task<FocusedField?> WaitForHostPublishAsync(
@@ -352,7 +399,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         return text;
     }
 
-    private void Present(string requestId, string text, FocusedField field, int latencyMs, CancellationToken ct)
+    private void Present(
+        string requestId, string text, FocusedField field, int latencyMs, CancellationToken ct,
+        TypoCorrection? correction = null)
     {
         if (ct.IsCancellationRequested || _session is not null) return;
 
@@ -365,19 +414,25 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
         _lastAcceptedTail = null;
 
-        _session = new SuggestionSession { RequestId = requestId, VisibleText = text, AnchorRect = field.CaretRect };
+        _session = new SuggestionSession
+        {
+            RequestId = requestId,
+            VisibleText = text,
+            AnchorRect = field.CaretRect,
+            Correction = correction,
+        };
         _sessionField = field;
         _sessionAcceptedAny = false;
         PublishOffer();
-        _overlay.Show(text, field.CaretRect);
-        Metrics.RecordShown(latencyMs);
+        _overlay.Show(text, field.CaretRect, isCorrection: correction is not null);
+        if (correction is null) Metrics.RecordShown(latencyMs);
         _logger.LogInformation("Suggestion shown req={ReqId} latency={Ms}ms chars={Chars}", requestId, latencyMs, text.Length);
         _logger.LogDebug("Suggestion text req={ReqId} \"{Text}\"", requestId, LogText.Escape(text));
 
         bool acceptQueued = _queuedAccept;
         _ownership = null;
         _queuedAccept = false;
-        if (acceptQueued) Accept(all: false, isRepeat: true);
+        if (acceptQueued && correction is null) Accept(all: false, isRepeat: true);
     }
 
     private void Accept(bool all, bool isRepeat)
@@ -390,6 +445,15 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
 
         var settings = _settings;
+        if (session.Correction is { } correction)
+        {
+            ClearSession();
+            _insertChain = _insertChain
+                .ContinueWith(_ => ApplyCorrectionAsync(correction), TaskScheduler.Default)
+                .Unwrap();
+            return;
+        }
+
         bool doubleTapApplies = settings.DoubleTapAcceptsAll
             && !isRepeat
             && !ShortcutResolver.OverridesAcceptAll(field.ProcessName, settings.ShortcutOverrides);
@@ -498,6 +562,25 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         {
             _logger.LogError(ex, "Accept failed for {ReqId}.", requestId);
             Post(() => CancelSession("accept failed"));
+        }
+    }
+
+    /// <summary>Swaps the typo for its fix. The edit is planned against the live text.</summary>
+    private async Task ApplyCorrectionAsync(TypoCorrection correction)
+    {
+        try
+        {
+            if (_focus.Refresh() is not { } field) return;
+            var plan = TypoCorrectionReplacementPlanner.Plan(
+                PrecedingText(field), correction.Word, correction.CorrectedWord, requiresTrailingSpace: false);
+            if (plan is not { } fix) return;
+            await _inserter.ReplaceAsync(field, fix.DeletingUtf16Count, fix.ReplacementText, CancellationToken.None)
+                .ConfigureAwait(false);
+            Post(RestartPrediction);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Applying a correction failed.");
         }
     }
 

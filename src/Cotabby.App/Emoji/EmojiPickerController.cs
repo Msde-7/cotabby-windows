@@ -35,6 +35,9 @@ public sealed class EmojiPickerController : IDisposable
     private readonly Timer _longPauseTimer;
     private readonly object _gate = new();
 
+    /// <summary>Time for the host to apply a key before the caret is read.</summary>
+    private const int CaretSettleMs = 30;
+
     public EmojiPickerController(
         IKeyboardHook hook,
         IFocusTracker focus,
@@ -123,7 +126,15 @@ public sealed class EmojiPickerController : IDisposable
                 args.Suppress = _session.HandleKey(InlineCommitKey.Normalize(args.Event, CommitKey));
             }
             _longPauseTimer.Change(_session.IsCapturing ? LongPause : Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            if (_session.IsCapturing) _ = Task.Run(FollowCaretAsync);
         }
+    }
+
+    private async Task FollowCaretAsync()
+    {
+        await Task.Delay(CaretSettleMs);
+        if (_focus.Refresh() is not { } field) return;
+        lock (_gate) _session.UpdateCaret(field);
     }
 
     private void OnFocusChanged(object? sender, FocusedField? field)
@@ -146,7 +157,7 @@ public sealed class EmojiPickerController : IDisposable
         {
             var field = _focus.Refresh() ?? captureField;
             int deleteCount = EmojiQueryRun.DeleteCount(field, fallbackDeleteCount);
-            await KeySender.ReplaceBeforeCaretAsync(_inserter, field, deleteCount, glyph);
+            await _inserter.ReplaceAsync(field, deleteCount, glyph, CancellationToken.None);
             _logger.LogInformation("Emoji committed {Glyph} (deleted {Count} chars)", glyph, deleteCount);
         }
         catch (Exception ex)

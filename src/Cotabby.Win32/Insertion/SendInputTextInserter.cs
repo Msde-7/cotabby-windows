@@ -50,6 +50,16 @@ public sealed class SendInputTextInserter : ITextInserter
     /// </summary>
     private const int MaxSendInputChars = 24;
 
+    /// <summary>Lets the host apply the deletes before the replacement text arrives.</summary>
+    private const int DeleteSettleMs = 40;
+
+    public async Task<bool> ReplaceAsync(FocusedField target, int deleteCount, string text, CancellationToken ct)
+    {
+        KeySender.SendBackspaces(deleteCount);
+        await Task.Delay(DeleteSettleMs, ct).ConfigureAwait(false);
+        return await InsertAsync(target, text, ct).ConfigureAwait(false);
+    }
+
     public async Task<bool> InsertAsync(FocusedField target, string text, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(text)) return true;

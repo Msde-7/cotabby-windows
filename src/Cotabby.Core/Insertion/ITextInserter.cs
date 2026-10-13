@@ -19,4 +19,10 @@ public interface ITextInserter
     /// while a previous insertion is still in-flight if the user is rapid-fire.
     /// </remarks>
     Task<bool> InsertAsync(FocusedField target, string text, CancellationToken ct);
+
+    /// <summary>
+    /// Delete <paramref name="deleteCount"/> UTF-16 units before the caret and insert
+    /// <paramref name="text"/> in their place.
+    /// </summary>
+    Task<bool> ReplaceAsync(FocusedField target, int deleteCount, string text, CancellationToken ct);
 }

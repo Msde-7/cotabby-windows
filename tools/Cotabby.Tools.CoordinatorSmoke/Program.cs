@@ -317,7 +317,7 @@ sealed class RecordingOverlay : IOverlayPresenter
     public record ShownInfo(string Text, ScreenRect Anchor);
     public ShownInfo? LastShown { get; set; }
     public int ShowCount, UpdateCount, HideCount;
-    public void Show(string text, ScreenRect anchor) { LastShown = new(text, anchor); ShowCount++; }
+    public void Show(string text, ScreenRect anchor, bool isCorrection = false) { LastShown = new(text, anchor); ShowCount++; }
     public void Update(string text) { if (LastShown is not null) LastShown = LastShown with { Text = text }; UpdateCount++; }
     public void Hide() { HideCount++; }
 }
@@ -332,6 +332,9 @@ sealed class RecordingInserter : ITextInserter
         InsertCount++;
         return Task.FromResult(true);
     }
+
+    public Task<bool> ReplaceAsync(FocusedField target, int deleteCount, string text, CancellationToken ct) =>
+        InsertAsync(target, text, ct);
 }
 
 sealed class SingleThreadSyncContext : SynchronizationContext

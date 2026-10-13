@@ -106,6 +106,16 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
         return Task.FromResult(true);
     }
 
+    public Task<bool> ReplaceAsync(FocusedField target, int deleteCount, string text, CancellationToken ct)
+    {
+        lock (_gate)
+        {
+            var updated = _field!.Text[..^deleteCount] + text;
+            _field = _field with { Text = updated, CaretOffset = updated.Length };
+        }
+        return Task.FromResult(true);
+    }
+
     public void Start() { }
     public void Stop() { }
     public void Dispose() { }
@@ -137,7 +147,13 @@ internal sealed class RecordingOverlay : IOverlayPresenter
         get { lock (_gate) return _text; }
     }
 
-    public void Show(string text, ScreenRect anchor) => Update(text);
+    public bool ShowsCorrection { get; private set; }
+
+    public void Show(string text, ScreenRect anchor, bool isCorrection = false)
+    {
+        ShowsCorrection = isCorrection;
+        Update(text);
+    }
 
     public void Update(string text)
     {

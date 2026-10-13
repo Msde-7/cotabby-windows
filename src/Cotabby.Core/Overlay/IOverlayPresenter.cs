@@ -10,7 +10,7 @@ namespace Cotabby.Core.Overlay;
 public interface IOverlayPresenter
 {
     /// <summary>Show ghost text at the given screen rect. Replaces any visible text.</summary>
-    void Show(string text, ScreenRect anchor);
+    void Show(string text, ScreenRect anchor, bool isCorrection = false);
 
     /// <summary>Update the visible text in place without moving the anchor — used as tokens stream.</summary>
     void Update(string text);

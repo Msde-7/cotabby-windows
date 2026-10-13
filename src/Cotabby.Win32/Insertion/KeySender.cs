@@ -1,6 +1,4 @@
 using System.Runtime.InteropServices;
-using Cotabby.Core.Focus;
-using Cotabby.Core.Insertion;
 using static Cotabby.Win32.Interop.NativeMethods;
 
 namespace Cotabby.Win32.Insertion;
@@ -27,18 +25,4 @@ public static class KeySender
         }
         SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
     }
-
-    /// <summary>
-    /// Deletes <paramref name="deleteCount"/> characters before the caret and types
-    /// <paramref name="text"/> in their place. The pause lets the host apply the deletes first.
-    /// </summary>
-    public static async Task<bool> ReplaceBeforeCaretAsync(
-        ITextInserter inserter, FocusedField field, int deleteCount, string text)
-    {
-        SendBackspaces(deleteCount);
-        await Task.Delay(DeleteSettleMs).ConfigureAwait(false);
-        return await inserter.InsertAsync(field, text, CancellationToken.None).ConfigureAwait(false);
-    }
-
-    private const int DeleteSettleMs = 40;
 }

@@ -1,4 +1,5 @@
 using Cotabby.Core.Input;
+using Cotabby.Core.Spelling;
 
 namespace Cotabby.Core.Suggestions;
 
@@ -43,6 +44,13 @@ public sealed record SuggestionSettings
     public AcceptanceGranularity Granularity { get; init; }
     public bool AcceptPunctuationWithWord { get; init; } = true;
     public bool AddSpaceAfterAccept { get; init; }
+
+    /// <summary>When off, a new suggestion waits for the word being typed to be finished.</summary>
+    public bool SuggestWithinWords { get; init; } = true;
+
+    public TypoGateSettings Typos { get; init; } = new(
+        SuppressCompletionsOnTypo: true, OfferTypoCorrections: true, AutomaticallyFixTypos: false);
+    public IReadOnlyList<string> SpellingDictionaries { get; init; } = SpellingDictionaryCatalog.DefaultEnabledCodes;
 
     public string UserName { get; init; } = "";
     public IReadOnlyList<string> Languages { get; init; } = LanguageCatalog.DefaultLanguages;

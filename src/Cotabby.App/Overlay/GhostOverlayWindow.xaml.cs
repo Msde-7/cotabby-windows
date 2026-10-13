@@ -24,6 +24,8 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     private const double FontSizePerCaretHeight = 0.78;
     private const double MinFontSize = 11;
     private const double MaxFontSize = 48;
+    private const string CorrectionPrefix = "→ ";
+    private static readonly Color CorrectionColor = Color.FromRgb(0x22, 0xC5, 0x5E);
 
     private HwndSource? _source;
     private Color? _userColor;
@@ -31,6 +33,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     private double _sizeMultiplier = 1.0;
     private bool _showHint = true;
     private Duration _fadeIn = Duration.Automatic;
+    private bool _isCorrection;
 
     // UIA flips between the real line height and a coarser fallback while a suggestion
     // is visible. Holding the larger reading keeps the ghost from shrinking mid-suggestion.
@@ -66,17 +69,22 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
             style | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
     }
 
-    public void Show(string text, ScreenRect anchor)
+    public void Show(string text, ScreenRect anchor, bool isCorrection = false)
     {
         if (!Dispatcher.CheckAccess())
         {
-            Dispatcher.BeginInvoke(() => Show(text, anchor));
+            Dispatcher.BeginInvoke(() => Show(text, anchor, isCorrection));
             return;
         }
 
         bool wasVisible = Visibility == Visibility.Visible;
         ApplyFontSize(anchor);
-        SetText(text);
+        if (_isCorrection != isCorrection)
+        {
+            _isCorrection = isCorrection;
+            ApplyPalette();
+        }
+        SetText(isCorrection ? CorrectionPrefix + text : text);
         Visibility = Visibility.Visible;
         UpdateLayout();
         PositionAt(anchor);
@@ -131,7 +139,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     private void ApplyPalette()
     {
         bool dark = SystemTheme.IsDark;
-        var text = _userColor ?? (dark ? Color.FromRgb(0xA6, 0xA6, 0xA6) : Color.FromRgb(0x73, 0x73, 0x73));
+        var text = _isCorrection ? CorrectionColor : _userColor ?? (dark ? Color.FromRgb(0xA6, 0xA6, 0xA6) : Color.FromRgb(0x73, 0x73, 0x73));
         GhostText.Foreground = new SolidColorBrush(Color.FromArgb((byte)Math.Round(_opacity * 0xCC), text.R, text.G, text.B));
 
         TabKeycap.Background = Brush(dark ? 0x2E : 0xF2);

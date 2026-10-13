@@ -113,7 +113,7 @@ public sealed class EmojiPickerSession(
 
     private void BeginCapture()
     {
-        if (focus.Refresh() is not { IsSecure: false } field)
+        if (focus.Current is not { IsSecure: false } field)
         {
             _machine.Reset();
             return;
@@ -126,9 +126,18 @@ public sealed class EmojiPickerSession(
 
     private void UpdateQuery(string query)
     {
-        // Focus events do not fire for caret movement, so the caret is read again as the query grows.
-        if (focus.Refresh() is { IsSecure: false } field) _captureField = field;
         RefreshMatches(query);
+        PresentPanel();
+    }
+
+    /// <summary>
+    /// Moves the panel to a freshly read caret. Focus events do not fire for caret movement, and
+    /// reading the field is too slow for the keyboard hook, so the host reads it and reports back.
+    /// </summary>
+    public void UpdateCaret(FocusedField field)
+    {
+        if (!IsCapturing || field.IsSecure) return;
+        _captureField = field;
         PresentPanel();
     }
 
