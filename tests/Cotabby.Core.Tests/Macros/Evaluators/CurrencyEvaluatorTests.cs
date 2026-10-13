@@ -58,7 +58,6 @@ public class CurrencyEvaluatorTests
     public void InjectedRateTableDrivesTheCrossRate()
     {
         var table = new CurrencyRateTable(
-            "test",
             new Dictionary<string, double> { ["USD"] = 1, ["EUR"] = 0.5, ["GBP"] = 0.25 });
         var custom = new CurrencyEvaluator(Culture, table);
         Assert.Equal("€5.00", custom.Evaluate("10 usd to eur")?.InsertionText);
@@ -69,7 +68,7 @@ public class CurrencyEvaluatorTests
     [Fact]
     public void CodeMissingFromTableReturnsNull()
     {
-        var table = new CurrencyRateTable("test", new Dictionary<string, double> { ["USD"] = 1 });
+        var table = new CurrencyRateTable(new Dictionary<string, double> { ["USD"] = 1 });
         Assert.Null(new CurrencyEvaluator(Culture, table).Evaluate("100USD->EUR"));
     }
 
@@ -119,12 +118,6 @@ public class CurrencyEvaluatorTests
         Assert.Equal(1.0, CurrencyRateTable.Bundled.Rate("usd"));
         Assert.Equal(CurrencyRateTable.Bundled.Rate("EUR"), CurrencyRateTable.Bundled.Rate("eur"));
         Assert.Null(CurrencyRateTable.Bundled.Rate("XXX"));
-    }
-
-    [Fact]
-    public void BundledTableIsDated()
-    {
-        Assert.Equal("2026-06", CurrencyRateTable.Bundled.AsOf);
     }
 
     [Fact]

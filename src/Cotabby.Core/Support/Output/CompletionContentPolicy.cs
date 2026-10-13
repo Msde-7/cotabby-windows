@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Cotabby.Core.Text;
 
 namespace Cotabby.Core.Support;
 
@@ -105,7 +106,7 @@ public static partial class CompletionContentPolicy
     {
         string lowered = text.ToLowerInvariant();
         var words = new List<string>();
-        foreach (var range in new GraphemeString(lowered).Split(g => !g.IsLetter && !g.IsNumber && !g.Is('\'')))
+        foreach (var range in new GraphemeString(lowered).Split(g => !g.IsLetterOrNumber && !g.Is('\'')))
         {
             words.Add(lowered[range]);
         }
@@ -115,7 +116,7 @@ public static partial class CompletionContentPolicy
     public static bool HasWordContent(string text)
     {
         var graphemes = new GraphemeString(text);
-        return graphemes.PrefixLength(g => !g.IsLetter && !g.IsNumber) < graphemes.Count;
+        return graphemes.PrefixLength(g => !g.IsLetterOrNumber) < graphemes.Count;
     }
 
     public static bool StartsWithClosingPunctuationAfterSpace(string completion, string precedingText)

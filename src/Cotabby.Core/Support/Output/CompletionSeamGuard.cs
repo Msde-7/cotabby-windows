@@ -1,3 +1,5 @@
+using Cotabby.Core.Text;
+
 namespace Cotabby.Core.Support;
 
 /// <summary>
@@ -12,8 +14,7 @@ namespace Cotabby.Core.Support;
 /// only when the caller can both identify it as a typo and offer a correction, so names and jargon
 /// still pass.</item>
 /// </list>
-/// Code-like tokens and scripts without space-delimited words keep their normal path. The same
-/// decision runs for streamed, final and cached candidates.
+/// Code-like tokens and scripts without space-delimited words keep their normal path.
 /// </summary>
 public static class CompletionSeamGuard
 {
@@ -28,56 +29,6 @@ public static class CompletionSeamGuard
         CorrectableTypo,
     }
 
-    public enum VerdictKind
-    {
-        Allow,
-        JunkPunctuationRun,
-        SeamMisspelling,
-        LeadingWordMisspelling,
-        AbandonedWord,
-    }
-
-    /// <summary>The verdict and, for the word-level kinds, the offending word.</summary>
-    public readonly record struct Verdict(VerdictKind Kind, string? Word = null)
-    {
-        public static readonly Verdict Allow = new(VerdictKind.Allow);
-        public static readonly Verdict JunkPunctuationRun = new(VerdictKind.JunkPunctuationRun);
-        public static Verdict SeamMisspelling(string word) => new(VerdictKind.SeamMisspelling, word);
-        public static Verdict LeadingWordMisspelling(string word) => new(VerdictKind.LeadingWordMisspelling, word);
-        public static Verdict AbandonedWord(string word) => new(VerdictKind.AbandonedWord, word);
-    }
-
-    /// <summary>
-    /// Streaming must not expose the first generated word until it is complete enough to assess.
-    /// </summary>
-    public enum StreamedLeadingWordVerdict
-    {
-        Wait,
-        Allow,
-        Suppress,
-    }
-
-    public enum PresentationKind
-    {
-        Wait,
-        Suppress,
-        Show,
-    }
-
-    /// <summary>
-    /// One decision consumed by the streaming, final and cached-result paths. <c>WordOnly</c> records
-    /// conservative lexical evidence. An unknown joined word can offer its ending without endorsing
-    /// the following phrase.
-    /// </summary>
-    public readonly record struct PresentationDecision(
-        PresentationKind Kind, Verdict Reason = default, string Text = "", bool WordOnly = false)
-    {
-        public static readonly PresentationDecision Wait = new(PresentationKind.Wait);
-        public static PresentationDecision Suppress(Verdict reason) => new(PresentationKind.Suppress, reason);
-        public static PresentationDecision Show(string text, bool wordOnly) =>
-            new(PresentationKind.Show, Text: text, WordOnly: wordOnly);
-    }
-
     /// <summary>Identical punctuation or symbol characters in a row that count as junk when freshly introduced.</summary>
     private const int JunkRunLength = 4;
 
@@ -85,42 +36,17 @@ public static class CompletionSeamGuard
     private const int MinimumSeamWordLength = 4;
 
     /// <summary>
-    /// Leading-word half of the streaming guard. Incomplete first words remain buffered, because
-    /// testing a prefix such as "ecr" would create false positives.
+    /// The text to show for a finished completion, or null when it must be suppressed. The spelling
+    /// assessment is injected so the rule stays pure and the caller picks the backend.
     /// </summary>
-    public static StreamedLeadingWordVerdict StreamedLeadingWord(
-        string precedingText, string completion, Func<string, SpellingAssessment> spellingAssessment) =>
-        Presentation(precedingText, completion, isFinal: false, spellingAssessment).Kind switch
-        {
-            PresentationKind.Wait => StreamedLeadingWordVerdict.Wait,
-            PresentationKind.Suppress => StreamedLeadingWordVerdict.Suppress,
-            _ => StreamedLeadingWordVerdict.Allow,
-        };
-
-    public static Verdict FinalVerdict(
+    public static string? VisibleText(
         string precedingText, string completion, Func<string, SpellingAssessment> spellingAssessment)
     {
-        var decision = Presentation(precedingText, completion, isFinal: true, spellingAssessment);
-        return decision.Kind == PresentationKind.Suppress ? decision.Reason : Verdict.Allow;
-    }
-
-    /// <summary>
-    /// The spelling assessment is injected so the rule stays pure and the caller picks the backend.
-    /// </summary>
-    public static PresentationDecision Presentation(
-        string precedingText, string completion, bool isFinal,
-        Func<string, SpellingAssessment> spellingAssessment)
-    {
-        if (IntroducesJunkPunctuationRun(precedingText, completion))
-        {
-            return PresentationDecision.Suppress(Verdict.JunkPunctuationRun);
-        }
-        if (completion.Length == 0) return PresentationDecision.Wait;
+        if (completion.Length == 0 || IntroducesJunkPunctuationRun(precedingText, completion)) return null;
 
         var completionGraphemes = new GraphemeString(completion);
-        string? prefix = CaretWordBoundary.UnfinishedWord(precedingText);
-        if (prefix is not null
-            && JoinedPresentation(prefix, completionGraphemes, isFinal, spellingAssessment) is { } joined)
+        string? prefix = CaretWordContext.UnfinishedWord(precedingText);
+        if (prefix is not null && IsJoinedWord(prefix, completionGraphemes, spellingAssessment, out string? joined))
         {
             return joined;
         }
@@ -136,53 +62,40 @@ public static class CompletionSeamGuard
                 completionGraphemes.Offset(wordStart)..completionGraphemes.Offset(wordStart + letters)];
             bool repeatsFragment = letters > GraphemeString.CountOf(prefix)
                 && firstWord.ToLowerInvariant().StartsWith(prefix.ToLowerInvariant(), StringComparison.Ordinal);
-            if (repeatsFragment || spellingAssessment(prefix) == SpellingAssessment.CorrectableTypo)
-            {
-                return PresentationDecision.Suppress(Verdict.AbandonedWord(prefix));
-            }
-        }
-
-        var probe = ProbeLeadingWord(precedingText, completionGraphemes);
-        if (!isFinal
-            && (probe.Kind == ProbeKind.Incomplete || (probe.Kind == ProbeKind.Candidate && !probe.IsComplete)))
-        {
-            return PresentationDecision.Wait;
+            if (repeatsFragment || spellingAssessment(prefix) == SpellingAssessment.CorrectableTypo) return null;
         }
 
         if (SeamWordCandidate(precedingText, completion) is { } seamWord
             && spellingAssessment(seamWord) == SpellingAssessment.CorrectableTypo)
         {
-            return PresentationDecision.Suppress(Verdict.SeamMisspelling(seamWord));
+            return null;
         }
-        if (probe.Kind == ProbeKind.Candidate
-            && spellingAssessment(probe.Word) == SpellingAssessment.CorrectableTypo)
+        if (LeadingWordCandidate(precedingText, completionGraphemes) is { } leadingWord
+            && spellingAssessment(leadingWord) == SpellingAssessment.CorrectableTypo)
         {
-            return PresentationDecision.Suppress(Verdict.LeadingWordMisspelling(probe.Word));
+            return null;
         }
-        return PresentationDecision.Show(completion, wordOnly: false);
+        return completion;
     }
 
     /// <summary>
-    /// Examines only the lexical token touching the caret. Null delegates code-like tokens to the
-    /// ordinary continuation path. Wait means a natural-language word is still arriving.
+    /// Examines only the lexical token touching the caret. False delegates code-like tokens to the
+    /// ordinary continuation path. Otherwise <paramref name="visible"/> is the text to show, or
+    /// null to suppress.
     /// </summary>
-    private static PresentationDecision? JoinedPresentation(
-        string prefix, GraphemeString completion, bool isFinal,
-        Func<string, SpellingAssessment> spellingAssessment)
+    private static bool IsJoinedWord(
+        string prefix, GraphemeString completion, Func<string, SpellingAssessment> spellingAssessment,
+        out string? visible)
     {
+        visible = null;
         var first = completion[0];
-        if (!first.IsLetter && !CaretWordBoundary.IsConnector(first)) return null;
+        if (!first.IsLetter && !CaretWordContext.IsConnector(first)) return false;
 
-        int endingCount = completion.PrefixLength(g => g.IsLetter || CaretWordBoundary.IsConnector(g));
+        int endingCount = completion.PrefixLength(g => g.IsLetter || CaretWordContext.IsConnector(g));
         if (endingCount < completion.Count)
         {
             var following = completion[endingCount];
-            if (following.IsNumber || following.Is('_')) return null;
-        }
-        if (!isFinal
-            && (endingCount == completion.Count || CaretWordBoundary.IsConnector(completion[endingCount - 1])))
-        {
-            return PresentationDecision.Wait;
+            if (following.IsNumber || following.Is('_')) return false;
         }
 
         string ending = completion.Prefix(endingCount);
@@ -200,16 +113,16 @@ public static class CompletionSeamGuard
                 && spellingAssessment(prefix) == SpellingAssessment.Known
                 && spellingAssessment(ending) == SpellingAssessment.Known)
             {
-                return PresentationDecision.Show(" " + completion.Text, wordOnly: false);
+                visible = " " + completion.Text;
             }
-            return PresentationDecision.Suppress(Verdict.SeamMisspelling(word));
+            return true;
         }
 
         // Judge the complete joined word, not how many letters the writer has typed. Once "b" +
         // "uild" is a credible word, throwing away " a spaceship" would make the same phrase behave
         // differently at "b", "bu" and "bui". Unknown names and vocabulary get the ending only.
-        bool wordOnly = assessment != SpellingAssessment.Known;
-        return PresentationDecision.Show(wordOnly ? ending : completion.Text, wordOnly);
+        visible = assessment == SpellingAssessment.Known ? completion.Text : ending;
+        return true;
     }
 
     /// <summary>
@@ -224,7 +137,7 @@ public static class CompletionSeamGuard
         {
             return false;
         }
-        return graphemes.PrefixLength(g => g.IsLetter || CaretWordBoundary.IsConnector(g)) == graphemes.Count;
+        return graphemes.PrefixLength(g => g.IsLetter || CaretWordContext.IsConnector(g)) == graphemes.Count;
     }
 
     private static bool IntroducesJunkPunctuationRun(string precedingText, string completion)
@@ -274,54 +187,31 @@ public static class CompletionSeamGuard
         return ContainsCjk(seamWord) ? null : seamWord;
     }
 
-    private enum ProbeKind
-    {
-        NotApplicable,
-        Incomplete,
-        Candidate,
-    }
-
-    private readonly record struct LeadingWordProbe(ProbeKind Kind, string Word = "", bool IsComplete = false);
-
     /// <summary>
-    /// Finds the first lexical word after boundary whitespace or punctuation. Apostrophes and hyphens
-    /// between letters remain part of the word ("doesn't", "state-of-the-art") so the spell checker
-    /// sees the same token the user sees.
+    /// The first lexical word after boundary whitespace or punctuation, when it is one the spelling
+    /// rule can judge. Apostrophes and hyphens between letters remain part of the word ("doesn't",
+    /// "state-of-the-art") so the spell checker sees the same token the user sees.
     /// </summary>
-    private static LeadingWordProbe ProbeLeadingWord(string precedingText, GraphemeString completion)
+    private static string? LeadingWordCandidate(string precedingText, GraphemeString completion)
     {
-        var notApplicable = new LeadingWordProbe(ProbeKind.NotApplicable);
-        var incomplete = new LeadingWordProbe(ProbeKind.Incomplete);
         int end = completion.Count;
-        if (end == 0) return incomplete;
-
         int wordStart = completion.PrefixLength(g => !g.IsLetter);
-        if (wordStart == end)
-        {
-            // Whitespace and opening punctuation may arrive before the first streamed word. Digits
-            // make the token code-like or version-like, so the spelling rule does not apply.
-            return completion.PrefixLength(g => g.IsWhitespace || g.IsPunctuation || g.IsSymbol) == end
-                ? incomplete
-                : notApplicable;
-        }
+        if (wordStart == end) return null;
 
-        if (completion.PrefixLength(g => !g.IsNumber) < wordStart) return notApplicable;
-
-        // A digit anywhere in the same whitespace-delimited token makes it code-like. Scan the
-        // whole token so "ecrir2" is not misread as the natural-language word "ecrir".
+        // Digits make the token code-like or version-like, so the spelling rule does not apply.
+        // The whole whitespace-delimited token is scanned so "ecrir2" is not misread as "ecrir".
         int tokenEnd = wordStart + completion.PrefixLength(g => !g.IsWhitespace, wordStart);
-        if (wordStart + completion.PrefixLength(g => !g.IsNumber, wordStart) < tokenEnd) return notApplicable;
+        if (completion.PrefixLength(g => !g.IsNumber) < tokenEnd) return null;
 
         // A bare apostrophe or hyphen can continue the word before the caret ("don" + "'t"). Any
         // other prefix character establishes a real boundary before the generated word.
         if (GraphemeString.LastOf(precedingText) is { IsLetter: true }
-            && completion.PrefixLength(CaretWordBoundary.IsConnector) == wordStart)
+            && completion.PrefixLength(CaretWordContext.IsConnector) == wordStart)
         {
-            return notApplicable;
+            return null;
         }
 
         int wordEnd = wordStart;
-        bool endsInDanglingConnector = false;
         while (wordEnd < end)
         {
             var character = completion[wordEnd];
@@ -331,18 +221,11 @@ public static class CompletionSeamGuard
                 continue;
             }
             int next = wordEnd + 1;
-            bool isConnector = CaretWordBoundary.IsConnector(character);
-            if (isConnector && next < end && completion[next].IsLetter)
-            {
-                wordEnd = next;
-                continue;
-            }
-            endsInDanglingConnector = isConnector && next == end;
-            break;
+            if (!CaretWordContext.IsConnector(character) || next >= end || !completion[next].IsLetter) break;
+            wordEnd = next;
         }
 
         string word = completion.Text[completion.Offset(wordStart)..completion.Offset(wordEnd)];
-        bool isComplete = wordEnd < end && !endsInDanglingConnector;
         int letterCount = 0;
         bool startsLowercase = false;
         bool hasLaterUppercase = false;
@@ -354,14 +237,15 @@ public static class CompletionSeamGuard
             else if (character.IsUppercase) hasLaterUppercase = true;
             letterCount++;
         }
-        if (!startsLowercase || hasLaterUppercase || ContainsCjk(word)) return notApplicable;
-        if (letterCount < MinimumSeamWordLength) return isComplete ? notApplicable : incomplete;
-        return new LeadingWordProbe(ProbeKind.Candidate, word, isComplete);
+        if (!startsLowercase || hasLaterUppercase || ContainsCjk(word)) return null;
+        return letterCount < MinimumSeamWordLength ? null : word;
     }
 
     /// <summary>
     /// Han, kana and Hangul ranges. These scripts have no space-delimited words, so a seam word is
-    /// not a meaningful unit there and the spelling dictionaries do not cover them.
+    /// not a meaningful unit there and the spelling dictionaries do not cover them. Upstream keeps
+    /// this list apart from the one in CaretWordContext. It adds radicals, CJK punctuation and the
+    /// compatibility and halfwidth forms, and has no Thai, Lao or supplementary ideographs.
     /// </summary>
     private static bool ContainsCjk(string text)
     {

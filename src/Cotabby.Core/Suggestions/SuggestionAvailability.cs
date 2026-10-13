@@ -47,9 +47,5 @@ public static class SuggestionAvailability
         && ev.Kind is KeyKind.Escape or KeyKind.Enter or KeyKind.Arrow or KeyKind.Delete or KeyKind.Backspace;
 
     /// <summary>At least one non-whitespace character must precede the caret.</summary>
-    public static bool HasTextToContinue(FocusedField field)
-    {
-        int caret = Math.Clamp(field.CaretOffset, 0, field.Text.Length);
-        return !field.Text.AsSpan(0, caret).IsWhiteSpace();
-    }
+    public static bool HasTextToContinue(FocusedField field) => !string.IsNullOrWhiteSpace(field.PrecedingText);
 }

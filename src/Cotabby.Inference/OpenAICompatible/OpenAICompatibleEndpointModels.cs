@@ -180,7 +180,7 @@ public sealed class OpenAICompatibleEndpointException(OpenAICompatibleEndpointEr
 {
     public OpenAICompatibleEndpointError Error { get; } = error;
 
-    public static string Describe(OpenAICompatibleEndpointError error) => error switch
+    private static string Describe(OpenAICompatibleEndpointError error) => error switch
     {
         OpenAICompatibleEndpointError.InvalidBaseUrl =>
             "Enter an HTTP or HTTPS base URL without credentials, a query, or a fragment.",
@@ -206,8 +206,6 @@ public abstract record OpenAICompatibleConnectionState
         Ready ready => $"Connected · {ready.ModelCount} models",
         _ => ((Failed)this).Message,
     };
-
-    public string? FailureDetail => (this as Failed)?.Message;
 }
 
 /// <summary>Narrow credential boundary so the app uses DPAPI while tests use an in-memory fake.</summary>

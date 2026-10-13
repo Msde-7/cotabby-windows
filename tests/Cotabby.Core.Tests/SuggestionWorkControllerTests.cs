@@ -1,5 +1,4 @@
 using Cotabby.Core.Suggestions;
-using Xunit;
 
 namespace Cotabby.Core.Tests;
 

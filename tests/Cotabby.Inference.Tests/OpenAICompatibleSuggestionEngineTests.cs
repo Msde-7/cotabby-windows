@@ -19,7 +19,6 @@ public class OpenAICompatibleSuggestionEngineTests : IDisposable
         RequestId = "req-1",
         Prefix = "Hello",
         Suffix = "",
-        HostApp = "notepad",
         SingleLine = false,
         MaxTokens = 8,
     };
@@ -107,14 +106,12 @@ public class OpenAICompatibleSuggestionEngineTests : IDisposable
         var engine = MakeEngine(Settings(baseUrl, modelName));
 
         Assert.False(engine.IsReady);
-        Assert.Equal(OpenAICompatibleEndpointException.Describe(expected), engine.UnavailableReason);
         var ex = await Assert.ThrowsAsync<OpenAICompatibleEndpointException>(() => Collect(engine));
         Assert.Equal(expected, ex.Error);
         Assert.Empty(_server.Requests);
 
         engine.UpdateSettings(Settings());
         Assert.True(engine.IsReady);
-        Assert.Null(engine.UnavailableReason);
     }
 
     [Fact]

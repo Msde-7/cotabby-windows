@@ -24,7 +24,6 @@ public sealed class SuggestionRequestFactoryTests
         Assert.Equal("request-1", request.RequestId);
         Assert.Equal("hello", request.Prefix);
         Assert.Equal(" world", request.Suffix);
-        Assert.Equal("chrome", request.HostApp);
     }
 
     [Theory]

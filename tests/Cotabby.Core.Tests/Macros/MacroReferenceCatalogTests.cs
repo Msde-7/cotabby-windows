@@ -26,7 +26,7 @@ public class MacroReferenceCatalogTests
             [new("5+5=", "10"), new("2^10=", "1024"), new("(3+4)*5=", "35"), new("100*15%=", "15"), new("12/4=", "3")],
             groups["Arithmetic"]);
         Assert.Equal(
-            [new("10km->mi", "6.214 mi"), new("100f->c", "37.78 c"), new("5ft->m", "1.524 m"), new("2lb->kg", "0.9072 kg"), new("3cup->ml", "720 ml")],
+            [new("10km->mi", "6.214 mi"), new("100f->c", "37.78 c"), new("5ft->m", "1.524 m"), new("2lb->kg", "0.9072 kg"), new("3cup->ml", "709.8 ml")],
             groups["Unit conversion"]);
         Assert.Equal(
             [new("100usd->eur", "€92.00"), new("50gbp->jpy", "¥9,557"), new("100 dollars to yen", "¥15,100"), new("$25 to cad", "CA$34.00")],

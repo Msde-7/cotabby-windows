@@ -1,3 +1,5 @@
+using Cotabby.Core.Text;
+
 namespace Cotabby.Core.Support;
 
 /// <summary>Which end of a section's content to keep when it must be shortened.</summary>
@@ -29,7 +31,7 @@ public sealed record PromptSection(
 /// <summary>
 /// Budget allocator for the base-model prompt. Each section declares a priority and a character
 /// range, and sections are filled highest priority first within a total budget, so the caret text
-/// is never starved by a noisy screen capture. Characters are user-perceived characters.
+/// is never starved by a large context section. Characters are user-perceived characters.
 /// </summary>
 public static class PromptSectionBudget
 {
@@ -92,9 +94,6 @@ public static class PromptSectionBudget
     /// Truncates <paramref name="text"/> to at most <paramref name="chars"/> characters, keeping the
     /// start or the end. Returns the input unchanged when it fits and empty when the cap is not positive.
     /// </summary>
-    public static string Truncate(string text, int chars, SectionTruncation mode) =>
-        Truncate(new GraphemeString(text), chars, mode);
-
     private static string Truncate(GraphemeString text, int chars, SectionTruncation mode)
     {
         if (chars <= 0) return string.Empty;

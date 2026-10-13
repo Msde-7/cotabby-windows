@@ -83,7 +83,6 @@ static KeyboardEvent Key(KeyKind kind, int virtualKey, char character = '\0') =>
 {
     Kind = kind,
     Character = character,
-    HasNonShiftModifier = false,
     IsKeyDown = true,
     VirtualKey = virtualKey,
 };
@@ -138,7 +137,6 @@ sealed class FakeField : IFocusTracker, ITextInserter
     {
         var field = new FocusedField
         {
-            ElementHandle = new object(),
             ProcessId = pid,
             ProcessName = process,
             Text = "",

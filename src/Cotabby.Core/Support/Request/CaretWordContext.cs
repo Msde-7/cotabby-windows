@@ -1,6 +1,8 @@
 using System.Text;
+using Cotabby.Core.Spelling;
+using Cotabby.Core.Text;
 
-namespace Cotabby.Core.Spelling;
+namespace Cotabby.Core.Support;
 
 /// <summary>
 /// A lexical snapshot of the caret, shared by correction and completion policy. A pause carries
@@ -22,16 +24,15 @@ public static class CaretWordContext
     {
         // An opening quote or parenthesis frames prose and is not part of the word. Only leading
         // openers are stripped, so punctuation inside call(wor, URLs and identifiers still excludes the token.
-        var characters = Graphemes.Split(Graphemes.TrailingToken(text))
-            .SkipWhile(c => Graphemes.Is(c, ProseOpeners))
-            .ToArray();
-        if (characters.Length == 0 || !Graphemes.IsLetter(characters[0])
-            || !characters.All(c => Graphemes.IsLetter(c) || IsConnector(c)))
+        var token = new GraphemeString(CurrentWordExtractor.TrailingToken(text));
+        int start = token.PrefixLength(c => c.IsAnyOf(ProseOpeners));
+        if (start == token.Count || !token[start].IsLetter
+            || token.PrefixLength(c => c.IsLetter || IsConnector(c), start) != token.Count - start)
         {
             return null;
         }
 
-        var word = string.Concat(characters);
+        var word = token.Text[token.Offset(start)..];
         return word.EnumerateRunes().Any(IsUnspacedScript) ? null : word;
     }
 
@@ -55,16 +56,18 @@ public static class CaretWordContext
             body = body[..^1];
         }
 
-        if (delimiter.Length == 0 || CurrentWordExtractor.Extract(body) is not { } current
-            || UnfinishedWord(body) != current.Word)
+        if (delimiter.Length == 0 || CurrentWordExtractor.Extract(body) is not { } word
+            || UnfinishedWord(body) != word)
         {
             return null;
         }
-        return new CommittedWord(current.Word, delimiter);
+        return new CommittedWord(word, delimiter);
     }
 
-    public static bool IsConnector(string character) => Graphemes.Is(character, Connectors);
+    internal static bool IsConnector(Grapheme character) => character.IsAnyOf(Connectors);
 
+    // Upstream keeps this list apart from the CJK test in CompletionSeamGuard and the acceptance
+    // list in SuggestionSessionReconciler. This one adds Thai and Lao and leaves out compatibility forms.
     private static bool IsUnspacedScript(Rune scalar) => scalar.Value
         is (>= 0x0E00 and <= 0x0EFF) or (>= 0x3040 and <= 0x30FF) or (>= 0x3400 and <= 0x9FFF)
         or (>= 0xAC00 and <= 0xD7AF) or (>= 0x20000 and <= 0x3134F);

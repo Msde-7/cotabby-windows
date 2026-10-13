@@ -1,4 +1,5 @@
 using System.Text;
+using Cotabby.Core.Text;
 
 namespace Cotabby.Core.Support;
 
@@ -65,5 +66,5 @@ public static class SignOffCue
         string.Join(' ', GraphemeString.Words(ScalarSets.Trim(line, IsEdge).ToLowerInvariant()));
 
     private static bool IsEdge(Rune scalar) =>
-        ScalarSets.IsWhitespace(scalar) || (scalar.IsBmp && EdgePunctuation.Contains((char)scalar.Value));
+        ScalarSets.IsWhitespace(scalar) || ScalarSets.IsAnyOf(scalar, EdgePunctuation);
 }

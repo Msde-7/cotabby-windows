@@ -42,7 +42,6 @@ public sealed class EmojiPickerSessionTests : IDisposable
 
     private static FocusedField Field(bool secure = false, int processId = 1, double caretX = 10) => new()
     {
-        ElementHandle = new object(),
         ProcessId = processId,
         ProcessName = "test",
         Text = "",
@@ -54,7 +53,13 @@ public sealed class EmojiPickerSessionTests : IDisposable
     };
 
     private static KeyboardEvent Key(KeyKind kind, char character = '\0', bool modifier = false) =>
-        new() { Kind = kind, Character = character, IsKeyDown = true, HasNonShiftModifier = modifier };
+        new()
+        {
+            Kind = kind,
+            Character = character,
+            IsKeyDown = true,
+            Modifiers = modifier ? KeyModifiers.Control : KeyModifiers.None,
+        };
 
     private bool Type(string text)
     {

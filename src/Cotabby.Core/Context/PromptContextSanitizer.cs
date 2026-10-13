@@ -1,6 +1,6 @@
+using Cotabby.Core.Text;
 using System.Text;
 using System.Text.RegularExpressions;
-using Cotabby.Core.Support;
 
 namespace Cotabby.Core.Context;
 

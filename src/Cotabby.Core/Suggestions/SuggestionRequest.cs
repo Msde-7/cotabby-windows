@@ -3,29 +3,21 @@ using Cotabby.Core.Support;
 namespace Cotabby.Core.Suggestions;
 
 /// <summary>
-/// A single suggestion request flowing from the coordinator into an
-/// <see cref="ISuggestionEngine"/>. Built by <c>SuggestionRequestFactory</c>
-/// in <see cref="Cotabby.Core.Suggestions.SuggestionRequestFactory"/> from
-/// a focus snapshot plus the most recent typed text. Pure value object —
-/// no references into UIA, no async work yet.
+/// One suggestion request from the coordinator to an <see cref="ISuggestionEngine"/>, built by
+/// <see cref="SuggestionRequestFactory"/> from a focus snapshot.
 /// </summary>
 public sealed record SuggestionRequest
 {
-    /// <summary>Correlation id for log joining across coordinator → engine → host.</summary>
+    /// <summary>Correlation id that joins the coordinator, engine and inserter log lines.</summary>
     public required string RequestId { get; init; }
 
-    /// <summary>The raw text preceding the caret (windowed to ~1000 chars).
-    /// The engine word-windows and renders this into the prompt.</summary>
+    /// <summary>The windowed text before the caret, which the engine renders into the prompt.</summary>
     public required string Prefix { get; init; }
 
-    /// <summary>Raw text following the caret (windowed). Drives fill-in-middle
-    /// and the trailing-duplication filter.</summary>
+    /// <summary>The windowed text after the caret. Drives fill-in-middle and the trailing-duplication filter.</summary>
     public required string Suffix { get; init; }
 
-    /// <summary>Host process name. Used for app-specific style hints.</summary>
-    public required string HostApp { get; init; }
-
-    /// <summary>True if the field is single-line — engines should clamp to one line.</summary>
+    /// <summary>True when the suggestion must stay on one line.</summary>
     public required bool SingleLine { get; init; }
 
     /// <summary>Maximum number of tokens the engine should emit.</summary>

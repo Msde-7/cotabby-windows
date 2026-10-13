@@ -41,9 +41,8 @@ public static class OverlayStylePolicy
 
     private static bool IsCaretAtEndOfLine(FocusedField field)
     {
-        for (int i = Math.Clamp(field.CaretOffset, 0, field.Text.Length); i < field.Text.Length; i++)
+        foreach (char c in field.TrailingText)
         {
-            char c = field.Text[i];
             if (c is '\n' or '\r') return true;
             if (!char.IsWhiteSpace(c)) return false;
         }

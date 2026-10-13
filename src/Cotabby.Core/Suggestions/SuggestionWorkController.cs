@@ -1,15 +1,9 @@
 namespace Cotabby.Core.Suggestions;
 
 /// <summary>
-/// Owns the debounce timer and cancellation token for in-flight generation
-/// work. The coordinator submits a new request via <see cref="Submit"/>; if a
-/// previous request is still running it is cancelled first.
+/// Owns the debounce timer and the cancellation token for generation work. Submitting a new
+/// request cancels the one before it.
 /// </summary>
-/// <remarks>
-/// Mirrors the macOS port's <c>SuggestionWorkController</c>. Kept in Core
-/// because the logic is platform-agnostic — only the wall-clock source matters,
-/// and that's injected for testability.
-/// </remarks>
 public sealed class SuggestionWorkController : IAsyncDisposable
 {
     private readonly object _gate = new();
@@ -24,11 +18,11 @@ public sealed class SuggestionWorkController : IAsyncDisposable
     public TimeSpan Debounce { get; set; }
 
     /// <summary>
-    /// Schedule <paramref name="work"/> to run after the debounce window.
-    /// Cancels any previously scheduled work. The returned task completes when
-    /// the work either finishes, is cancelled, or throws.
+    /// Schedules <paramref name="work"/> to run after the debounce window and cancels the work
+    /// scheduled before it. The returned task completes when the work finishes, is cancelled
+    /// or throws.
     /// </summary>
-    public Task Submit(Func<CancellationToken, Task> work, CancellationToken external = default)
+    public Task Submit(Func<CancellationToken, Task> work)
     {
         if (_disposed) return Task.CompletedTask;
 
@@ -37,9 +31,7 @@ public sealed class SuggestionWorkController : IAsyncDisposable
         lock (_gate)
         {
             prior = _inFlight;
-            cts = external == default
-                ? new CancellationTokenSource()
-                : CancellationTokenSource.CreateLinkedTokenSource(external);
+            cts = new CancellationTokenSource();
             _inFlight = cts;
         }
 

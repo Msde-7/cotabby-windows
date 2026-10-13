@@ -76,7 +76,7 @@ public class OpenAICompatibleApiClientTests : IDisposable
     {
         var ex = Assert.Throws<OpenAICompatibleClientException>(
             () => OpenAICompatibleSseDecoder.Decode(line, Mode.Completions));
-        Assert.Equal(OpenAICompatibleClientError.MalformedResponse, ex.Error);
+        Assert.Equal("The endpoint returned an invalid OpenAI-compatible response.", ex.Message);
     }
 
     [Fact]
@@ -107,13 +107,12 @@ public class OpenAICompatibleApiClientTests : IDisposable
         _server.Respond(_ => StubHttpMessageHandler.Json("{}", HttpStatusCode.TooManyRequests));
         var status = await Assert.ThrowsAsync<OpenAICompatibleClientException>(
             () => _client.FetchModelsAsync(Configuration(), null));
-        Assert.Equal(OpenAICompatibleClientError.Server, status.Error);
-        Assert.Equal(429, status.StatusCode);
+        Assert.Equal("The endpoint returned HTTP 429.", status.Message);
 
         _server.Respond(_ => StubHttpMessageHandler.Json("{}"));
         var malformed = await Assert.ThrowsAsync<OpenAICompatibleClientException>(
             () => _client.FetchModelsAsync(Configuration(), null));
-        Assert.Equal(OpenAICompatibleClientError.MalformedResponse, malformed.Error);
+        Assert.Equal("The endpoint returned an invalid OpenAI-compatible response.", malformed.Message);
     }
 
     [Fact]
@@ -205,8 +204,6 @@ public class OpenAICompatibleApiClientTests : IDisposable
         var ex = await Assert.ThrowsAsync<OpenAICompatibleClientException>(
             () => _client.GenerateAsync(Configuration(), null, "text", Options));
 
-        Assert.Equal(OpenAICompatibleClientError.Server, ex.Error);
-        Assert.Equal(401, ex.StatusCode);
         Assert.Equal("The endpoint returned HTTP 401.", ex.Message);
     }
 
@@ -277,7 +274,6 @@ public class OpenAICompatibleApiClientTests : IDisposable
         var ex = await Assert.ThrowsAsync<OpenAICompatibleClientException>(
             () => _client.GenerateAsync(Configuration(mode: Mode.Completions), null, "text", Options));
 
-        Assert.Equal(OpenAICompatibleClientError.StreamError, ex.Error);
         Assert.Equal("The endpoint reported an error: model unloaded", ex.Message);
     }
 
@@ -293,7 +289,7 @@ public class OpenAICompatibleApiClientTests : IDisposable
         _server.Respond(_ => StubHttpMessageHandler.Sse(": keep-alive\n\n\n"));
         var ex = await Assert.ThrowsAsync<OpenAICompatibleClientException>(
             () => _client.GenerateAsync(configuration, null, "text", Options));
-        Assert.Equal(OpenAICompatibleClientError.MalformedResponse, ex.Error);
+        Assert.Equal("The endpoint returned an invalid OpenAI-compatible response.", ex.Message);
     }
 
     [Fact]
@@ -320,7 +316,7 @@ public class OpenAICompatibleApiClientTests : IDisposable
         Assert.Equal(new OpenAICompatibleConnectionState.Idle(), connection.State);
 
         connection.SetFailure("Credential store unavailable");
-        Assert.Equal("Credential store unavailable", connection.State.FailureDetail);
+        Assert.Equal(new OpenAICompatibleConnectionState.Failed("Credential store unavailable"), connection.State);
     }
 
     [Fact]

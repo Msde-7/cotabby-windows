@@ -1,9 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading;
 using Cotabby.Core.Input;
-using Cotabby.Win32.Interop;
 using Microsoft.Extensions.Logging;
 using static Cotabby.Win32.Interop.NativeMethods;
 
@@ -13,27 +11,19 @@ namespace Cotabby.Win32.Input;
 /// WH_KEYBOARD_LL implementation of <see cref="IKeyboardHook"/>.
 /// </summary>
 /// <remarks>
-/// Two invariants matter here:
-///
-/// 1. The hook callback must run on a thread with a message pump — Windows
-///    delivers WH_KEYBOARD_LL callbacks by posting into the installer thread's
-///    queue. We start a dedicated background thread, install the hook on it,
-///    and run GetMessage/DispatchMessage there so the callbacks actually fire.
-///    Installing on the UI thread works too but stalls when WPF is doing layout.
-///
-/// 2. The callback must return as fast as possible. Windows enforces a per-hook
-///    timeout (LowLevelHooksTimeout, default 300ms) and will silently unhook us
-///    if we miss it. The callback only normalizes the event and raises the
-///    public event synchronously — heavy work (LLM inference, UIA reads) must
-///    NOT happen on this stack; subscribers should hand off via a channel or
-///    SynchronizationContext.Post.
+/// Windows delivers the callbacks through the message queue of the thread that installed the
+/// hook, so the hook lives on a dedicated thread with its own message loop. The UI thread would
+/// stall the callbacks during layout.
+/// <para>
+/// The callback must return quickly. Windows silently removes a hook that exceeds
+/// LowLevelHooksTimeout, which is 300 ms by default. Subscribers are called synchronously and
+/// must hand inference and UI Automation reads to another thread.
+/// </para>
 /// </remarks>
 public sealed class KeyboardHook : IKeyboardHook
 {
-    // Escape hatch for automated end-to-end testing: SendInput sets LLKHF_INJECTED
-    // and we normally drop those events to avoid a Tab-accept feedback loop.
-    // The smoke harness needs the hook to observe synthesized typing, so it
-    // sets COTABBY_ALLOW_INJECTED=1 before launch. Never set this in production.
+    // Injected events are dropped so the app never reacts to its own SendInput. An automated
+    // end-to-end run sets COTABBY_ALLOW_INJECTED=1 so the hook sees synthesized typing.
     private static readonly bool AllowInjected =
         Environment.GetEnvironmentVariable("COTABBY_ALLOW_INJECTED") == "1";
 
@@ -43,13 +33,12 @@ public sealed class KeyboardHook : IKeyboardHook
     private Thread? _thread;
     private uint _threadId;
     private IntPtr _hookHandle;
-    private LowLevelKeyboardProc? _proc; // pinned by holding the delegate ref
+    private LowLevelKeyboardProc? _proc; // Held so the delegate is not collected.
     private bool _disposed;
     private volatile bool _running;
 
-    // Keyboard state buffer reused across ToUnicodeEx calls. The hook fires from
-    // a single thread (the message-pump thread) so we don't need locking, but
-    // it's cleared per-call to keep the dead-key state from leaking across taps.
+    // Keyboard state buffer reused across ToUnicodeEx calls. Only the hook thread touches it.
+    // It is cleared per call so dead-key state does not leak between presses.
     private readonly byte[] _keyState = new byte[256];
 
     // Keys currently down, used to tell auto-repeat from a second press.
@@ -148,10 +137,8 @@ public sealed class KeyboardHook : IKeyboardHook
     }
 
     /// <summary>
-    /// Test backdoor: raise a synthetic <see cref="IKeyboardHook.KeyEvent"/> as if
-    /// the OS hook had fired. Used by the App's self-test when the sandbox blocks
-    /// SendInput so we can still exercise the coordinator end-to-end. Never call
-    /// from production code paths.
+    /// Raises a synthetic <see cref="IKeyboardHook.KeyEvent"/> as if the OS hook had fired.
+    /// For tests only.
     /// </summary>
     public void FireSyntheticKey(KeyboardEvent ev)
     {
@@ -167,8 +154,7 @@ public sealed class KeyboardHook : IKeyboardHook
         {
             var data = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
 
-            // Ignore events we synthesize ourselves. SendInput sets LLKHF_INJECTED,
-            // and re-entering acceptance would amplify a tab-to-accept loop.
+            // SendInput sets LLKHF_INJECTED. Reacting to the app's own input would loop.
             if ((data.flags & LLKHF_INJECTED) != 0 && !AllowInjected)
             {
                 return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
@@ -191,7 +177,6 @@ public sealed class KeyboardHook : IKeyboardHook
             {
                 Kind = kind,
                 Character = ch,
-                HasNonShiftModifier = (modifiers & ~KeyModifiers.Shift) != 0,
                 IsKeyDown = isDown,
                 VirtualKey = (int)data.vkCode,
                 Modifiers = modifiers,
@@ -205,7 +190,7 @@ public sealed class KeyboardHook : IKeyboardHook
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "KeyEvent subscriber threw — swallowing to keep hook alive.");
+                _logger.LogError(ex, "A KeyEvent subscriber threw. The hook stays installed.");
                 Debug.WriteLine($"KeyboardHook subscriber error: {ex}");
             }
 

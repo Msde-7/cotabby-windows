@@ -7,7 +7,6 @@ public class EmojiQueryRunTests
 {
     private static FocusedField Field(string text, int caretOffset) => new()
     {
-        ElementHandle = new object(),
         ProcessId = 1,
         ProcessName = "test",
         Text = text,

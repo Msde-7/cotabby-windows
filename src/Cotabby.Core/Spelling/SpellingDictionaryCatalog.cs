@@ -33,19 +33,6 @@ public static class SpellingDictionaryLanguageExtensions
     /// <summary>English name used in logs.</summary>
     public static string DisplayName(this SpellingDictionaryLanguage language) => language.ToString();
 
-    /// <summary>Native-script label shown in Settings so speakers can find their language quickly.</summary>
-    public static string SettingsLabel(this SpellingDictionaryLanguage language) => language switch
-    {
-        SpellingDictionaryLanguage.English => "English",
-        SpellingDictionaryLanguage.German => "Deutsch (German)",
-        SpellingDictionaryLanguage.Spanish => "Español (Spanish)",
-        SpellingDictionaryLanguage.French => "Français (French)",
-        SpellingDictionaryLanguage.Hebrew => "עברית (Hebrew)",
-        SpellingDictionaryLanguage.Italian => "Italiano (Italian)",
-        SpellingDictionaryLanguage.Russian => "Русский (Russian)",
-        _ => throw new ArgumentOutOfRangeException(nameof(language)),
-    };
-
     /// <summary>Resource basename from the SymSpell frequency-dictionary folder.</summary>
     public static string ResourceName(this SpellingDictionaryLanguage language) => language switch
     {

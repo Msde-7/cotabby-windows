@@ -1,4 +1,3 @@
-using System.Net.Http;
 using Cotabby.Core.Focus;
 using Cotabby.Core.Models;
 using Cotabby.Core.Suggestions;
@@ -54,7 +53,6 @@ var engine = new LlamaSuggestionEngine(runtime, loggerFactory.CreateLogger<Llama
 var fixedText = args.Length > 0 ? args[0] : "def fibonacci(n):\n    if n < 2:\n        return n\n    return ";
 var fakeField = new FocusedField
 {
-    ElementHandle = new object(),
     ProcessId = 0,
     ProcessName = "smoketest",
     Text = fixedText,

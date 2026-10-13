@@ -26,20 +26,10 @@ public class BaseCompletionPromptRendererTests
             "A new thought ",
             userName: "  \n",
             trailingText: "  \n\t",
-            customRules: ["", "   "],
             extendedContext: " ",
             languageInstruction: "\n",
-            clipboardContext: "\t",
-            visualContextSummary: "  ");
+            clipboardContext: "\t");
         Assert.Equal("A new thought ", prompt);
-    }
-
-    [Fact]
-    public void ZeroSuffixAllowanceOmitsFollowingText()
-    {
-        Assert.Equal(
-            "We are meeting ",
-            BaseCompletionPromptRenderer.Prompt("We are meeting ", trailingText: " on Friday.", maxSuffixCharacters: 0));
     }
 
     [Fact]
@@ -50,20 +40,16 @@ public class BaseCompletionPromptRendererTests
             "the meeting is at ",
             userName: " Jacob ",
             trailingText: " on Friday.",
-            customRules: ["  terse ", "", "warm"],
             extendedContext: "Project Matcha ships in June.",
             languageInstruction: "Write in English.",
             clipboardContext: "zoom link",
-            visualContextSummary: "Calendar: Q3 planning 3pm",
             surfaceLines: ["Format: email; App: Mail; Title: Re: Q3."]);
         Assert.Equal(
             string.Join('\n',
                 "Format: email; App: Mail; Title: Re: Q3.",
-                "Writing style: terse, warm.",
                 "Write in English.",
                 "Notes the writer keeps in mind: Project Matcha ships in June.",
                 "On the clipboard: zoom link",
-                "Nearby on screen: Calendar: Q3 planning 3pm",
                 "Later in the same passage:\n“ on Friday.”") + "\n\nthe meeting is at ",
             prompt);
     }
@@ -72,9 +58,8 @@ public class BaseCompletionPromptRendererTests
     public void FollowingTextIsBoundedQuotedContextBeforeExactPrefix()
     {
         const string prefix = "We are meeting ";
-        string prompt = BaseCompletionPromptRenderer.Prompt(
-            prefix, trailingText: " on Friday.\n\nAlready written.", maxSuffixCharacters: 11);
-        Assert.Equal("Later in the same passage:\n“ on Friday.”\n\n" + prefix, prompt);
+        string prompt = BaseCompletionPromptRenderer.Prompt(prefix, trailingText: new string('a', 300));
+        Assert.Equal("Later in the same passage:\n“" + new string('a', 192) + "”\n\n" + prefix, prompt);
     }
 
     [Fact]
@@ -96,26 +81,6 @@ public class BaseCompletionPromptRendererTests
             clipboardContext: "zoom link",
             contextBudget: 3 + "Write in English.".Length);
         Assert.Equal("Write in English.\n\nabc", prompt);
-    }
-
-    [Fact]
-    public void ScreenPriorityCanOutrankLanguageUnderATightBudget()
-    {
-        string prompt = BaseCompletionPromptRenderer.Prompt(
-            "abc",
-            languageInstruction: "Write in English.",
-            visualContextSummary: "green",
-            contextBudget: 3 + "Nearby on screen: green".Length,
-            screenPriority: 65);
-        Assert.Equal("Nearby on screen: green\n\nabc", prompt);
-    }
-
-    [Fact]
-    public void MaxScreenCharactersCapsTheLabelledSection()
-    {
-        Assert.Equal(
-            "Nearby on screen: abcdefg\n\nxyz",
-            BaseCompletionPromptRenderer.Prompt("xyz", visualContextSummary: "abcdefghij", maxScreenCharacters: 25));
     }
 
     [Fact]
@@ -200,15 +165,13 @@ public class BaseCompletionPromptRendererTests
     }
 
     [Fact]
-    public void StyleAndLanguageConditionWithoutNamingTheWriterAtAnOpening()
+    public void LanguageConditionsWithoutNamingTheWriterAtAnOpening()
     {
         string prompt = BaseCompletionPromptRenderer.Prompt(
             "Hi team,",
             userName: "Jacob",
-            customRules: ["friendly", "professional"],
             languageInstruction: "Write in English.");
         Assert.DoesNotContain("Jacob", prompt);
-        Assert.Contains("friendly, professional", prompt);
         Assert.Contains("Write in English.", prompt);
         Assert.EndsWith("Hi team,", prompt);
     }
@@ -225,14 +188,6 @@ public class BaseCompletionPromptRendererTests
         {
             Assert.DoesNotContain("Jacob", BaseCompletionPromptRenderer.Prompt(prefix, userName: "Jacob"));
         }
-    }
-
-    [Fact]
-    public void HistoryExamplesAreQuotedAndDroppedWholeWhenOverTheCap()
-    {
-        string prompt = BaseCompletionPromptRenderer.Prompt(
-            "abc", historyExamples: ["  first one ", "", new string('x', 800), "second"]);
-        Assert.Equal("Earlier writing by the same author:\n“first one”\n“second”\n\nabc", prompt);
     }
 
     [Theory]

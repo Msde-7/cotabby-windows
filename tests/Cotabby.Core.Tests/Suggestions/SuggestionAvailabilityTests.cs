@@ -160,7 +160,7 @@ public sealed class SuggestionAvailabilityTests
 
         Assert.Equal(expected, SuggestionAvailability.SchedulesPrediction(press));
         Assert.False(SuggestionAvailability.SchedulesPrediction(press with { IsKeyDown = false }));
-        Assert.False(SuggestionAvailability.SchedulesPrediction(press with { HasNonShiftModifier = true }));
+        Assert.False(SuggestionAvailability.SchedulesPrediction(press with { Modifiers = KeyModifiers.Control }));
     }
 
     [Theory]

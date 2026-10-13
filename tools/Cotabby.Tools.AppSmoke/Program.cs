@@ -3,11 +3,10 @@
 // Assumes Cotabby.exe is already launched (model loaded) and logging into the
 // path passed as argv[0] (defaults to %LOCALAPPDATA%\Cotabby\logs\cotabby.log).
 //
-// Test:
+// Steps.
 //   1. Open Notepad, focus it.
 //   2. Synthesize typing via SendInput. Cotabby's hook drops LLKHF_INJECTED
-//      events, so this proves Notepad-side input handling but not the hook
-//      itself — the hook is exercised by the unit tests.
+//      events unless COTABBY_ALLOW_INJECTED=1 was set before the app started.
 //   3. Wait for the model to emit (~3s).
 //   4. Enumerate visible windows owned by Cotabby PID and report which ones
 //      are visible (the overlay HWND should appear here).
@@ -38,8 +37,8 @@ long logStart = File.Exists(logPath) ? new FileInfo(logPath).Length : 0;
 Process.Start(new ProcessStartInfo("notepad.exe", $"\"{scratchFile}\"") { UseShellExecute = true });
 Console.WriteLine("[smoke] Launched notepad.exe (may be Win11 stub → Store app, PID may not match).");
 
-// Win11 Notepad has both a legacy and a Store version; the launched PID is
-// often a stub. Wait for a Notepad window to appear in the foreground.
+// Windows 11 Notepad is a Store app and the launched PID is often a stub, so wait for a
+// Notepad window to appear in the foreground.
 IntPtr hwnd = IntPtr.Zero;
 for (int i = 0; i < 30 && hwnd == IntPtr.Zero; i++)
 {
@@ -130,8 +129,8 @@ static partial class Win32
 
     public static IntPtr FindNotepadWindow()
     {
-        // Match by window-title (most reliable; works for both classic and
-        // Win11 Store Notepad) OR by class name "Notepad" (classic only).
+        // The window title matches both the classic and the Store Notepad. The class name
+        // "Notepad" matches only the classic one.
         IntPtr found = IntPtr.Zero;
         EnumWindows((hwnd, _) =>
         {

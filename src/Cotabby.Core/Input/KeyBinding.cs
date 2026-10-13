@@ -64,7 +64,7 @@ public static class InlineCommitKey
 {
     public static KeyboardEvent Normalize(KeyboardEvent ev, KeyBinding commit)
     {
-        if (commit.Matches(ev)) return ev with { Kind = KeyKind.Tab, HasNonShiftModifier = false };
+        if (commit.Matches(ev)) return ev with { Kind = KeyKind.Tab, Modifiers = KeyModifiers.None };
         // A Tab that is not the commit key reaches the host and moves focus.
         return ev.Kind == KeyKind.Tab ? ev with { Kind = KeyKind.Arrow } : ev;
     }

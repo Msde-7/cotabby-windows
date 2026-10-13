@@ -13,15 +13,16 @@ namespace Cotabby.Core.Spelling;
 /// </summary>
 public sealed class SymSpellCorrector : ISpellingLexicon, IDisposable
 {
-    private sealed class CacheEntry(SymSpell symSpell, WordPrefixIndex prefixes)
+    /// <summary>How many language indexes stay in memory.</summary>
+    private const int CacheLimit = 2;
+
+    private sealed class CacheEntry(SymSpell symSpell)
     {
         public SymSpell SymSpell { get; } = symSpell;
-        public WordPrefixIndex Prefixes { get; } = prefixes;
         public ulong LastAccessSequence { get; set; }
     }
 
     private readonly Lock _lock = new();
-    private readonly int _cacheLimit;
     private readonly Func<SpellingDictionaryLanguage, string?> _resourceLoader;
     private readonly ILogger _logger;
     private readonly CancellationTokenSource _cancellation = new();
@@ -31,20 +32,13 @@ public sealed class SymSpellCorrector : ISpellingLexicon, IDisposable
     private readonly HashSet<SpellingDictionaryLanguage> _loadingLanguages = [];
     private ulong _accessSequence;
 
-    /// <param name="cacheLimit">How many language indexes stay in memory. Values below one are raised to one.</param>
-    /// <param name="preloadLanguage">A language to start loading immediately, or null to stay cold until the first lookup.</param>
     /// <param name="resourceLoader">Returns a dictionary's text, or null when it is unavailable. Defaults to the bundled files.</param>
     public SymSpellCorrector(
-        int cacheLimit = 2,
-        SpellingDictionaryLanguage? preloadLanguage = null,
         Func<SpellingDictionaryLanguage, string?>? resourceLoader = null,
         ILogger<SymSpellCorrector>? logger = null)
     {
-        _cacheLimit = Math.Max(1, cacheLimit);
         _resourceLoader = resourceLoader ?? SpellingDictionaryResources.Loader();
         _logger = logger ?? NullLogger<SymSpellCorrector>.Instance;
-
-        if (preloadLanguage is { } language) CachedEntryOrRequestLoad(language);
     }
 
     /// <summary>
@@ -63,29 +57,9 @@ public sealed class SymSpellCorrector : ISpellingLexicon, IDisposable
         return TypoCaseTransfer.Apply(word, suggestion.Term);
     }
 
-    /// <summary>Exact-prefix completions for <paramref name="prefix"/>. Empty while the language is cold.</summary>
-    public IReadOnlyList<WordPrefixIndex.Candidate> CompletionCandidates(string prefix, SpellingDictionaryLanguage language) =>
-        CachedEntryOrRequestLoad(language)?.Prefixes.Candidates(prefix) ?? [];
-
     /// <inheritdoc />
     public bool IsKnownWord(string word, SpellingDictionaryLanguage language) =>
         CachedEntryOrRequestLoad(language)?.SymSpell.Contains(word.ToLowerInvariant()) ?? true;
-
-    /// <summary>Builds and publishes a dictionary synchronously, without touching the bundled files.</summary>
-    public void LoadDictionary(string contents, SpellingDictionaryLanguage language = SpellingDictionaryLanguage.English)
-    {
-        var entry = Build(contents);
-        lock (_lock) Publish(language, entry);
-    }
-
-    /// <summary>The languages whose indexes are in memory, in code order.</summary>
-    public IReadOnlyList<SpellingDictionaryLanguage> CachedLanguages
-    {
-        get
-        {
-            lock (_lock) return _cache.Keys.OrderBy(language => language.Code(), StringComparer.Ordinal).ToArray();
-        }
-    }
 
     /// <summary>Cancels dictionary loads that are still running.</summary>
     public void Dispose()
@@ -119,10 +93,11 @@ public sealed class SymSpellCorrector : ISpellingLexicon, IDisposable
                 return;
             }
 
-            var entry = Build(contents);
-            lock (_lock) Publish(language, entry);
+            var symSpell = new SymSpell();
+            symSpell.LoadDictionary(contents, _cancellation.Token);
+            lock (_lock) Publish(language, new CacheEntry(symSpell));
             _logger.LogInformation(
-                "SymSpell loaded {Count} {Language} words for correction.", entry.SymSpell.WordCount, language.DisplayName());
+                "SymSpell loaded {Count} {Language} words for correction.", symSpell.WordCount, language.DisplayName());
         }
         catch (OperationCanceledException)
         {
@@ -133,13 +108,6 @@ public sealed class SymSpellCorrector : ISpellingLexicon, IDisposable
         }
     }
 
-    private CacheEntry Build(string contents)
-    {
-        var symSpell = new SymSpell();
-        symSpell.LoadDictionary(contents, _cancellation.Token);
-        return new CacheEntry(symSpell, new WordPrefixIndex(contents));
-    }
-
     /// <summary>
     /// Must be called with the lock held. The new index is the most recent, so eviction removes
     /// the least recently used older language and memory stays bounded for multilingual users.
@@ -148,7 +116,7 @@ public sealed class SymSpellCorrector : ISpellingLexicon, IDisposable
     {
         entry.LastAccessSequence = ++_accessSequence;
         _cache[language] = entry;
-        while (_cache.Count > _cacheLimit)
+        while (_cache.Count > CacheLimit)
         {
             _cache.Remove(_cache.MinBy(cached => cached.Value.LastAccessSequence).Key);
         }

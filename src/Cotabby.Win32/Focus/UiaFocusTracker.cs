@@ -11,14 +11,9 @@ namespace Cotabby.Win32.Focus;
 /// UI Automation implementation of <see cref="IFocusTracker"/>.
 /// </summary>
 /// <remarks>
-/// We subscribe to <see cref="Automation.AddAutomationFocusChangedEventHandler"/>
-/// rather than polling like the macOS port. UIA event delivery happens on a
-/// background pool thread, so consumers wanting to touch UI must hop through
-/// their own <see cref="SynchronizationContext"/>.
-///
-/// Reads against an element can throw at any time (the host process exits,
-/// COM tear-down races, RPC server unavailable). Every read is wrapped in a
-/// best-effort try/catch and falls back to <c>null</c>.
+/// Focus events arrive on a thread-pool thread, so consumers that touch UI must switch to their
+/// own <see cref="SynchronizationContext"/>. A read against an element can throw at any time,
+/// for example when the host process exits, so every read is guarded and falls back to null.
 /// </remarks>
 public sealed class UiaFocusTracker : IFocusTracker
 {
@@ -39,10 +34,8 @@ public sealed class UiaFocusTracker : IFocusTracker
     private FocusedField? _fakeField;
 
     /// <summary>
-    /// Test backdoor: when non-null, <see cref="Current"/> and <see cref="Refresh"/>
-    /// return this synthetic field instead of consulting UIA. Used by the App's
-    /// self-test to exercise the coordinator without depending on real Windows
-    /// focus behavior. Never set from production code paths.
+    /// When set, <see cref="Current"/> and <see cref="Refresh"/> return this field instead of
+    /// asking UI Automation. For tests only.
     /// </summary>
     public void SetFakeFieldForTesting(FocusedField? fake)
     {
@@ -62,8 +55,7 @@ public sealed class UiaFocusTracker : IFocusTracker
             Automation.AddAutomationFocusChangedEventHandler(_handler);
             _logger.LogInformation("UIA focus tracker started.");
 
-            // Seed the current snapshot so consumers calling Current right after
-            // Start don't see null until the first focus change.
+            // Seeded so Current is not null until the first focus change.
             TryCaptureFocused(out var initial);
             _current = initial;
         }
@@ -108,8 +100,7 @@ public sealed class UiaFocusTracker : IFocusTracker
         try
         {
             TryCaptureFocused(out var snap);
-            // Treat focus to non-editable as "left supported field" so the
-            // coordinator tears down its session and we don't leak ghost text.
+            // Focus on a field that is not editable ends the session, so no ghost text is left behind.
             if (snap is null)
             {
                 _current = null;
@@ -117,10 +108,7 @@ public sealed class UiaFocusTracker : IFocusTracker
                 return;
             }
 
-            // Identity changed if pid changed or element bounds shifted significantly.
-            // We don't have a stable element identity through ElementHandle since
-            // UIA's RuntimeId is a managed int[] and equality isn't trivial across
-            // events. Treat every focus event as a state change — cheap enough.
+            // UIA gives no stable element identity, so every focus event counts as a change.
             _current = snap;
             FocusChanged?.Invoke(this, snap);
         }
@@ -165,10 +153,8 @@ public sealed class UiaFocusTracker : IFocusTracker
         {
             var info = element.Current;
             if (!info.IsEnabled) return false;
-            // IsKeyboardFocusable is unreliable — Win11 Notepad's RichEditBox
-            // exposes false for the document control even though it accepts
-            // keystrokes — so we don't gate on it. We rely on the control type
-            // and a TextPattern / ValuePattern probe instead.
+            // IsKeyboardFocusable is not checked. The Windows 11 Notepad document control reports
+            // false and still accepts keystrokes.
 
             var ct = info.ControlType;
             if (ct != ControlType.Edit && ct != ControlType.Document && ct != ControlType.Pane)
@@ -176,17 +162,14 @@ public sealed class UiaFocusTracker : IFocusTracker
                 return false;
             }
 
-            // Read-only fields (URL bars in read mode, disabled inputs) shouldn't
-            // get suggestions. Best-effort — not every editor exposes ValuePattern.
+            // Read-only fields get no suggestions. Not every editor exposes ValuePattern.
             if (element.TryGetCurrentPattern(ValuePattern.Pattern, out var raw)
                 && raw is ValuePattern vp && vp.Current.IsReadOnly)
             {
                 return false;
             }
 
-            // Require at least one of TextPattern or ValuePattern so we know we
-            // can actually read text out of this element. Without that the
-            // request would have an empty prefix.
+            // Without TextPattern or ValuePattern there is no text to read.
             bool hasText = element.TryGetCurrentPattern(TextPattern.Pattern, out _);
             bool hasValue = element.TryGetCurrentPattern(ValuePattern.Pattern, out _);
             return hasText || hasValue;
@@ -211,7 +194,6 @@ public sealed class UiaFocusTracker : IFocusTracker
 
         return new FocusedField
         {
-            ElementHandle = element,
             ProcessId = pid,
             ProcessName = procName,
             Text = text,
@@ -232,13 +214,13 @@ public sealed class UiaFocusTracker : IFocusTracker
 
     private static (string text, int caretOffset, bool hasSelection) ReadTextAndCaret(AutomationElement element)
     {
-        // Prefer TextPattern: it gives both full text and the caret-as-selection.
+        // TextPattern is preferred because it gives the full text and the caret as a selection.
         if (element.TryGetCurrentPattern(TextPattern.Pattern, out var rawText)
             && rawText is TextPattern textPattern)
         {
             try
             {
-                // Cap to 16KB — coordinators only need a window around the caret.
+                // Capped at 16 KB. Only a window around the caret is needed.
                 string full = textPattern.DocumentRange.GetText(16 * 1024);
                 int caret = 0;
                 bool hasSelection = false;
@@ -261,7 +243,7 @@ public sealed class UiaFocusTracker : IFocusTracker
             && rawValue is ValuePattern vp)
         {
             string v = vp.Current.Value ?? string.Empty;
-            return (v, v.Length, false); // caret at end as a fallback
+            return (v, v.Length, false); // ValuePattern has no caret, so assume the end.
         }
 
         return (string.Empty, 0, false);

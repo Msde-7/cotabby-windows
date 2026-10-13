@@ -44,8 +44,9 @@ public sealed class EnglishDictionaryFixture : IDisposable
     public EnglishDictionaryFixture()
     {
         var stopwatch = Stopwatch.StartNew();
-        Corrector = new SymSpellCorrector(preloadLanguage: English);
-        Loaded = SpinWait.SpinUntil(() => Corrector.CachedLanguages.Contains(English), TimeSpan.FromSeconds(60));
+        Corrector = new SymSpellCorrector();
+        // A cold dictionary vouches for every word, so the load is done once a nonsense word is unknown.
+        Loaded = SpinWait.SpinUntil(() => !Corrector.IsKnownWord("qqzzxxqq", English), TimeSpan.FromSeconds(60));
         LoadTime = stopwatch.Elapsed;
     }
 
@@ -149,11 +150,11 @@ public class TypoCorrectionAdvisorTests(EnglishDictionaryFixture english, ITestO
     [Fact]
     public void ColdDictionaryProceedsUntilItIsLoaded()
     {
-        using var corrector = new SymSpellCorrector(resourceLoader: _ => null);
+        using var corrector = TestCorrector.Cold((English, "the 1000"));
         var advisor = new TypoCorrectionAdvisor(corrector, new SpellingLanguageResolver());
         Assert.Equal(new TypoAdvice(TypoGateDecision.Proceed), advisor.Advise("I wrote teh ", ["en"], Offer));
 
-        corrector.LoadDictionary("the 1000");
+        TestCorrector.Load(corrector, English);
         Assert.Equal(TypoGateDecision.OfferCorrection("teh", "the"), advisor.Advise("I wrote teh ", ["en"], Offer).Decision);
     }
 

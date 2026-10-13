@@ -4,7 +4,6 @@ using Cotabby.Core.Emoji;
 using Cotabby.Core.Focus;
 using Cotabby.Core.Input;
 using Cotabby.Core.Insertion;
-using Cotabby.Win32.Insertion;
 using Microsoft.Extensions.Logging;
 
 namespace Cotabby.App.Emoji;

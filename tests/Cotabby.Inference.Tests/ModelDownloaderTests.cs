@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Http.Headers;
 using Cotabby.Core.Models;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -18,7 +17,6 @@ public sealed class ModelDownloaderTests : IDisposable
         DownloadUrl = "https://example.test/models/test.gguf",
         ApproxSizeBytes = Gguf.Length,
         ContextLength = 4096,
-        SupportsFillInMiddle = false,
     };
 
     public void Dispose() => _models.Dispose();

@@ -116,18 +116,14 @@ public sealed class CurrencyEvaluator(CultureInfo? culture = null, CurrencyRateT
 /// <summary>
 /// Offline, approximate exchange rates as units of each currency per one US dollar.
 /// </summary>
-/// <param name="asOf">Human readable marker so users know the rates are dated.</param>
 /// <param name="ratesPerUsd">Rates keyed by uppercase ISO code.</param>
-public sealed class CurrencyRateTable(string asOf, IReadOnlyDictionary<string, double> ratesPerUsd)
+public sealed class CurrencyRateTable(IReadOnlyDictionary<string, double> ratesPerUsd)
 {
-    public string AsOf { get; } = asOf;
-
     public double? Rate(string code) =>
         ratesPerUsd.TryGetValue(code.ToUpperInvariant(), out var rate) ? rate : null;
 
     /// <summary>The table shipped with the app. Refreshed only when the app is updated.</summary>
     public static CurrencyRateTable Bundled { get; } = new(
-        "2026-06",
         new Dictionary<string, double>
         {
             ["USD"] = 1.0, ["EUR"] = 0.92, ["GBP"] = 0.79, ["JPY"] = 151.0, ["CAD"] = 1.36, ["AUD"] = 1.51,

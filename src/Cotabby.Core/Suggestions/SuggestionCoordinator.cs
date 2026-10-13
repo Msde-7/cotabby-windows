@@ -215,7 +215,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             if (ev.Kind == KeyKind.Escape && session.Correction is null && _sessionField is { } dismissedIn)
             {
                 _dismissals.Record(
-                    (ulong)dismissedIn.ProcessId, PrecedingText(dismissedIn), TrailingText(dismissedIn),
+                    (ulong)dismissedIn.ProcessId, dismissedIn.PrecedingText, dismissedIn.TrailingText,
                     session.VisibleText, Now());
             }
 
@@ -296,11 +296,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             }
             if (!SuggestionAvailability.HasTextToContinue(field)) return;
 
-            string preceding = PrecedingText(field);
+            string preceding = field.PrecedingText;
             if (await HandleTypoAsync(requestId, settings, field, preceding, ct).ConfigureAwait(false)) return;
             if (!settings.SuggestWithinWords && CaretWordContext.UnfinishedWord(preceding) is not null) return;
             // A completion inside a token would duplicate or splice what follows the caret.
-            if (CaretTokenPosition.IsInsideToken(preceding, TrailingText(field))) return;
+            if (CaretTokenPosition.IsInsideToken(preceding, field.TrailingText)) return;
             if (!_engine.IsReady) return;
 
             var request = SuggestionRequestFactory.Build(
@@ -313,7 +313,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
             // Generation took a while. Show the suggestion only if the text it continues is still there.
             var live = _focus.Refresh();
-            if (live is null || live.ProcessId != field.ProcessId || PrecedingText(live) != preceding)
+            if (live is null || live.ProcessId != field.ProcessId || live.PrecedingText != preceding)
             {
                 _logger.LogInformation("Request {ReqId} dropped because the field changed during generation.", requestId);
                 return;
@@ -399,11 +399,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
     private static bool HasPublished(FocusedField field, FocusedField? baseline, int delta, char? typed, int waited)
     {
-        var preceding = PrecedingText(field);
+        var preceding = field.PrecedingText;
         if (typed is { } c && (preceding.Length == 0 || preceding[^1] != c)) return false;
         if (baseline is null || baseline.ProcessId != field.ProcessId) return waited > 0 || typed is not null;
 
-        int expected = PrecedingText(baseline).Length + delta;
+        int expected = baseline.PrecedingText.Length + delta;
         return delta switch
         {
             > 0 => preceding.Length >= expected,
@@ -438,9 +438,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     {
         if (ct.IsCancellationRequested || _session is not null) return;
 
-        var preceding = PrecedingText(field);
+        var preceding = field.PrecedingText;
         if (correction is null
-            && _dismissals.Suppresses((ulong)field.ProcessId, preceding, TrailingText(field), text, Now()))
+            && _dismissals.Suppresses((ulong)field.ProcessId, preceding, field.TrailingText, text, Now()))
         {
             _logger.LogInformation("Request {ReqId} dropped because the user dismissed it here.", requestId);
             return;
@@ -457,7 +457,6 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         {
             RequestId = requestId,
             VisibleText = text,
-            AnchorRect = field.CaretRect,
             Correction = correction,
         };
         _sessionField = field;
@@ -555,7 +554,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 return;
             }
 
-            string preceding = PrecedingText(field);
+            string preceding = field.PrecedingText;
             string insertion = AcceptanceChunker.InsertionChunk(chunk, preceding);
             if (exhausted && settings.AddSpaceAfterAccept)
             {
@@ -601,7 +600,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         {
             if (_focus.Refresh() is not { } field) return;
             var plan = TypoCorrectionReplacementPlanner.Plan(
-                PrecedingText(field), correction.Word, correction.CorrectedWord, requiresTrailingSpace: false);
+                field.PrecedingText, correction.Word, correction.CorrectedWord, requiresTrailingSpace: false);
             if (plan is not { } fix) return;
             await _inserter.ReplaceAsync(field, fix.DeletingUtf16Count, fix.ReplacementText, CancellationToken.None)
                 .ConfigureAwait(false);
@@ -622,7 +621,6 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         Post(() =>
         {
             if (_session is not { } live || live.RequestId != requestId) return;
-            _session = live with { AnchorRect = after.CaretRect };
             _sessionField = after;
             _overlay.Show(live.VisibleText, after.CaretRect, StyleFor(after, live.Correction));
         });
@@ -659,12 +657,6 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     }
 
     private double Now() => _clock.GetTimestamp() / (double)_clock.TimestampFrequency;
-
-    private static string TrailingText(FocusedField field) =>
-        field.Text[Math.Clamp(field.CaretOffset, 0, field.Text.Length)..];
-
-    private static string PrecedingText(FocusedField field) =>
-        field.Text[..Math.Clamp(field.CaretOffset, 0, field.Text.Length)];
 
     private void Post(Action action)
     {

@@ -1,4 +1,4 @@
-using Cotabby.Core.Support;
+using Cotabby.Core.Text;
 
 namespace Cotabby.Core.Context;
 

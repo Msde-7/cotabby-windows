@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using Cotabby.Core.Text;
 
 namespace Cotabby.Core.Support;
 
@@ -25,10 +26,6 @@ public enum CompletionSuppressionReason
 
     /// <summary>Printable characters survived but carried control or replacement glyphs.</summary>
     UnsafeToInsert,
-
-    /// <summary>The runtime withheld the completion because its mean per-token log-probability fell
-    /// below the confidence floor. Attributed by the engine, never by the normalizer.</summary>
-    LowConfidence,
 
     /// <summary>Nothing but punctuation or symbols survived.</summary>
     NoWordContent,
@@ -162,7 +159,7 @@ public static partial class SuggestionTextNormalizer
         // Space management runs after echo suppression because stripping echoed words can expose a
         // leading space. When the preceding text already ends with whitespace that space is dropped.
         // Otherwise it passes through as the word boundary the user needs.
-        if (EndsWithHorizontalWhitespace(request.PrecedingText))
+        if (ScalarSets.EndsWithWhitespace(request.PrecedingText))
         {
             var graphemes = new GraphemeString(normalized);
             normalized = normalized[graphemes.Offset(graphemes.PrefixLength(g => g.IsWhitespace))..];
@@ -291,13 +288,6 @@ public static partial class SuggestionTextNormalizer
 
     private static bool IsControlOrNewline(Rune scalar) =>
         ScalarSets.IsControl(scalar) || ScalarSets.IsNewline(scalar);
-
-    private static bool EndsWithHorizontalWhitespace(string text)
-    {
-        if (text.Length == 0) return false;
-        Rune.DecodeLastFromUtf16(text, out var last, out _);
-        return ScalarSets.IsWhitespace(last);
-    }
 }
 
 /// <summary>

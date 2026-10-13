@@ -1,3 +1,5 @@
+using Cotabby.Core.Support;
+
 namespace Cotabby.Core.Spelling;
 
 public enum TypoGateAction

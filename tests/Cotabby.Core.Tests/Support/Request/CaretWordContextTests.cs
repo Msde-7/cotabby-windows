@@ -1,7 +1,8 @@
 using System.Globalization;
 using Cotabby.Core.Spelling;
+using Cotabby.Core.Support;
 
-namespace Cotabby.Core.Tests.Spelling;
+namespace Cotabby.Core.Tests;
 
 /// <summary>Boundaries come from typed characters, never elapsed time or dictionary membership.</summary>
 public class CaretWordContextTests

@@ -1,3 +1,5 @@
+using Cotabby.Core.Text;
+
 namespace Cotabby.Core.Support;
 
 /// <summary>

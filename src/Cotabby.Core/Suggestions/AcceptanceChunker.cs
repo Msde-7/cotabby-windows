@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Cotabby.Core.Support;
+using Cotabby.Core.Text;
 
 namespace Cotabby.Core.Suggestions;
 
@@ -19,7 +20,7 @@ public static class AcceptanceChunker
     public static Func<string, int, int, int?> SpacelessWordEnd { get; set; } = ScriptRunWordEnd;
 
     /// <summary>
-    /// The next word-granularity chunk: leading whitespace plus one word. With
+    /// The next chunk at word granularity, which is leading whitespace plus one word. With
     /// <paramref name="autoAcceptTrailingPunctuation"/> off, trailing punctuation is
     /// left for the next accept while punctuation inside a word is kept.
     /// </summary>
@@ -66,7 +67,7 @@ public static class AcceptanceChunker
     }
 
     /// <summary>
-    /// The next phrase-granularity chunk: whole words up to a sentence terminator,
+    /// The next chunk at phrase granularity, which is whole words up to a sentence terminator,
     /// a CJK clause comma, a newline, or the end of the suggestion.
     /// </summary>
     public static string NextPhrase(string remaining, bool autoAcceptTrailingPunctuation = true)
@@ -93,10 +94,9 @@ public static class AcceptanceChunker
     /// </summary>
     public static string InsertionChunk(string chunk, string precedingText)
     {
-        if (precedingText.Length == 0 || !IsHorizontalWhitespace(precedingText[^1])) return chunk;
-        int start = 0;
-        while (start < chunk.Length && IsHorizontalWhitespace(chunk[start])) start++;
-        return chunk[start..];
+        return ScalarSets.EndsWithWhitespace(precedingText)
+            ? ScalarSets.TrimStart(chunk, ScalarSets.IsWhitespace)
+            : chunk;
     }
 
     /// <summary>
@@ -121,7 +121,7 @@ public static class AcceptanceChunker
     /// <summary>Counts word-like tokens so punctuation-only accepts do not inflate the word counter.</summary>
     public static int AcceptedWordCount(string text) =>
         text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
-            .Count(token => token.EnumerateRunes().Any(IsWordCharacter));
+            .Count(token => token.EnumerateRunes().Any(ScalarSets.IsLetterOrNumber));
 
     /// <summary>
     /// True when a fresh suggestion only repeats the chunk the user just accepted while
@@ -137,13 +137,9 @@ public static class AcceptanceChunker
             && currentPrecedingText == acceptedPrecedingText;
     }
 
-    private static bool EndsOnFinishedWord(string chunk)
-    {
-        if (chunk.Length == 0) return false;
-        // A character is judged by its base letter so a trailing combining mark still ends a word.
-        var last = Rune.GetRuneAt(chunk, StringInfo.ParseCombiningCharacters(chunk)[^1]);
-        return IsWordCharacter(last) && !BeginsSpacelessScriptWord(last);
-    }
+    // A character is judged by its base letter so a trailing combining mark still ends a word.
+    private static bool EndsOnFinishedWord(string chunk) =>
+        GraphemeString.LastOf(chunk) is { IsLetterOrNumber: true } last && !BeginsSpacelessScriptWord(last.Scalar);
 
     private static int? WordBoundToLeadingPunctuation(string text, int start, int end)
     {
@@ -208,7 +204,7 @@ public static class AcceptanceChunker
             var rune = Rune.GetRuneAt(text, i);
             // Combining marks stay with their base letter.
             i += StringInfo.GetNextTextElementLength(text.AsSpan(i, tokenEnd - i));
-            if (IsWordCharacter(rune)) lastWordEnd = i;
+            if (ScalarSets.IsLetterOrNumber(rune)) lastWordEnd = i;
         }
         return lastWordEnd is { } end && end < tokenEnd ? end : null;
     }
@@ -218,7 +214,7 @@ public static class AcceptanceChunker
         for (int i = start; i < end;)
         {
             var rune = Rune.GetRuneAt(text, i);
-            if (IsWordCharacter(rune)) return true;
+            if (ScalarSets.IsLetterOrNumber(rune)) return true;
             i += rune.Utf16SequenceLength;
         }
         return false;
@@ -267,12 +263,10 @@ public static class AcceptanceChunker
         return Rune.GetRuneAt(text, start);
     }
 
-    private static bool IsHorizontalWhitespace(char c) =>
-        c == '\t' || char.GetUnicodeCategory(c) == UnicodeCategory.SpaceSeparator;
-
-    private static bool IsWordCharacter(Rune rune) => Rune.IsLetter(rune) || Rune.IsNumber(rune);
-
-    /// <summary>Scripts that write words without separating spaces.</summary>
+    /// <summary>
+    /// Scripts that write words without separating spaces. Upstream keeps this list apart from the one
+    /// in CaretWordContext. It adds Hangul Jamo, Khmer and Myanmar and omits the gaps between blocks.
+    /// </summary>
     private static bool BeginsSpacelessScriptWord(Rune rune) => rune.Value switch
     {
         >= 0x3040 and <= 0x30FF => true,    // Hiragana and Katakana
@@ -291,10 +285,10 @@ public static class AcceptanceChunker
     };
 
     private static bool IsCjkSentenceTerminator(Rune rune) =>
-        rune.Value is 0x3002 or 0xFF01 or 0xFF1F or 0xFF61;
+        ScalarSets.IsAnyOf(rune, SentenceBoundaryClassifier.CjkSentenceTerminators);
 
     private static bool IsCjkClosingPunctuation(Rune rune) =>
-        rune.Value is 0x300D or 0x300F or 0xFF09 or 0x3011 or 0x3009 or 0x300B or 0xFF63;
+        ScalarSets.IsAnyOf(rune, SentenceBoundaryClassifier.CjkClosingPunctuation);
 
     private static bool IsCjkOpeningBracket(Rune rune) =>
         rune.Value is 0x300C or 0x300E or 0xFF08 or 0x3010 or 0x3008 or 0x300A or 0xFF62;
@@ -302,7 +296,7 @@ public static class AcceptanceChunker
     private static bool IsPhraseClauseBoundary(Rune rune) => rune.Value is 0x3001 or 0xFF0C or 0xFF64;
 
     private static bool IsPhraseClosingPunctuation(Rune rune) =>
-        rune.Value is '"' or '\'' or ')' or ']' or '}' or 0x201D or 0x2019 || IsCjkClosingPunctuation(rune);
+        ScalarSets.IsAnyOf(rune, SentenceBoundaryClassifier.ClosingPunctuation);
 
     private static bool BindsToPrecedingSpacelessWord(Rune rune) =>
         IsPhraseClauseBoundary(rune) || IsCjkSentenceTerminator(rune) || IsCjkClosingPunctuation(rune);

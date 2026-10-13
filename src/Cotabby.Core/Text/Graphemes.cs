@@ -1,12 +1,13 @@
+using System.Collections;
 using System.Globalization;
 using System.Text;
 
-namespace Cotabby.Core.Support;
+namespace Cotabby.Core.Text;
 
 /// <summary>
-/// One user-perceived character (an extended grapheme cluster), the unit the upstream policies count
-/// and classify. Classification reads the first scalar, so a letter carrying a combining mark is
-/// still a letter.
+/// One user-perceived character (an extended grapheme cluster), which is what a Swift
+/// <c>Character</c> is and so the unit the upstream rules count and classify. Classification reads
+/// the first scalar, so a letter carrying a combining mark is still a letter.
 /// </summary>
 internal readonly struct Grapheme
 {
@@ -37,6 +38,8 @@ internal readonly struct Grapheme
         Rune.IsLetter(Scalar) || Rune.GetUnicodeCategory(Scalar) == UnicodeCategory.LetterNumber;
 
     public bool IsNumber => Rune.IsNumber(Scalar);
+
+    public bool IsLetterOrNumber => ScalarSets.IsLetterOrNumber(Scalar);
 
     public bool IsWhitespace
     {
@@ -69,7 +72,7 @@ internal readonly struct Grapheme
 /// A string indexed by grapheme, so counts and slices agree with what the user sees. A surrogate
 /// pair, a base letter with combining marks and a CRLF pair are each one element.
 /// </summary>
-internal readonly struct GraphemeString
+internal readonly struct GraphemeString : IEnumerable<Grapheme>
 {
     private readonly int[]? _starts;
 
@@ -88,6 +91,13 @@ internal readonly struct GraphemeString
     public Grapheme? First => Count > 0 ? this[0] : null;
 
     public Grapheme? Last => Count > 0 ? this[Count - 1] : null;
+
+    public IEnumerator<Grapheme> GetEnumerator()
+    {
+        for (int index = 0; index < Count; index++) yield return this[index];
+    }
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
     /// <summary>UTF-16 offset of the grapheme at <paramref name="index"/>, or the text length at the end.</summary>
     public int Offset(int index) => index >= Count ? Text.Length : _starts?[index] ?? index;
@@ -183,6 +193,13 @@ internal static class ScalarSets
     public static bool IsWhitespace(Rune scalar) =>
         scalar.Value == '\t' || Rune.GetUnicodeCategory(scalar) == UnicodeCategory.SpaceSeparator;
 
+    public static bool EndsWithWhitespace(string text)
+    {
+        if (text.Length == 0) return false;
+        Rune.DecodeLastFromUtf16(text, out var last, out _);
+        return IsWhitespace(last);
+    }
+
     public static bool IsNewline(Rune scalar) => IsNewline(scalar.Value);
 
     public static bool IsNewline(int scalar) => scalar is (>= 0x0A and <= 0x0D) or 0x85 or 0x2028 or 0x2029;
@@ -192,6 +209,11 @@ internal static class ScalarSets
     /// <summary>Control and format characters.</summary>
     public static bool IsControl(Rune scalar) =>
         Rune.GetUnicodeCategory(scalar) is UnicodeCategory.Control or UnicodeCategory.Format;
+
+    public static bool IsLetterOrNumber(Rune scalar) => Rune.IsLetter(scalar) || Rune.IsNumber(scalar);
+
+    /// <summary>True when the scalar is one of the UTF-16 units in <paramref name="set"/>.</summary>
+    public static bool IsAnyOf(Rune scalar, string set) => scalar.IsBmp && set.Contains((char)scalar.Value);
 
     /// <summary>Letters, marks and numbers.</summary>
     public static bool IsAlphanumeric(Rune scalar) =>

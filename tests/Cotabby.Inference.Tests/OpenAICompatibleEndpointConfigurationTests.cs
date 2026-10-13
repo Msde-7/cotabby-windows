@@ -131,24 +131,20 @@ public class OpenAICompatibleEndpointConfigurationTests
     }
 
     [Fact]
-    public void ConnectionState_SummaryPluralizesModelCountAndExposesFailureDetail()
+    public void ConnectionState_SummaryPluralizesModelCountAndShowsTheFailure()
     {
         Assert.Equal("Not connected", new OpenAICompatibleConnectionState.Idle().Summary);
         Assert.Equal("Connecting…", new OpenAICompatibleConnectionState.Connecting().Summary);
         Assert.Equal("Connected · 1 model", new OpenAICompatibleConnectionState.Ready(1).Summary);
         Assert.Equal("Connected · 3 models", new OpenAICompatibleConnectionState.Ready(3).Summary);
         Assert.Equal("Timed out", new OpenAICompatibleConnectionState.Failed("Timed out").Summary);
-
-        Assert.Equal("Timed out", new OpenAICompatibleConnectionState.Failed("Timed out").FailureDetail);
-        Assert.Null(new OpenAICompatibleConnectionState.Ready(2).FailureDetail);
-        Assert.Null(new OpenAICompatibleConnectionState.Idle().FailureDetail);
     }
 
     [Fact]
     public void EndpointErrors_HaveDistinctUserFacingDescriptions()
     {
         var descriptions = Enum.GetValues<OpenAICompatibleEndpointError>()
-            .Select(OpenAICompatibleEndpointException.Describe)
+            .Select(error => new OpenAICompatibleEndpointException(error).Message)
             .ToHashSet();
 
         Assert.Equal(3, descriptions.Count);

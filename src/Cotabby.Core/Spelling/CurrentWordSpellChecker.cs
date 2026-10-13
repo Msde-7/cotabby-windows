@@ -1,3 +1,5 @@
+using Cotabby.Core.Text;
+
 namespace Cotabby.Core.Spelling;
 
 /// <summary>
@@ -26,6 +28,6 @@ public sealed class CurrentWordSpellChecker(ISpellingLexicon lexicon)
     /// </summary>
     public bool IsTypo(string word, SpellingDictionaryLanguage language) =>
         word.Length > 0
-        && Graphemes.Split(word).All(Graphemes.IsLetter)
+        && new GraphemeString(word).All(c => c.IsLetter)
         && !lexicon.IsKnownWord(word, language);
 }

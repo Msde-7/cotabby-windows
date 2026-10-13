@@ -10,29 +10,18 @@ using WpfClipboard = System.Windows.Clipboard;
 namespace Cotabby.Win32.Insertion;
 
 /// <summary>
-/// <see cref="ITextInserter"/> that pastes via the clipboard: save the
-/// current clipboard, write the suggestion, synthesize Ctrl+V to make the
-/// host's standard paste handler insert it atomically, then restore the
-/// original clipboard.
+/// <see cref="ITextInserter"/> that types short single-line text as Unicode keystrokes and pastes
+/// everything else through the clipboard.
 /// </summary>
 /// <remarks>
-/// Why clipboard paste instead of per-char SendInput Unicode:
-/// the obvious SendInput KEYEVENTF_UNICODE approach drops events in many
-/// hosts — Notepad in particular accepts only the first ~10 of a 40-char
-/// burst before its input queue overflows and silently discards the rest
-/// (verified via post-insertion UIA reads). Electron-based editors fare a
-/// little better but still drop characters under load. A single Ctrl+V
-/// keystroke routes through the host's paste pipeline which is built for
-/// atomic multi-character insertion of arbitrary length.
-///
-/// Why bracket with <c>BlockInput</c>:
-/// physical keystrokes arriving between our Ctrl+V keydown and Ctrl+V
-/// keyup, or between paste and clipboard restore, would otherwise be
-/// processed as live input and interleave with the paste.
-///
-/// Trade-off: clipboard contents flicker for ~50ms. We save and restore
-/// the previous text contents; anything richer (images, files) is lost
-/// across the round-trip — an acceptable cost for reliable insertion.
+/// Long keystroke bursts drop characters in many hosts. Notepad accepts only about the first ten
+/// of forty before its input queue overflows. A paste goes through the host's own paste handler,
+/// which inserts any length at once.
+/// <para>
+/// The paste saves the clipboard text, writes the suggestion, sends Ctrl+V and restores the saved
+/// text. <c>BlockInput</c> brackets it so physical keystrokes cannot interleave. Clipboard
+/// content that is not text, such as an image or files, is lost.
+/// </para>
 /// </remarks>
 public sealed class SendInputTextInserter : ITextInserter
 {
@@ -48,12 +37,9 @@ public sealed class SendInputTextInserter : ITextInserter
     }
 
     /// <summary>
-    /// Chunks at or below this length go through a single SendInput unicode
-    /// batch instead of the clipboard round-trip. Word-granularity accepts
-    /// are almost always under this, so per-word Tab presses stay fast and
-    /// never touch the user's clipboard. One SendInput call with the whole
-    /// array is atomic with respect to interleaving, which avoids the
-    /// dropped-character behavior the old one-call-per-char path exhibited.
+    /// Text at or below this many UTF-16 units is typed in one SendInput batch and never touches
+    /// the clipboard. Word accepts are almost always under it. One call with the whole array
+    /// cannot be interleaved with other input.
     /// </summary>
     private const int MaxSendInputChars = 24;
 
@@ -89,16 +75,12 @@ public sealed class SendInputTextInserter : ITextInserter
                 "Inserter (clipboard paste) received {Len} chars: \"{Text}\" hex={Hex} target.pid={Pid} target.proc={Proc}",
                 text.Length, LogText.Escape(text), LogText.Hex(text), target.ProcessId, target.ProcessName);
 
-            // BlockInput keeps physical keystrokes from interleaving with the
-            // synthetic Ctrl+V we're about to send. ~50ms blocked total.
+            // Keeps physical keystrokes from interleaving with the Ctrl+V.
             bool blocked = BlockInput(true);
             string? savedClipboard = null;
             try
             {
-                // Snapshot existing clipboard so the round-trip is invisible.
-                // STA is required for OLE clipboard ops — InsertAsync is called
-                // from the UI thread in normal operation, but we go through the
-                // dispatcher explicitly to be safe.
+                // OLE clipboard calls need an STA thread.
                 savedClipboard = await OnStaThreadAsync(TryReadClipboardText).ConfigureAwait(false);
 
                 _clipboardContext?.BeginOwnWrite();
@@ -109,21 +91,19 @@ public sealed class SendInputTextInserter : ITextInserter
                     return false;
                 }
 
-                // Give the host a beat to see the clipboard update before paste.
+                // Lets the host see the clipboard update before the paste.
                 await Task.Delay(15, ct).ConfigureAwait(false);
 
                 SendCtrlV();
 
-                // Wait long enough for the host to consume the paste before we
-                // restore the clipboard. 80ms covers Notepad and Electron paste
-                // pipelines comfortably.
+                // The host must consume the paste before the clipboard is restored. 80 ms covers
+                // Notepad and Electron.
                 await Task.Delay(80, ct).ConfigureAwait(false);
             }
             finally
             {
-                // Restore prior clipboard contents (or clear if nothing was
-                // there originally). Always do this even if paste failed so we
-                // don't leave the user's clipboard pointing at our suggestion.
+                // Restored even when the paste failed, so the suggestion never stays on the
+                // user's clipboard.
                 bool restored = false;
                 if (savedClipboard is not null)
                 {
@@ -143,10 +123,8 @@ public sealed class SendInputTextInserter : ITextInserter
     }
 
     /// <summary>
-    /// Run <paramref name="func"/> on a fresh STA thread. WPF's UI thread is
-    /// STA but calling InsertAsync from there blocks on the SemaphoreSlim
-    /// above — so spin up a one-shot STA helper. The work itself is cheap
-    /// (couple of OLE calls), so the thread creation cost is fine.
+    /// Runs <paramref name="func"/> on a fresh STA thread. The caller may be a thread-pool
+    /// thread, which is not STA, and the work is a couple of cheap OLE calls.
     /// </summary>
     private static Task<T> OnStaThreadAsync<T>(Func<T> func)
     {
@@ -175,9 +153,8 @@ public sealed class SendInputTextInserter : ITextInserter
     {
         try
         {
-            // SetDataObject(copy: true) leaves the clipboard owning a separate
-            // copy of the string so our process can exit without invalidating
-            // the host's just-read paste.
+            // With copy set the clipboard owns its own copy of the string, which survives this
+            // process exiting.
             WpfClipboard.SetDataObject(text, copy: true);
             return true;
         }
@@ -188,9 +165,8 @@ public sealed class SendInputTextInserter : ITextInserter
     private const ushort VK_V = 0x56;
 
     /// <summary>
-    /// Send Ctrl-down, V-down, V-up, Ctrl-up via SendInput. We use regular
-    /// virtual-key SendInput rather than KEYEVENTF_UNICODE because Ctrl+V is
-    /// a virtual-key shortcut, not a character.
+    /// Sends Ctrl+V as virtual keys. KEYEVENTF_UNICODE does not apply because Ctrl+V is a
+    /// shortcut and not a character.
     /// </summary>
     private static void SendCtrlV()
     {
@@ -205,9 +181,8 @@ public sealed class SendInputTextInserter : ITextInserter
     }
 
     /// <summary>
-    /// Type <paramref name="text"/> as one SendInput batch of
-    /// KEYEVENTF_UNICODE down/up pairs. UTF-16 code units go through as-is,
-    /// so surrogate pairs (emoji) arrive intact.
+    /// Types <paramref name="text"/> as one SendInput batch of KEYEVENTF_UNICODE pairs. UTF-16
+    /// units pass through unchanged, so surrogate pairs arrive intact.
     /// </summary>
     private static void SendUnicodeString(string text)
     {

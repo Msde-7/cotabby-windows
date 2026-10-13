@@ -4,15 +4,9 @@ using Microsoft.Win32;
 namespace Cotabby.App.Settings;
 
 /// <summary>
-/// HKCU Run key based launch-at-login. Mirrors the macOS port's
-/// <c>LaunchAtLoginService</c>: idempotent set/clear with a single boolean
-/// query for the current state.
+/// Launch at login through the per-user Run key, which needs no administrator rights. The entry
+/// points at the app's own exe and quotes the path so spaces survive.
 /// </summary>
-/// <remarks>
-/// Per-user (HKCU) so it works without admin. We point at the actual exe
-/// (not <c>dotnet.exe</c>) so a self-contained or framework-dependent build
-/// both behave correctly — and we quote the path to survive spaces.
-/// </remarks>
 public static class LaunchAtLogin
 {
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -54,10 +48,8 @@ public static class LaunchAtLogin
 
     private static string? ResolveLaunchTarget()
     {
-        // Prefer the actual host exe (Cotabby.exe). When the app is launched
-        // via `dotnet run`, the main module path points at dotnet.exe; in that
-        // case fall back to a best-guess based on AppContext.BaseDirectory so
-        // the user at least gets a sensible Run entry for their build output.
+        // Under `dotnet run` the main module is dotnet.exe, so fall back to Cotabby.exe next to
+        // the app's assemblies.
         var main = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
         if (!string.IsNullOrWhiteSpace(main) &&
             !Path.GetFileName(main).Equals("dotnet.exe", StringComparison.OrdinalIgnoreCase))

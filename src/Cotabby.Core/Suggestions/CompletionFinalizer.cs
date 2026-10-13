@@ -18,18 +18,17 @@ public static class CompletionFinalizer
         string completion, FocusedField live, SuggestionSettings settings, bool spacingIsExact,
         TypoCorrectionAdvisor? typos)
     {
-        string preceding = live.Text[..Math.Clamp(live.CaretOffset, 0, live.Text.Length)];
+        string preceding = live.PrecedingText;
         if (GhostSpaceBoundary.IsStaleAfterTypedSpace(completion, preceding)) return null;
 
         string spaced = GhostSpaceBoundary.LiveAdjusted(completion, preceding, spacingIsExact ? preceding : null);
-        var references = WordCompletionFallback
-            .ReferenceWords(preceding, live.Text[preceding.Length..], settings.ExtendedContext)
+        var references = ReferenceVocabulary
+            .Words(preceding, live.TrailingText, settings.ExtendedContext)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var decision = CompletionSeamGuard.Presentation(
-            preceding, spaced, isFinal: true,
+        return CompletionSeamGuard.VisibleText(
+            preceding, spaced,
             word => references.Contains(word) || typos is null
                 ? CompletionSeamGuard.SpellingAssessment.Known
                 : typos.Assess(word, preceding, settings.SpellingDictionaries));
-        return decision.Kind == CompletionSeamGuard.PresentationKind.Show ? decision.Text : null;
     }
 }

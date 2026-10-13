@@ -1,6 +1,6 @@
 using System.Globalization;
 using System.Runtime.InteropServices;
-using System.Text;
+using Cotabby.Core.Text;
 
 namespace Cotabby.Core.Spelling;
 
@@ -46,7 +46,7 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
 
     public int WordCount => _wordsList.Count;
 
-    public bool Contains(string word) => _words.ContainsKey(Graphemes.Canonical(word));
+    public bool Contains(string word) => _words.ContainsKey(FrequencyDictionaryFormat.Canonical(word));
 
     /// <summary>
     /// Parses <c>word count</c> lines separated by a space or a tab and skips malformed ones.
@@ -54,7 +54,7 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
     /// </summary>
     public void LoadDictionary(string contents, CancellationToken cancellationToken = default)
     {
-        foreach (var (word, count) in FrequencyDictionaryFormat.Entries(contents, anyWhitespaceSeparates: false))
+        foreach (var (word, count) in FrequencyDictionaryFormat.Entries(contents))
         {
             cancellationToken.ThrowIfCancellationRequested();
             CreateDictionaryEntry(word, count);
@@ -68,7 +68,7 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
         int index = _wordsList.Count;
         _wordsList.Add(key);
 
-        var characters = Graphemes.Split(key);
+        var characters = Characters(key);
         _maxDictionaryWordLength = Math.Max(_maxDictionaryWordLength, characters.Length);
         foreach (ulong delete in DeleteHashes(characters))
         {
@@ -84,9 +84,9 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
     /// </summary>
     public IReadOnlyList<SymSpellSuggestion> Lookup(string input, int? maxEditDistance = null)
     {
-        input = Graphemes.Canonical(input);
+        input = FrequencyDictionaryFormat.Canonical(input);
         int maxDistance = Math.Min(maxEditDistance ?? MaxDictionaryEditDistance, MaxDictionaryEditDistance);
-        var inputCharacters = Graphemes.Split(input);
+        var inputCharacters = Characters(input);
 
         // Too long to be within the distance of any dictionary word.
         if (inputCharacters.Length - maxDistance > _maxDictionaryWordLength) return [];
@@ -107,7 +107,7 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
                 foreach (int wordIndex in wordIndices)
                 {
                     var suggestion = _wordsList[wordIndex];
-                    var suggestionCharacters = Graphemes.Split(suggestion);
+                    var suggestionCharacters = Characters(suggestion);
                     // Cheap length prune before the quadratic distance computation.
                     if (Math.Abs(suggestionCharacters.Length - inputCharacters.Length) > maxDistance) continue;
                     if (!consideredSuggestions.Add(suggestion)) continue;
@@ -205,6 +205,8 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
         }
     }
 
+    private static string[] Characters(string text) => new GraphemeString(text).Select(c => c.ToString()).ToArray();
+
     private static string[] Without(string[] characters, int index)
     {
         var result = new string[characters.Length - 1];
@@ -236,16 +238,33 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
 internal static class FrequencyDictionaryFormat
 {
     /// <summary>
-    /// Yields the first two fields of every line whose second field is an integer. Fields are
-    /// separated by a space or a tab, or by any whitespace when <paramref name="anyWhitespaceSeparates"/> is set.
+    /// Swift compares strings by canonical equivalence and .NET compares UTF-16 units. Typed text
+    /// is composed to NFC before it meets the dictionaries, which are stored in NFC.
     /// </summary>
-    public static IEnumerable<(string Word, long Count)> Entries(string contents, bool anyWhitespaceSeparates)
+    public static string Canonical(string text)
+    {
+        try
+        {
+            return text.Normalize();
+        }
+        catch (ArgumentException)
+        {
+            // An unpaired surrogate cannot be normalized. Such text never matches a dictionary word.
+            return text;
+        }
+    }
+
+    /// <summary>
+    /// Yields the first two fields of every line whose second field is an integer. Fields are
+    /// separated by spaces or tabs.
+    /// </summary>
+    public static IEnumerable<(string Word, long Count)> Entries(string contents)
     {
         for (int start = 0; start < contents.Length;)
         {
             int end = contents.IndexOf('\n', start);
             if (end < 0) end = contents.Length;
-            if (TryParse(contents.AsSpan(start, end - start), anyWhitespaceSeparates, out var word, out long count))
+            if (TryParse(contents.AsSpan(start, end - start), out var word, out long count))
             {
                 yield return (word, count);
             }
@@ -253,7 +272,7 @@ internal static class FrequencyDictionaryFormat
         }
     }
 
-    private static bool TryParse(ReadOnlySpan<char> line, bool anyWhitespaceSeparates, out string word, out long count)
+    private static bool TryParse(ReadOnlySpan<char> line, out string word, out long count)
     {
         word = "";
         count = 0;
@@ -272,7 +291,7 @@ internal static class FrequencyDictionaryFormat
         word = line[wordStart..wordEnd].ToString();
         return true;
 
-        bool IsSeparator(char c) => anyWhitespaceSeparates ? char.IsWhiteSpace(c) : c is ' ' or '\t';
+        bool IsSeparator(char c) => c is ' ' or '\t';
 
         int SkipSeparators(ReadOnlySpan<char> text, int index)
         {

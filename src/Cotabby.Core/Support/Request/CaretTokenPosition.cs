@@ -1,3 +1,5 @@
+using Cotabby.Core.Text;
+
 namespace Cotabby.Core.Support;
 
 /// <summary>
@@ -16,12 +18,10 @@ public static class CaretTokenPosition
 
     public static bool IsInsideToken(string precedingText, string trailingText)
     {
-        if (GraphemeString.LastOf(precedingText) is not { } before || !IsWordCharacter(before)) return false;
+        if (GraphemeString.LastOf(precedingText) is not { IsLetterOrNumber: true }) return false;
         var trailing = new GraphemeString(trailingText);
         if (trailing.First is not { } after) return false;
-        if (IsWordCharacter(after)) return true;
-        return after.IsAnyOf(TokenJoiners) && trailing.Count > 1 && IsWordCharacter(trailing[1]);
+        if (after.IsLetterOrNumber) return true;
+        return after.IsAnyOf(TokenJoiners) && trailing.Count > 1 && trailing[1].IsLetterOrNumber;
     }
-
-    internal static bool IsWordCharacter(Grapheme character) => character.IsLetter || character.IsNumber;
 }

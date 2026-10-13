@@ -10,7 +10,6 @@ public class MacroTriggerStateMachineTests
     {
         Kind = KeyKind.Character,
         Character = c,
-        HasNonShiftModifier = false,
         IsKeyDown = true,
     };
 
@@ -18,11 +17,10 @@ public class MacroTriggerStateMachineTests
     {
         Kind = kind,
         Character = '\0',
-        HasNonShiftModifier = false,
         IsKeyDown = true,
     };
 
-    private static readonly KeyboardEvent CtrlChord = Key(KeyKind.Other) with { HasNonShiftModifier = true };
+    private static readonly KeyboardEvent CtrlChord = Key(KeyKind.Other) with { Modifiers = KeyModifiers.Control };
 
     private static MacroTriggerStateMachine Capturing(string query = "")
     {
@@ -226,8 +224,8 @@ public class MacroTriggerStateMachineTests
         Key(KeyKind.Enter),
         Key(KeyKind.Delete),
         CtrlChord,
-        Ch('a') with { HasNonShiftModifier = true },
-        Key(KeyKind.Backspace) with { HasNonShiftModifier = true },
+        Ch('a') with { Modifiers = KeyModifiers.Control },
+        Key(KeyKind.Backspace) with { Modifiers = KeyModifiers.Control },
     };
 
     [Theory]

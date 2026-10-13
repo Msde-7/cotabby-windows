@@ -10,7 +10,6 @@ public sealed class SuggestionSessionReconcilerTests
     {
         RequestId = "request",
         VisibleText = "world",
-        AnchorRect = default,
     };
 
     [Fact]

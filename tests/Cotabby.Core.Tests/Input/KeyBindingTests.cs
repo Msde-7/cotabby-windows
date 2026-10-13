@@ -7,7 +7,7 @@ public sealed class KeyBindingTests
 {
     private static readonly KeyBinding CtrlSpace = new(0x20, KeyModifiers.Control, "Ctrl+Space");
     private static readonly KeyboardEvent CtrlSpacePress =
-        Keys.Special(KeyKind.Other, 0x20) with { Modifiers = KeyModifiers.Control, HasNonShiftModifier = true };
+        Keys.Special(KeyKind.Other, 0x20) with { Modifiers = KeyModifiers.Control };
 
     [Fact]
     public void Matches_TheSameKeyWithExactlyTheSameModifiers()
@@ -37,7 +37,7 @@ public sealed class KeyBindingTests
     {
         var normalized = InlineCommitKey.Normalize(CtrlSpacePress, CtrlSpace);
 
-        Assert.Equal(CtrlSpacePress with { Kind = KeyKind.Tab, HasNonShiftModifier = false }, normalized);
+        Assert.Equal(CtrlSpacePress with { Kind = KeyKind.Tab, Modifiers = KeyModifiers.None }, normalized);
     }
 
     [Fact]

@@ -8,7 +8,10 @@ namespace Cotabby.Core.Macros;
 /// <remarks>
 /// Tokens resolve through an explicit table so ambiguous abbreviations are unsurprising.
 /// <c>m</c> is meters, <c>c</c> is Celsius, and <c>oz</c> is ounce-mass with <c>floz</c> for
-/// the fluid ounce.
+/// the fluid ounce. Coefficients are the exact definitions. The inch, foot, yard and mile follow
+/// the international yard of 0.9144 m, the ounce, pound and stone follow the international pound
+/// of 0.45359237 kg, and the volume units are US customary liquid measures built on the gallon
+/// of 231 cubic inches.
 /// </remarks>
 public sealed class UnitConversionEvaluator : IMacroEvaluator
 {
@@ -40,6 +43,9 @@ public sealed class UnitConversionEvaluator : IMacroEvaluator
     /// <summary>A unit as a linear map onto its quantity's base unit.</summary>
     private sealed record Unit(Quantity Quantity, double Coefficient, double Constant = 0);
 
+    private const double Pound = 0.45359237;
+    private const double Gallon = 3.785411784;
+
     private static readonly Dictionary<string, Unit> Units = BuildUnits();
 
     private static Dictionary<string, Unit> BuildUnits()
@@ -58,31 +64,31 @@ public sealed class UnitConversionEvaluator : IMacroEvaluator
         Add(new(Quantity.Length, 0.0254), "in", "inch", "inches");
         Add(new(Quantity.Length, 0.3048), "ft", "foot", "feet");
         Add(new(Quantity.Length, 0.9144), "yd", "yard", "yards");
-        Add(new(Quantity.Length, 1609.34), "mi", "mile", "miles");
+        Add(new(Quantity.Length, 1609.344), "mi", "mile", "miles");
 
         // Mass in kilograms.
         Add(new(Quantity.Mass, 0.000001), "mg", "milligram", "milligrams");
         Add(new(Quantity.Mass, 0.001), "g", "gram", "grams");
         Add(new(Quantity.Mass, 1), "kg", "kgs", "kilo", "kilos", "kilogram", "kilograms");
-        Add(new(Quantity.Mass, 0.0283495), "oz", "ounce", "ounces");
-        Add(new(Quantity.Mass, 0.453592), "lb", "lbs", "pound", "pounds");
-        Add(new(Quantity.Mass, 6.35029), "st", "stone", "stones");
+        Add(new(Quantity.Mass, Pound / 16), "oz", "ounce", "ounces");
+        Add(new(Quantity.Mass, Pound), "lb", "lbs", "pound", "pounds");
+        Add(new(Quantity.Mass, Pound * 14), "st", "stone", "stones");
 
         // Temperature in kelvin.
         Add(new(Quantity.Temperature, 1, 273.15), "c", "celsius", "centigrade");
-        Add(new(Quantity.Temperature, 0.55555555555556, 255.37222222222427), "f", "fahrenheit");
+        Add(new(Quantity.Temperature, 5.0 / 9, 459.67 * 5 / 9), "f", "fahrenheit");
         Add(new(Quantity.Temperature, 1), "k", "kelvin");
 
         // Volume in liters.
         Add(new(Quantity.Volume, 0.001), "ml", "milliliter", "milliliters", "millilitre", "millilitres");
         Add(new(Quantity.Volume, 1), "l", "liter", "liters", "litre", "litres");
-        Add(new(Quantity.Volume, 0.24), "cup", "cups");
-        Add(new(Quantity.Volume, 0.0147868), "tbsp", "tablespoon", "tablespoons");
-        Add(new(Quantity.Volume, 0.00492892), "tsp", "teaspoon", "teaspoons");
-        Add(new(Quantity.Volume, 0.0295735), "floz");
-        Add(new(Quantity.Volume, 3.78541), "gal", "gallon", "gallons");
-        Add(new(Quantity.Volume, 0.473176), "pt", "pint", "pints");
-        Add(new(Quantity.Volume, 0.946353), "qt", "quart", "quarts");
+        Add(new(Quantity.Volume, Gallon / 16), "cup", "cups");
+        Add(new(Quantity.Volume, Gallon / 256), "tbsp", "tablespoon", "tablespoons");
+        Add(new(Quantity.Volume, Gallon / 768), "tsp", "teaspoon", "teaspoons");
+        Add(new(Quantity.Volume, Gallon / 128), "floz");
+        Add(new(Quantity.Volume, Gallon), "gal", "gallon", "gallons");
+        Add(new(Quantity.Volume, Gallon / 8), "pt", "pint", "pints");
+        Add(new(Quantity.Volume, Gallon / 4), "qt", "quart", "quarts");
 
         return units;
     }

@@ -13,7 +13,6 @@ internal static class Fields
 {
     public static FocusedField Text(string text, string process = "notepad", int pid = 100, bool singleLine = false) => new()
     {
-        ElementHandle = new object(),
         ProcessId = pid,
         ProcessName = process,
         Text = text,
@@ -33,7 +32,6 @@ internal static class Keys
     {
         Kind = KeyKind.Character,
         Character = c,
-        HasNonShiftModifier = false,
         IsKeyDown = true,
         VirtualKey = char.ToUpperInvariant(c),
     };
@@ -44,7 +42,6 @@ internal static class Keys
     {
         Kind = kind,
         Character = '\0',
-        HasNonShiftModifier = false,
         IsKeyDown = true,
         VirtualKey = virtualKey,
         IsRepeat = repeat,

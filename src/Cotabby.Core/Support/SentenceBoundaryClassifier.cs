@@ -1,3 +1,5 @@
+using Cotabby.Core.Text;
+
 namespace Cotabby.Core.Support;
 
 /// <summary>
@@ -14,13 +16,16 @@ public static class SentenceBoundaryClassifier
     };
 
     /// <summary>Ideographic full stop, fullwidth "!" and "?", and the halfwidth ideographic stop.</summary>
-    private const string CjkSentenceTerminators = "。！？｡";
+    internal const string CjkSentenceTerminators = "。！？｡";
+
+    /// <summary>The CJK corner, fullwidth, lenticular and angle closers.</summary>
+    internal const string CjkClosingPunctuation = "」』）】〉》｣";
 
     /// <summary>
     /// Closing punctuation that may follow a sentence terminator. Straight and curly quotes, round,
-    /// square and curly brackets, plus the CJK corner, lenticular, angle and fullwidth closers.
+    /// square and curly brackets, plus the CJK closers.
     /// </summary>
-    private const string ClosingPunctuation = "\"')]}”’」』）】〉》｣";
+    internal const string ClosingPunctuation = "\"')]}”’" + CjkClosingPunctuation;
 
     /// <summary>
     /// Whether <paramref name="text"/> ends at a sentence boundary. After skipping trailing

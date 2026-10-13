@@ -7,10 +7,8 @@ using Microsoft.Extensions.Logging;
 namespace Cotabby.Inference;
 
 /// <summary>
-/// Owns the lifecycle of a single in-memory <see cref="LLamaWeights"/> plus a
-/// persistent <see cref="LlamaRuntimeCore"/>. Mirrors the macOS port's
-/// <c>LlamaRuntimeManager</c> + <c>LlamaRuntimeCore</c> split: this type is the
-/// public, observable face; the core serializes access to the llama context.
+/// Owns the loaded <see cref="LLamaWeights"/> and the persistent <see cref="LlamaRuntimeCore"/>.
+/// This type loads and unloads models. The core serializes access to the llama context.
 /// </summary>
 public sealed class LlamaRuntimeManager : IAsyncDisposable
 {
@@ -39,8 +37,8 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
     public LlamaRuntimeCore? Core => _core;
 
     /// <summary>
-    /// Load <paramref name="model"/> from <paramref name="path"/>. Unloads any
-    /// previously resident model. Safe to call from any thread.
+    /// Loads <paramref name="model"/> from <paramref name="path"/> and unloads the model that was
+    /// resident. Safe to call from any thread.
     /// </summary>
     public async Task LoadAsync(CotabbyModel model, string path, CancellationToken ct)
     {
@@ -58,15 +56,13 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
             UnloadInternal();
 
             var sw = Stopwatch.StartNew();
-            // Reserve one logical core for the UI/UIA pump so prompt eval never
-            // starves keystroke delivery when we run on CPU.
+            // One logical core stays free for the UI and UI Automation, so prompt evaluation on
+            // the CPU never starves keystroke delivery.
             int threads = Math.Max(1, Environment.ProcessorCount - 1);
             var parameters = new ModelParams(path)
             {
                 ContextSize = (uint)model.ContextLength,
-                // Offload every layer when a GPU backend (Vulkan) is present —
-                // mirrors the macOS port's gpuLayerCount -1 (full Metal
-                // offload). The CPU backend ignores this.
+                // Offloads every layer when the Vulkan backend is present. The CPU backend ignores it.
                 GpuLayerCount = 999,
                 Threads = threads,
                 BatchThreads = threads,
@@ -79,17 +75,13 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
                 model.Id, path, model.ContextLength);
 
             var weights = await LLamaWeights.LoadFromFileAsync(parameters, ct).ConfigureAwait(false);
-            // The context is created ONCE and lives for the whole model
-            // residency — context creation costs seconds on Vulkan (pipeline
-            // compilation), which is why the per-request StatelessExecutor
-            // approach felt so slow.
+            // The context is created once per loaded model. Creating one costs seconds on Vulkan
+            // because of pipeline compilation.
             var context = weights.CreateContext(parameters, _loggerFactory.CreateLogger<LLamaContext>());
             var core = new LlamaRuntimeCore(weights, context, _loggerFactory.CreateLogger<LlamaRuntimeCore>());
 
-            // Warm the decode path now: the first generation on a fresh Vulkan
-            // context compiles shaders and reserves buffers (~2-4s). Paying
-            // that at load keeps the first real suggestion inside its latency
-            // budget.
+            // The first generation on a fresh Vulkan context compiles shaders and reserves buffers,
+            // which takes two to four seconds. Paying that here keeps the first real suggestion fast.
             var warmupTokens = core.TokenizeText("Hello", addBos: core.Vocab.ShouldAddBOS);
             _ = await core.GenerateAsync(
                 warmupTokens,

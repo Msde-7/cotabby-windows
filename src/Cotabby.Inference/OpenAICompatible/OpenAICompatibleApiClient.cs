@@ -7,34 +7,21 @@ namespace Cotabby.Inference.OpenAICompatible;
 /// <summary>Sampling values shared by the completions and chat-completions request shapes.</summary>
 public sealed record OpenAICompatibleGenerationOptions(int MaxPredictionTokens, double Temperature, double TopP);
 
-public enum OpenAICompatibleClientError
-{
-    Server,
-    MalformedResponse,
-    StreamError,
-}
-
 /// <summary>A failed endpoint exchange. The message is user-facing.</summary>
 public sealed class OpenAICompatibleClientException : Exception
 {
-    public OpenAICompatibleClientError Error { get; }
-    public int? StatusCode { get; }
-
-    private OpenAICompatibleClientException(OpenAICompatibleClientError error, string message, int? statusCode = null)
-        : base(message)
+    private OpenAICompatibleClientException(string message) : base(message)
     {
-        Error = error;
-        StatusCode = statusCode;
     }
 
     public static OpenAICompatibleClientException Server(int statusCode) =>
-        new(OpenAICompatibleClientError.Server, $"The endpoint returned HTTP {statusCode}.", statusCode);
+        new($"The endpoint returned HTTP {statusCode}.");
 
     public static OpenAICompatibleClientException MalformedResponse() =>
-        new(OpenAICompatibleClientError.MalformedResponse, "The endpoint returned an invalid OpenAI-compatible response.");
+        new("The endpoint returned an invalid OpenAI-compatible response.");
 
     public static OpenAICompatibleClientException StreamError(string message) =>
-        new(OpenAICompatibleClientError.StreamError, $"The endpoint reported an error: {message}");
+        new($"The endpoint reported an error: {message}");
 }
 
 /// <summary>Stateless HTTP boundary for OpenAI-compatible servers.</summary>

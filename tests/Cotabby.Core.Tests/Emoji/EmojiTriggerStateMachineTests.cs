@@ -26,7 +26,13 @@ public class EmojiTriggerStateMachineTests
     }
 
     private static KeyboardEvent Key(KeyKind kind, char character = '\0', bool down = true, bool modifier = false) =>
-        new() { Kind = kind, Character = character, IsKeyDown = down, HasNonShiftModifier = modifier };
+        new()
+        {
+            Kind = kind,
+            Character = character,
+            IsKeyDown = down,
+            Modifiers = modifier ? KeyModifiers.Control : KeyModifiers.None,
+        };
 
     // Trigger boundary
 

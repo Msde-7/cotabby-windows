@@ -14,33 +14,6 @@ public sealed class SurfaceContextComposerTests
             AppSurfaceClassifier.Classify(processName, isIntegratedTerminal),
             applicationName, windowTitle, fieldPlaceholder);
 
-    [Fact]
-    public void BasePreface_KeepsDocumentFactsWithoutSoftwareBranding()
-    {
-        var email = new SurfaceContext(AppSurfaceClass.Email, "Mail", "Budget review", "Subject");
-        Assert.Equal(
-            ["Format: email; Title: Budget review; Field: Subject."],
-            SurfaceContextComposer.BaseCompletionPrefaceLines(email));
-
-        var generic = new SurfaceContext(AppSurfaceClass.Other, "ChatGPT", "ChatGPT", "Message");
-        Assert.Equal(["Format: text."], SurfaceContextComposer.BaseCompletionPrefaceLines(generic));
-        Assert.Equal(
-            ["Format: text; App: ChatGPT; Title: ChatGPT; Field: Message."],
-            SurfaceContextComposer.PrefaceLines(generic));
-    }
-
-    [Fact]
-    public void BasePreface_OmitsRedundantFacts()
-    {
-        var chat = new SurfaceContext(AppSurfaceClass.Chat, "Slack", "slack", "Type a Message");
-        Assert.Equal(["Format: chat."], SurfaceContextComposer.BaseCompletionPrefaceLines(chat));
-
-        var browser = new SurfaceContext(AppSurfaceClass.Browser, "chrome", "Docs", "Add a comment");
-        Assert.Equal(
-            ["Format: web text; Title: Docs; Field: Add a comment."],
-            SurfaceContextComposer.BaseCompletionPrefaceLines(browser));
-    }
-
     [Theory]
     [InlineData(AppSurfaceClass.CodeEditor)]
     [InlineData(AppSurfaceClass.Terminal)]
@@ -49,7 +22,6 @@ public sealed class SurfaceContextComposerTests
         var surface = new SurfaceContext(surfaceClass, "Editor", "Project", "Command");
 
         Assert.Empty(SurfaceContextComposer.PrefaceLines(surface));
-        Assert.Empty(SurfaceContextComposer.BaseCompletionPrefaceLines(surface));
     }
 
     [Fact]

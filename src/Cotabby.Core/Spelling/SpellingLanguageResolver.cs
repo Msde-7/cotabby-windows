@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text;
+using Cotabby.Core.Text;
 
 namespace Cotabby.Core.Spelling;
 
@@ -102,7 +103,7 @@ internal sealed class LanguageVocabularyScorer(Func<SpellingDictionaryLanguage, 
     private Dictionary<string, double> Vocabulary(SpellingDictionaryLanguage language) =>
         _vocabularies.GetOrAdd(language, _ =>
         {
-            var entries = FrequencyDictionaryFormat.Entries(resourceLoader(language) ?? "", anyWhitespaceSeparates: false)
+            var entries = FrequencyDictionaryFormat.Entries(resourceLoader(language) ?? "")
                 .Where(entry => entry.Count > 0)
                 .Take(VocabularySize)
                 .DistinctBy(entry => entry.Word)
@@ -113,18 +114,8 @@ internal sealed class LanguageVocabularyScorer(Func<SpellingDictionaryLanguage, 
 
     private static IEnumerable<string> Words(string sample)
     {
-        var word = new StringBuilder();
-        // The trailing space flushes the last word.
-        foreach (var character in Graphemes.Split(Graphemes.Canonical(sample).ToLowerInvariant() + " "))
-        {
-            if (Graphemes.IsLetter(character))
-            {
-                word.Append(character);
-                continue;
-            }
-            if (word.Length > 0) yield return word.ToString();
-            word.Clear();
-        }
+        var text = FrequencyDictionaryFormat.Canonical(sample).ToLowerInvariant();
+        return new GraphemeString(text).Split(c => !c.IsLetter).Select(range => text[range]);
     }
 
     private static Script ScriptOf(SpellingDictionaryLanguage language) => language switch

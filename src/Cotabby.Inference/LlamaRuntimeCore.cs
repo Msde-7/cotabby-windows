@@ -220,7 +220,7 @@ public sealed class LlamaRuntimeCore : IDisposable
         {
             if (ct.IsCancellationRequested) { stopReason = "cancelled"; break; }
 
-            // The previously sampled token enters memory only when another token is wanted.
+            // The last sampled token enters memory only when another token is wanted.
             if (sampledIds.Count > 0)
             {
                 batch.Clear();

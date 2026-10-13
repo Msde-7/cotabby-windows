@@ -72,7 +72,7 @@ public class MacroEngineRoutingTests
     [Fact]
     public void InjectedRateTableReachesTheCurrencyFamily()
     {
-        var rates = new CurrencyRateTable("test", new Dictionary<string, double> { ["USD"] = 1, ["EUR"] = 0.5 });
+        var rates = new CurrencyRateTable(new Dictionary<string, double> { ["USD"] = 1, ["EUR"] = 0.5 });
         var engine = MacroEngine.Standard(culture: CultureInfo.GetCultureInfo("en-US"), rates: rates);
         Assert.Equal("€5.00", engine.Evaluate("10usd->eur")?.InsertionText);
     }

@@ -12,10 +12,8 @@
   <ItemGroup>
     <PackageReference Include="LLamaSharp" Version="0.27.0" />
     <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.27.0" />
-    <!-- Vulkan backend gives GPU offload on the RTX/Radeon hardware this app
-         targets; LLamaSharp probes Vulkan before falling back to CPU. -->
+    <!-- The Vulkan backend gives GPU offload. LLamaSharp probes it before falling back to the CPU. -->
     <PackageReference Include="LLamaSharp.Backend.Vulkan" Version="0.27.0" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.5" />
   </ItemGroup>
 
   <ItemGroup>

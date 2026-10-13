@@ -1,4 +1,5 @@
 using System.Text;
+using Cotabby.Core.Text;
 
 namespace Cotabby.Core.Support;
 
@@ -54,7 +55,7 @@ public sealed class TokenHealingPlan
             }
         }
 
-        if (replay.Length > 0 && GraphemeString.LastOf(prompt) is { } last && (last.IsLetter || last.IsNumber))
+        if (replay.Length > 0 && GraphemeString.LastOf(prompt) is { IsLetterOrNumber: true })
         {
             int needed = CurrentWordByteCount(prompt);
             while (needed <= TokenHealingBuffer.MaximumHealedTokenBytes && replay.Length < needed && keptCount > 1)

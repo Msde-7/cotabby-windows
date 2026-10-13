@@ -37,7 +37,7 @@ public sealed record SuggestionSettings
     /// <summary>True when requests go to a configured endpoint instead of the local model.</summary>
     public bool UsesEndpoint { get; init; }
 
-    public SuggestionWordRange WordRange { get; init; } = SuggestionWordCountPreset.TwelveToTwenty.Range();
+    public SuggestionWordRange WordRange { get; init; } = new(12, 20);
 
     public bool AllowMultiLine { get; init; }
 

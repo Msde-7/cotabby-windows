@@ -3,17 +3,13 @@ using System.Text;
 namespace Cotabby.Core.Support;
 
 /// <summary>
-/// Log-formatting helpers for the detailed-monitoring pipeline. Insertion
-/// bugs are diagnosed by joining what the coordinator snapshotted against
-/// what the inserter sent, byte-for-byte — both sides must render strings
-/// identically for that diff to be trustworthy, so the formatting lives here
-/// rather than as per-class copies.
+/// Log formatting shared by the coordinator and the inserter. Insertion bugs are diagnosed by
+/// comparing what each side logged, so both must render strings identically.
 /// </summary>
 public static class LogText
 {
     /// <summary>
-    /// Escape control chars and newlines so a single-line log entry shows the
-    /// FULL string verbatim.
+    /// Escapes control characters and newlines so a single-line log entry shows the whole string.
     /// </summary>
     public static string Escape(string s)
     {
@@ -37,9 +33,7 @@ public static class LogText
         return sb.ToString();
     }
 
-    /// <summary>UTF-16 hex dump of <paramref name="s"/>. Lets us spot doubled
-    /// chars, invisible whitespace, or off-by-one differences between snapshot
-    /// and inserter at a glance.</summary>
+    /// <summary>UTF-16 hex dump of <paramref name="s"/>, which exposes doubled characters and invisible whitespace.</summary>
     public static string Hex(string s)
     {
         if (string.IsNullOrEmpty(s)) return "";

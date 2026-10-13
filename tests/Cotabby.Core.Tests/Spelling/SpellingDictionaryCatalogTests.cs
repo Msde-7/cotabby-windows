@@ -36,20 +36,6 @@ public class SpellingDictionaryCatalogTests
     }
 
     [Fact]
-    public void SettingsLabel_IncludesEnglishNameForEveryLanguageAndStaysUnique()
-    {
-        var labels = SpellingDictionaryCatalog.AllLanguages.Select(language => language.SettingsLabel()).ToArray();
-        Assert.Equal(labels.Length, labels.Distinct().Count());
-        Assert.All(
-            SpellingDictionaryCatalog.AllLanguages,
-            language => Assert.Contains(language.DisplayName(), language.SettingsLabel()));
-
-        Assert.Equal("English", SpellingDictionaryLanguage.English.SettingsLabel());
-        Assert.Equal("Deutsch (German)", SpellingDictionaryLanguage.German.SettingsLabel());
-        Assert.Equal("עברית (Hebrew)", SpellingDictionaryLanguage.Hebrew.SettingsLabel());
-    }
-
-    [Fact]
     public void EveryCatalogDictionaryShipsNextToTheAssemblyAndParses()
     {
         var load = SpellingDictionaryResources.Loader();

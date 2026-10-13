@@ -4,12 +4,9 @@ using Microsoft.Extensions.Logging;
 namespace Cotabby.App.Hosting;
 
 /// <summary>
-/// Append-only single-file logger. Exists so detailed monitoring during
-/// diagnosis lands at a known path (<c>C:\tmp\cotabby-live.log</c>) without
-/// requiring the user to redirect stdout or launch via a shell. Kept minimal:
-/// no rotation, no batching, no async background flush — every Log call writes
-/// + flushes synchronously, gated by a single lock so multi-threaded callers
-/// produce non-interleaved lines.
+/// Append-only single-file logger, so diagnostics land at a known path without redirecting
+/// stdout. There is no rotation and no batching. Every call writes and flushes under one lock,
+/// which keeps lines from different threads whole.
 /// </summary>
 public sealed class FileLoggerProvider : ILoggerProvider
 {

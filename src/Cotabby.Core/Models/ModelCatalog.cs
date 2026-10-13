@@ -23,9 +23,6 @@ public sealed record CotabbyModel
     /// <summary>Context window to allocate at load time (token count).</summary>
     public required int ContextLength { get; init; }
 
-    /// <summary>True if the model expects a fill-in-middle prompt template.</summary>
-    public required bool SupportsFillInMiddle { get; init; }
-
     /// <summary>The file name under the models directory. Built-in models take it from their URL.</summary>
     public string FileName
     {
@@ -37,9 +34,8 @@ public sealed record CotabbyModel
 }
 
 /// <summary>
-/// Built-in model list. Treated as code rather than config because the
-/// number of models is small and the prompting strategy for each is
-/// bound to its tokenizer.
+/// Built-in model list. It is code and not configuration because the list is short and the
+/// prompting strategy depends on the model.
 /// </summary>
 public static class ModelCatalog
 {
@@ -48,15 +44,9 @@ public static class ModelCatalog
 
     public static IReadOnlyList<CotabbyModel> All { get; } =
     [
-        // The same four *base* checkpoints upstream Cotabby ships
-        // (RuntimeModelCatalog.downloadableModels): base models continue text
-        // instead of answering it, which is the entire premise of the
-        // BaseCompletionPromptRenderer pipeline. The instruct-tuned
-        // Qwen2.5-Coder GGUFs this port used previously treated the user's
-        // prose as a chat turn and replied as an assistant — every
-        // "chat-leak" and degeneration guard in the git history was fighting
-        // that mismatch. ApproxSizeBytes are exact Content-Length values
-        // HEAD'd from the mradermacher repos (no auth required).
+        // The base checkpoints upstream Cotabby ships. A base model continues text where an
+        // instruct model answers it, and the prompt pipeline depends on that. ApproxSizeBytes
+        // are the exact Content-Length values of the files.
         new CotabbyModel
         {
             Id = "tabby-2-mini",
@@ -65,7 +55,6 @@ public static class ModelCatalog
             DownloadUrl = HfUrl("mradermacher/Qwen3.5-2B-Base-i1-GGUF", "Qwen3.5-2B-Base.i1-Q4_K_M.gguf"),
             ApproxSizeBytes = 1_274_397_056,
             ContextLength = 4096,
-            SupportsFillInMiddle = true,
         },
         new CotabbyModel
         {
@@ -75,7 +64,6 @@ public static class ModelCatalog
             DownloadUrl = HfUrl("mradermacher/Qwen3.5-0.8B-Base-i1-GGUF", "Qwen3.5-0.8B-Base.i1-Q6_K.gguf"),
             ApproxSizeBytes = 629_744_512,
             ContextLength = 4096,
-            SupportsFillInMiddle = true,
         },
         new CotabbyModel
         {
@@ -85,7 +73,6 @@ public static class ModelCatalog
             DownloadUrl = HfUrl("mradermacher/gemma-4-E2B-i1-GGUF", "gemma-4-E2B.i1-Q6_K.gguf"),
             ApproxSizeBytes = 3_845_328_608,
             ContextLength = 4096,
-            SupportsFillInMiddle = false,
         },
         new CotabbyModel
         {
@@ -95,7 +82,6 @@ public static class ModelCatalog
             DownloadUrl = HfUrl("mradermacher/gemma-4-E4B-i1-GGUF", "gemma-4-E4B.i1-Q4_K_M.gguf"),
             ApproxSizeBytes = 5_335_274_240,
             ContextLength = 4096,
-            SupportsFillInMiddle = false,
         },
     ];
 
@@ -132,7 +118,6 @@ public static class ModelCatalog
             FileName = Path.GetFileName(path),
             ApproxSizeBytes = bytes,
             ContextLength = 4096,
-            SupportsFillInMiddle = false,
         };
     }
 

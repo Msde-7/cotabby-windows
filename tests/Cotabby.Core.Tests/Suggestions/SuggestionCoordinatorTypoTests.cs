@@ -1,5 +1,6 @@
 using Cotabby.Core.Spelling;
 using Cotabby.Core.Suggestions;
+using Cotabby.Core.Tests.Spelling;
 
 namespace Cotabby.Core.Tests.Suggestions;
 
@@ -13,8 +14,7 @@ public sealed class SuggestionCoordinatorTypoTests : CoordinatorHarness
 
     private static TypoCorrectionAdvisor Advisor()
     {
-        var corrector = new SymSpellCorrector();
-        corrector.LoadDictionary(Dictionary);
+        var corrector = TestCorrector.Loaded((SpellingDictionaryLanguage.English, Dictionary));
         return new TypoCorrectionAdvisor(corrector, new SpellingLanguageResolver());
     }
 

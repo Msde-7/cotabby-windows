@@ -1,6 +1,6 @@
 using Cotabby.Core.Context;
 using Cotabby.Core.Focus;
-using Cotabby.Core.Support;
+using Cotabby.Core.Text;
 
 namespace Cotabby.Core.Suggestions;
 
@@ -15,16 +15,15 @@ public static class SuggestionRequestFactory
     /// <summary>The windowed text before the caret, as a request carries it.</summary>
     public static string Prefix(FocusedField field)
     {
-        var caret = Math.Clamp(field.CaretOffset, 0, field.Text.Length);
-        return field.Text[Math.Max(0, caret - MaxPrefixChars)..caret];
+        var preceding = field.PrecedingText;
+        return preceding[Math.Max(0, preceding.Length - MaxPrefixChars)..];
     }
 
     /// <param name="clipboardContext">Clipboard text that already passed the relevance filter, or null.</param>
     public static SuggestionRequest Build(
         FocusedField field, string requestId, SuggestionSettings settings, string? clipboardContext = null)
     {
-        var caret = Math.Clamp(field.CaretOffset, 0, field.Text.Length);
-        var suffixEnd = Math.Min(field.Text.Length, caret + MaxSuffixChars);
+        string trailing = field.TrailingText;
         bool singleLine = field.IsSingleLine || !settings.AllowMultiLine;
         string prefix = Prefix(field);
 
@@ -32,8 +31,7 @@ public static class SuggestionRequestFactory
         {
             RequestId = requestId,
             Prefix = prefix,
-            Suffix = field.Text[caret..suffixEnd],
-            HostApp = field.ProcessName,
+            Suffix = trailing[..Math.Min(trailing.Length, MaxSuffixChars)],
             SingleLine = singleLine,
             MaxTokens = settings.MaxTokensFor(singleLine),
             UserName = settings.UserName,

@@ -1,5 +1,5 @@
+using Cotabby.Core.Text;
 using System.Text;
-using Cotabby.Core.Support;
 
 namespace Cotabby.Core.Context;
 
@@ -23,12 +23,6 @@ public static class SurfaceContextComposer
     private const int MaxPlaceholderLength = 60;
 
     private static readonly string[] TitleSeparators = [" - ", " — ", " – "];
-
-    private static readonly HashSet<string> GenericPlaceholders = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "message", "imessage", "reply", "message body", "write a message", "type a message",
-        "text", "text field", "note", "compose", "ask anything", "message chatgpt",
-    };
 
     public static SurfaceContext? Compose(
         AppSurfaceClass surfaceClass, string applicationName, string? windowTitle, string? fieldPlaceholder)
@@ -55,23 +49,6 @@ public static class SurfaceContextComposer
         var fields = new List<string> { $"Format: {format}", $"App: {surface.ApplicationName}" };
         if (surface.WindowTitle is { } title) fields.Add($"Title: {title}");
         if (surface.FieldPlaceholder is { } placeholder) fields.Add($"Field: {placeholder}");
-        return [string.Join("; ", fields) + "."];
-    }
-
-    /// <summary>Variant that drops software branding and generic composer labels.</summary>
-    public static IReadOnlyList<string> BaseCompletionPrefaceLines(SurfaceContext surface)
-    {
-        if (Format(surface.SurfaceClass) is not { } format) return [];
-        var fields = new List<string> { $"Format: {format}" };
-        if (surface.WindowTitle is { } title
-            && !string.Equals(title, surface.ApplicationName, StringComparison.OrdinalIgnoreCase))
-        {
-            fields.Add($"Title: {title}");
-        }
-        if (surface.FieldPlaceholder is { } placeholder && !GenericPlaceholders.Contains(placeholder))
-        {
-            fields.Add($"Field: {placeholder}");
-        }
         return [string.Join("; ", fields) + "."];
     }
 

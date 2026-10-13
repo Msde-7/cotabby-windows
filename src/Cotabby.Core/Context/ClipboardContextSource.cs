@@ -1,6 +1,6 @@
 using Cotabby.Core.Focus;
 using Cotabby.Core.Suggestions;
-using Cotabby.Core.Support;
+using Cotabby.Core.Text;
 
 namespace Cotabby.Core.Context;
 

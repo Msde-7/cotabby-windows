@@ -1,3 +1,5 @@
+using Cotabby.Core.Text;
+
 namespace Cotabby.Core.Support;
 
 /// <summary>
@@ -9,6 +11,6 @@ namespace Cotabby.Core.Support;
 public static class MidWordContinuationPolicy
 {
     public static bool ShouldForceContinuation(string precedingText, string trailingText) =>
-        GraphemeString.LastOf(precedingText) is { } before && CaretTokenPosition.IsWordCharacter(before)
-        && GraphemeString.FirstOf(trailingText) is { } after && CaretTokenPosition.IsWordCharacter(after);
+        GraphemeString.LastOf(precedingText) is { IsLetterOrNumber: true }
+        && GraphemeString.FirstOf(trailingText) is { IsLetterOrNumber: true };
 }

@@ -118,21 +118,6 @@ public class PromptSectionBudgetTests
         Assert.Equal(["\n  "], Contents(PromptSectionBudget.Allocate([CaretSection("Hello \n  ")], totalChars: 3)));
     }
 
-    [Theory]
-    [InlineData("abcdefgh", 3, SectionTruncation.PreserveEnd, "fgh")]
-    [InlineData("abcdefgh", 3, SectionTruncation.PreserveStart, "abc")]
-    [InlineData("abc", 10, SectionTruncation.PreserveEnd, "abc")]
-    [InlineData("abc", 3, SectionTruncation.PreserveStart, "abc")]
-    [InlineData("abc", 0, SectionTruncation.PreserveStart, "")]
-    [InlineData("abc", -1, SectionTruncation.PreserveEnd, "")]
-    // A surrogate pair is one character and is never split.
-    [InlineData("a🎉b", 2, SectionTruncation.PreserveEnd, "🎉b")]
-    public void TruncateKeepsRequestedEndOrReturnsInputUnchanged(
-        string text, int chars, SectionTruncation mode, string expected)
-    {
-        Assert.Equal(expected, PromptSectionBudget.Truncate(text, chars, mode));
-    }
-
     [Fact]
     public void TokenAllocateKeepsAllWhenBudgetAmple()
     {

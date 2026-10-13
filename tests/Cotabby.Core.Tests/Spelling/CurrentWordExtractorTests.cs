@@ -7,7 +7,7 @@ public class CurrentWordExtractorTests
     [Fact]
     public void ExtractsTrailingWordAtCaret()
     {
-        Assert.Equal(new CurrentWordExtractor.Result("nmae", 4), CurrentWordExtractor.Extract("hi my nmae"));
+        Assert.Equal("nmae", CurrentWordExtractor.Extract("hi my nmae"));
     }
 
     [Fact]
@@ -55,28 +55,17 @@ public class CurrentWordExtractorTests
     [Fact]
     public void AcceptsMixedCaseNaturalWord()
     {
-        Assert.Equal("teh", CurrentWordExtractor.Extract("fix teh")?.Word);
+        Assert.Equal("teh", CurrentWordExtractor.Extract("fix teh"));
         // Leading-capital natural words are fine. Only all-caps tokens are rejected.
-        Assert.Equal("Teh", CurrentWordExtractor.Extract("say Teh")?.Word);
-    }
-
-    [Fact]
-    public void CharacterCountIsGraphemeCount()
-    {
-        // A decomposed é is two UTF-16 units but one grapheme, and one Backspace removes it.
-        var word = "cafe\u0301";
-        var result = CurrentWordExtractor.Extract("a " + word);
-        Assert.Equal(word, result?.Word);
-        Assert.Equal(4, result?.CharacterCount);
-        Assert.Equal(5, word.Length);
+        Assert.Equal("Teh", CurrentWordExtractor.Extract("say Teh"));
     }
 
     [Fact]
     public void SurrogatePairsAndEmojiSequencesCountOnce()
     {
         // 𝒶 is one scalar in two UTF-16 units. The family emoji is five scalars in eight units.
-        Assert.Equal(new CurrentWordExtractor.Result("h𝒶t", 3), CurrentWordExtractor.Extract("a h𝒶t"));
-        Assert.Equal(2, CurrentWordExtractor.Extract("ok 👨\u200D👩\u200D👧x")?.CharacterCount);
+        Assert.Equal("h𝒶t", CurrentWordExtractor.Extract("a h𝒶t"));
+        Assert.Equal("👨\u200D👩\u200D👧x", CurrentWordExtractor.Extract("ok 👨\u200D👩\u200D👧x"));
         // A lone emoji is a single character, which is too short to act on.
         Assert.Null(CurrentWordExtractor.Extract("ok 👨\u200D👩\u200D👧"));
     }
@@ -86,7 +75,7 @@ public class CurrentWordExtractorTests
     {
         // The combining accent is not a letter on its own, but its grapheme is.
         Assert.Null(CurrentWordExtractor.Extract("the E\u0301COLE"));
-        Assert.Equal("E\u0301cole", CurrentWordExtractor.Extract("the E\u0301cole")?.Word);
+        Assert.Equal("E\u0301cole", CurrentWordExtractor.Extract("the E\u0301cole"));
         // Digits outside ASCII are numbers too.
         Assert.Null(CurrentWordExtractor.Extract("room ab٣"));
     }
@@ -94,55 +83,19 @@ public class CurrentWordExtractorTests
     [Fact]
     public void WordBoundaryIsAnyWhitespace()
     {
-        Assert.Equal("teh", CurrentWordExtractor.Extract("line one\nteh")?.Word);
-        Assert.Equal("teh", CurrentWordExtractor.Extract("col\tteh")?.Word);
-        Assert.Equal("teh", CurrentWordExtractor.Extract("non\u00A0teh")?.Word);
-        Assert.Equal("teh", CurrentWordExtractor.Extract("teh")?.Word);
+        Assert.Equal("teh", CurrentWordExtractor.Extract("line one\nteh"));
+        Assert.Equal("teh", CurrentWordExtractor.Extract("col\tteh"));
+        Assert.Equal("teh", CurrentWordExtractor.Extract("non\u00A0teh"));
+        Assert.Equal("teh", CurrentWordExtractor.Extract("teh"));
     }
 
     [Fact]
     public void ApostrophesHyphensAndTrailingProsePunctuationStayInTheToken()
     {
-        Assert.Equal("didn't", CurrentWordExtractor.Extract("I didn't")?.Word);
-        Assert.Equal("well-knwon", CurrentWordExtractor.Extract("a well-knwon")?.Word);
+        Assert.Equal("didn't", CurrentWordExtractor.Extract("I didn't"));
+        Assert.Equal("well-knwon", CurrentWordExtractor.Extract("a well-knwon"));
         // Trailing prose punctuation is not stripped here. The spell checker rejects it downstream.
-        Assert.Equal("nmae,", CurrentWordExtractor.Extract("hi nmae,")?.Word);
-    }
-
-    [Fact]
-    public void TrailingWord_NoSpaceMatchesStrictExtraction()
-    {
-        var extracted = CurrentWordExtractor.ExtractTrailingWord("hi my nmae");
-        Assert.Equal("nmae", extracted?.Result.Word);
-        Assert.Equal(0, extracted?.TrailingSpaceCount);
-    }
-
-    [Fact]
-    public void TrailingWord_ToleratesOneTrailingSpace()
-    {
-        var extracted = CurrentWordExtractor.ExtractTrailingWord("hi my nmae ");
-        Assert.Equal("nmae", extracted?.Result.Word);
-        Assert.Equal(1, extracted?.TrailingSpaceCount);
-    }
-
-    [Fact]
-    public void TrailingWord_RejectsTwoTrailingSpaces()
-    {
-        Assert.Null(CurrentWordExtractor.ExtractTrailingWord("hi my nmae  "));
-    }
-
-    [Fact]
-    public void TrailingWord_RejectsTrailingTabOrNewline()
-    {
-        Assert.Null(CurrentWordExtractor.ExtractTrailingWord("hi my nmae\t"));
-        Assert.Null(CurrentWordExtractor.ExtractTrailingWord("hi my nmae\n"));
-        Assert.Null(CurrentWordExtractor.ExtractTrailingWord("hi my nmae\t "));
-    }
-
-    [Fact]
-    public void TrailingWord_RejectsImplausibleWordEvenWithSpace()
-    {
-        Assert.Null(CurrentWordExtractor.ExtractTrailingWord("open https://example.com "));
+        Assert.Equal("nmae,", CurrentWordExtractor.Extract("hi nmae,"));
     }
 
     [Fact]
