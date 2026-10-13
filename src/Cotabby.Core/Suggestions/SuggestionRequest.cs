@@ -1,3 +1,5 @@
+using Cotabby.Core.Support;
+
 namespace Cotabby.Core.Suggestions;
 
 /// <summary>
@@ -34,6 +36,18 @@ public sealed record SuggestionRequest
 
     /// <summary>Language conditioning sentence for the prompt preface, or empty.</summary>
     public string LanguageInstruction { get; init; } = "";
+
+    /// <summary>Notes about the writer that the model keeps in mind, or empty.</summary>
+    public string ExtendedContext { get; init; } = "";
+
+    /// <summary>Recently copied text that relates to what is being written, or empty.</summary>
+    public string ClipboardContext { get; init; } = "";
+
+    /// <summary>Lines describing the app and field being written in.</summary>
+    public IReadOnlyList<string> SurfaceLines { get; init; } = [];
+
+    /// <summary>How many words the suggestion should run to.</summary>
+    public SuggestionWordRange? WordRange { get; init; }
 }
 
 /// <summary>One incremental suggestion chunk streamed back from the engine.</summary>

@@ -6,6 +6,7 @@ using Cotabby.Core.Emoji;
 using Cotabby.Core.Input;
 using Cotabby.Core.Spelling;
 using Cotabby.Core.Suggestions;
+using Cotabby.Core.Support;
 
 namespace Cotabby.App.Settings;
 
@@ -107,7 +108,7 @@ public sealed class AppSettings
         PauseOnBatterySaver = PauseOnBatterySaver,
         BlockedApps = new HashSet<string>(BlockedApps, StringComparer.OrdinalIgnoreCase),
         SuggestInIntegratedTerminals = SuggestInIntegratedTerminals,
-        MaxTokens = SuggestionSettings.TokenBudget(WordRange.High, Languages),
+        WordRange = new SuggestionWordRange(WordRange.Low, WordRange.High),
         AllowMultiLine = AllowMultiLine,
         AcceptWord = AcceptWord,
         AcceptAll = DoubleTapAcceptsAll ? KeyBinding.Unbound : AcceptAll,
@@ -120,6 +121,8 @@ public sealed class AppSettings
         Typos = new TypoGateSettings(SuppressCompletionsOnTypo, OfferTypoCorrections, AutoFixTypos),
         SpellingDictionaries = SpellingDictionaryCatalog.Normalize(SpellingDictionaries),
         UserName = UserName,
+        ExtendedContext = ExtendedContext,
+        ClipboardContext = ClipboardContext,
         Languages = LanguageCatalog.Normalize(Languages),
     };
 }

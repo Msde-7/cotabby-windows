@@ -66,4 +66,25 @@ public static class LanguageCatalog
         }
         return result;
     }
+
+    /// <summary>
+    /// The soft language hint for the prompt, or null when no language is declared. It never
+    /// forces a language. The text before the caret wins, and the declared languages only
+    /// apply when that text is too short to tell.
+    /// </summary>
+    public static string? PromptInstruction(IEnumerable<string> languages)
+    {
+        var normalized = Normalize(languages);
+        if (normalized.Count == 0) return null;
+        return $"The user usually writes in {Joined(normalized, "and")}. "
+            + "Match the language of the text before the caret. "
+            + $"If that text is too short or ambiguous to tell, write in {Joined(normalized, "or")}.";
+    }
+
+    private static string Joined(List<string> items, string conjunction) => items.Count switch
+    {
+        1 => items[0],
+        2 => $"{items[0]} {conjunction} {items[1]}",
+        _ => $"{string.Join(", ", items.Take(items.Count - 1))}, {conjunction} {items[^1]}",
+    };
 }

@@ -25,7 +25,9 @@ public static class SuggestionRequestFactory
             SingleLine = singleLine,
             MaxTokens = settings.MaxTokensFor(singleLine),
             UserName = settings.UserName,
-            LanguageInstruction = BaseCompletionPromptRenderer.LanguageInstruction(settings.Languages) ?? "",
+            LanguageInstruction = LanguageCatalog.PromptInstruction(settings.Languages) ?? "",
+            ExtendedContext = settings.ExtendedContext.Trim(),
+            WordRange = settings.WordRange,
         };
     }
 }

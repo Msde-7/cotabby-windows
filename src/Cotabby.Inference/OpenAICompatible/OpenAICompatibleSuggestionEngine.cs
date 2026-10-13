@@ -56,7 +56,7 @@ public sealed class OpenAICompatibleSuggestionEngine : ISuggestionEngine
         var configuration = endpoint.Configuration
             ?? throw new OpenAICompatibleEndpointException(endpoint.Error!.Value);
 
-        var prompt = RenderPrompt(request);
+        var prompt = CompletionPipeline.Prompt(request, tokenBudget: null);
         if (prompt.Length == 0)
         {
             yield return new SuggestionChunk(string.Empty, IsFinal: true);
@@ -86,13 +86,14 @@ public sealed class OpenAICompatibleSuggestionEngine : ISuggestionEngine
 
         if (ct.IsCancellationRequested) yield break;
 
-        var normalized = Normalize(raw, prompt, request);
+        var normalized = CompletionPipeline.Normalize(raw, prompt, request);
         _logger.LogInformation(
-            "Req {ReqId}: endpoint model {Model} gave \"{Text}\" (raw {RawLen} chars, {Reason}) in {Ms} ms.",
-            request.RequestId, configuration.ModelName, LogText.Escape(normalized.Text), raw.Length,
-            normalized.Reason, (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            "Req {ReqId}: endpoint model {Model} answered in {Ms} ms ({Reason}).",
+            request.RequestId, configuration.ModelName,
+            (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds, normalized.Suppression?.ToString() ?? "shown");
+        _logger.LogDebug("Req {ReqId}: raw=\"{Raw}\".", request.RequestId, LogText.Escape(raw));
 
-        if (!normalized.IsSuppressed)
+        if (normalized.Suppression is null)
         {
             yield return new SuggestionChunk(normalized.Text, IsFinal: false);
         }
@@ -126,16 +127,6 @@ public sealed class OpenAICompatibleSuggestionEngine : ISuggestionEngine
             }
         });
     }
-
-    private static string RenderPrompt(SuggestionRequest request) =>
-        BaseCompletionPromptRenderer.Prompt(
-            BaseCompletionPromptRenderer.WindowPrefix(request.Prefix),
-            userName: request.UserName,
-            languageInstruction: request.LanguageInstruction);
-
-    private static SuggestionTextNormalizer.NormalizeResult Normalize(
-        string raw, string prompt, SuggestionRequest request) =>
-        SuggestionTextNormalizer.Normalize(raw, prompt, request.Prefix, request.Suffix, request.SingleLine);
 
     /// <summary>The resolved settings snapshot. Exactly one of the two members is set.</summary>
     private sealed record Endpoint(

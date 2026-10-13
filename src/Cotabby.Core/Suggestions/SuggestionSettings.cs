@@ -1,5 +1,6 @@
 using Cotabby.Core.Input;
 using Cotabby.Core.Spelling;
+using Cotabby.Core.Support;
 
 namespace Cotabby.Core.Suggestions;
 
@@ -29,8 +30,7 @@ public sealed record SuggestionSettings
 
     public bool SuggestInIntegratedTerminals { get; init; }
 
-    /// <summary>Token budget for one single-line suggestion.</summary>
-    public int MaxTokens { get; init; } = 26;
+    public SuggestionWordRange WordRange { get; init; } = SuggestionWordCountPreset.TwelveToTwenty.Range();
 
     public bool AllowMultiLine { get; init; }
 
@@ -55,19 +55,25 @@ public sealed record SuggestionSettings
     public string UserName { get; init; } = "";
     public IReadOnlyList<string> Languages { get; init; } = LanguageCatalog.DefaultLanguages;
 
-    /// <summary>Token budget for a request, doubled and capped when multi-line is on.</summary>
-    public int MaxTokensFor(bool singleLine) =>
-        singleLine || !AllowMultiLine ? MaxTokens : Math.Min(MaxTokens * 2, MaxMultiLineTokens);
+    /// <summary>Notes about the writer that go into every prompt.</summary>
+    public string ExtendedContext { get; init; } = "";
+
+    /// <summary>Lets recently copied text that relates to the writing into the prompt.</summary>
+    public bool ClipboardContext { get; init; }
+
+    /// <summary>
+    /// Token budget for a request, sized for the upper word bound in the user's languages. It is
+    /// doubled and capped when multi-line is on.
+    /// </summary>
+    public int MaxTokensFor(bool singleLine)
+    {
+        int single = Math.Max(MinTokens, SuggestionWordRange.PredictionTokenBudget(
+            WordRange.HighWords, LanguageCatalog.EffectiveTokensPerWord(Languages)));
+        return singleLine || !AllowMultiLine ? single : Math.Min(single * 2, MaxMultiLineTokens);
+    }
 
     public const int MaxMultiLineTokens = 120;
 
     /// <summary>Smallest budget a request may get, sized for the 2 to 4 word preset.</summary>
     public const int MinTokens = 5;
-
-    /// <summary>
-    /// The single-line token budget for a word range in the user's languages, rounded
-    /// up so the cap lands at or just past the upper word bound.
-    /// </summary>
-    public static int TokenBudget(int highWords, IEnumerable<string> languages) =>
-        Math.Max(MinTokens, (int)Math.Ceiling(highWords * LanguageCatalog.EffectiveTokensPerWord(languages)));
 }

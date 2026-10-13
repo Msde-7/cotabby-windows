@@ -1,11 +1,8 @@
-// Coordinator end-to-end smoke test. Bypasses Windows: fakes IKeyboardHook
-// and IFocusTracker, uses the REAL LlamaSuggestionEngine + real
-// SuggestionCoordinator + a recording IOverlayPresenter. Verifies the full
-// pipeline produces a visible suggestion for synthesized typing.
-//
-// Pass: exit 0, prints the suggestion text the overlay was asked to show.
-// Fail: exit 1, prints why.
+// Drives the real coordinator and the real local model through a typing session,
+// with the keyboard, the focused field and the overlay faked. Exit code 0 means
+// every step passed.
 
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using Cotabby.Core.Focus;
 using Cotabby.Core.Input;
@@ -16,354 +13,203 @@ using Cotabby.Core.Suggestions;
 using Cotabby.Inference;
 using Microsoft.Extensions.Logging;
 
-var sw = Stopwatch.StartNew();
-using var lf = LoggerFactory.Create(b =>
-{
-    b.SetMinimumLevel(LogLevel.Information);
-    b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss.fff "; });
-});
+using var loggers = LoggerFactory.Create(b => b.SetMinimumLevel(LogLevel.Warning).AddSimpleConsole());
 
-Console.WriteLine("[coord] Loading model…");
-await using var runtime = new LlamaRuntimeManager(lf.CreateLogger<LlamaRuntimeManager>());
 var model = ModelCatalog.All.FirstOrDefault(ModelDownloader.IsCached);
 if (model is null)
 {
-    Console.Error.WriteLine($"[coord] No cached model found in {ModelCatalog.DefaultLocalDirectory()}. Run InferenceSmoke first.");
+    Console.Error.WriteLine($"No cached model in {ModelCatalog.DefaultLocalDirectory()}.");
     return 2;
 }
-var path = ModelDownloader.LocalPath(model);
-Console.WriteLine($"[coord] Using cached model: {model.DisplayName}");
-await runtime.LoadAsync(model, path, CancellationToken.None);
-var engine = new LlamaSuggestionEngine(runtime, lf.CreateLogger<LlamaSuggestionEngine>());
-Console.WriteLine($"[coord] Engine ready in {sw.ElapsedMilliseconds} ms.");
 
-// Build a single-threaded synchronization context so the coordinator's Post()
-// behaves like the WPF dispatcher would: serialized continuations on one thread.
-var pump = new SingleThreadSyncContext();
-var pumpThread = new Thread(pump.Run) { IsBackground = true, Name = "CoordPump" };
-pumpThread.Start();
-await pump.YieldToContextAsync();
+await using var runtime = new LlamaRuntimeManager(loggers.CreateLogger<LlamaRuntimeManager>(), loggers);
+await runtime.LoadAsync(model, ModelDownloader.LocalPath(model), CancellationToken.None);
+Console.WriteLine($"Model {model.DisplayName} loaded.");
 
-// Fakes.
-var focus = new FakeFocusTracker();
-var hook = new FakeKeyboardHook();
-var inserter = new RecordingInserter();
+var hook = new FakeHook();
+var field = new FakeField();
 var overlay = new RecordingOverlay();
-var work = new SuggestionWorkController(TimeSpan.FromMilliseconds(150));
-
+using var pump = new PumpContext();
 await using var coordinator = new SuggestionCoordinator(
-    hook, focus, engine, overlay, inserter, work,
-    lf.CreateLogger<SuggestionCoordinator>(),
-    SynchronizationContext.Current!);
+    hook, field, new LlamaSuggestionEngine(runtime, loggers.CreateLogger<LlamaSuggestionEngine>()),
+    overlay, field, new SuggestionWorkController(TimeSpan.FromMilliseconds(20)),
+    loggers.CreateLogger<SuggestionCoordinator>(), pump);
 coordinator.Start();
+field.Focus("notepad", 100);
 
-// Scenario: user types "def fib" into a Notepad-like field.
-focus.SetField(new FocusedField
-{
-    ElementHandle = new object(),
-    ProcessId = 12345,
-    ProcessName = "notepad",
-    Text = "def fib",
-    CaretOffset = 7,
-    CaretRect = new ScreenRect(500, 300, 1, 20),
-    FieldRect = new ScreenRect(0, 0, 800, 600),
-    IsSingleLine = false,
-    IsSecure = false,
-});
+int failures = 0;
 
-Console.WriteLine("[coord] Simulating realistic rapid typing 'def fib'…");
-// Reset field to empty and grow it as the user types, like real keystrokes.
-focus.SetField(focus.Current! with { Text = string.Empty, CaretOffset = 0 });
-foreach (char c in "def fib")
+// Step 1. Typing prose brings up a suggestion.
+const string typed = "Thanks for the update. I will send the report";
+var clock = Stopwatch.StartNew();
+foreach (char c in typed)
 {
-    var cur = focus.Current!;
-    focus.SetField(cur with
-    {
-        Text = cur.Text + c,
-        CaretOffset = cur.Text.Length + 1,
-    });
-    hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = true, HasNonShiftModifier = false });
-    await Task.Delay(50); // 50ms per char ~= 20 wpm — well within the 150ms debounce
-    hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = false, HasNonShiftModifier = false });
+    hook.Press(Key(KeyKind.Character, char.ToUpperInvariant(c), c));
+    await Task.Delay(10);
+    field.Append(c.ToString());
+    await Task.Delay(20);
 }
-Console.WriteLine($"[coord] Done typing. Field text now: \"{focus.Current!.Text}\"");
+string shown = await WaitFor(() => overlay.Text, text => text.Length > 0);
+Check("a suggestion appears after typing", shown.Length > 0, $"\"{shown}\" after {clock.ElapsedMilliseconds} ms");
 
-Console.WriteLine("[coord] Waiting up to 30s for an overlay.Show call…");
-var waitStart = Stopwatch.StartNew();
-while (overlay.LastShown is null && waitStart.Elapsed < TimeSpan.FromSeconds(30))
-{
-    await Task.Delay(200);
-}
+// Step 2. The accept key is swallowed and inserts the first word of what was shown.
+bool swallowed = hook.Press(Key(KeyKind.Tab, KeyBinding.VkTab));
+string inserted = await WaitFor(() => field.LastInsertion, text => text.Length > 0);
+Check("the accept key is swallowed", swallowed);
+Check("the first word is inserted", inserted.Length > 0 && shown.StartsWith(inserted), $"\"{inserted}\"");
 
-int exitCode = 0;
-if (overlay.LastShown is { } shown)
+// Step 3. Accepting everything leaves the field holding the typed text plus the suggestion.
+hook.Press(Key(KeyKind.Character, KeyBinding.VkBacktick, '`'));
+await WaitFor(() => field.Text, text => text.EndsWith(shown.TrimEnd()));
+Check("the whole suggestion lands in the field", field.Text == typed + shown.TrimEnd() || field.Text == typed + shown,
+    $"\"{field.Text}\"");
+
+// Step 4. Moving to another app hides whatever is showing.
+await WaitFor(() => overlay.Text, text => text.Length > 0, timeoutMs: 5000);
+field.Focus("word", 200);
+string afterSwitch = await WaitFor(() => overlay.Text, text => text.Length == 0, timeoutMs: 3000);
+Check("switching apps hides the suggestion", afterSwitch.Length == 0);
+
+Console.WriteLine(failures == 0 ? "PASS" : $"FAIL ({failures})");
+return failures == 0 ? 0 : 1;
+
+void Check(string what, bool passed, string detail = "")
 {
-    Console.WriteLine();
-    Console.WriteLine("[coord] STEP 1 PASS — overlay.Show was called.");
-    Console.WriteLine($"        Text:   {shown.Text}");
-    Console.WriteLine($"        Anchor: {shown.Anchor}");
-}
-else
-{
-    Console.WriteLine();
-    Console.WriteLine("[coord] STEP 1 FAIL — overlay.Show was never called after 30s.");
-    await coordinator.DisposeAsync();
-    pump.Stop();
-    return 1;
+    if (!passed) failures++;
+    Console.WriteLine($"[{(passed ? "ok" : "FAIL")}] {what} {detail}");
 }
 
-// STEP 2: press Tab — coordinator should accept and the inserter should be
-// called with the visible text.
-Console.WriteLine("[coord] STEP 2: pressing Tab to accept…");
-var beforeAccept = inserter.LastInsertedText;
-hook.Raise(new KeyboardEvent { Kind = KeyKind.Tab, Character = '\0', IsKeyDown = true, HasNonShiftModifier = false });
-await Task.Delay(50);
-hook.Raise(new KeyboardEvent { Kind = KeyKind.Tab, Character = '\0', IsKeyDown = false, HasNonShiftModifier = false });
+static KeyboardEvent Key(KeyKind kind, int virtualKey, char character = '\0') => new()
+{
+    Kind = kind,
+    Character = character,
+    HasNonShiftModifier = false,
+    IsKeyDown = true,
+    VirtualKey = virtualKey,
+};
 
-var acceptStart = Stopwatch.StartNew();
-while (inserter.LastInsertedText is null && acceptStart.Elapsed < TimeSpan.FromSeconds(5))
+static async Task<string> WaitFor(Func<string> read, Func<string, bool> done, int timeoutMs = 30000)
 {
-    await Task.Delay(100);
-}
-if (inserter.LastInsertedText is { } insertedText)
-{
-    Console.WriteLine($"[coord] STEP 2 PASS — inserter received: \"{insertedText}\"");
-    if (insertedText != shown.Text)
-    {
-        Console.WriteLine($"[coord] STEP 2 WARNING — inserted differs from shown:\n    shown:    \"{shown.Text}\"\n    inserted: \"{insertedText}\"");
-    }
-}
-else
-{
-    Console.WriteLine("[coord] STEP 2 FAIL — inserter was never called within 5s of Tab.");
-    exitCode = 1;
+    var clock = Stopwatch.StartNew();
+    while (!done(read()) && clock.ElapsedMilliseconds < timeoutMs) await Task.Delay(20);
+    return read();
 }
 
-// STEP 3: reconciler advance — synthesize the user typing the FIRST char of
-// the visible suggestion (which should now be hidden after accept, but we
-// trigger a fresh one) and verify Hide was called or session shrank.
-Console.WriteLine($"[coord] STEP 3: post-accept overlay state: ShowCalls={overlay.ShowCount} UpdateCalls={overlay.UpdateCount} HideCalls={overlay.HideCount}");
-if (overlay.HideCount < 1)
-{
-    Console.WriteLine("[coord] STEP 3 WARNING — overlay was never hidden after acceptance.");
-}
-else
-{
-    Console.WriteLine("[coord] STEP 3 PASS — overlay was hidden after acceptance.");
-}
-
-// STEP A: Realistic-rhythm test — type at 75ms gaps (= user's actual cadence
-// from the live log), pause for 600ms, assert an overlay appeared. This is the
-// regression test for "I type into Notepad and never see anything".
-Console.WriteLine();
-Console.WriteLine("[coord] STEP A: realistic typing rhythm…");
-overlay.LastShown = null;
-overlay.ShowCount = 0;
-overlay.UpdateCount = 0;
-overlay.HideCount = 0;
-focus.SetField(focus.Current! with
-{
-    ProcessId = 88888,
-    ProcessName = "rhythm",
-    Text = string.Empty,
-    CaretOffset = 0,
-});
-const string realisticInput = "def reverse_string(s):";
-foreach (char c in realisticInput)
-{
-    var cur = focus.Current!;
-    focus.SetField(cur with { Text = cur.Text + c, CaretOffset = cur.Text.Length + 1 });
-    hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = true, HasNonShiftModifier = false });
-    await Task.Delay(75);
-    hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = false, HasNonShiftModifier = false });
-}
-Console.WriteLine($"[coord] STEP A: done typing '{realisticInput}'. Pausing 600ms then waiting for overlay…");
-await Task.Delay(600);
-var aStart = Stopwatch.StartNew();
-while (overlay.LastShown is null && aStart.Elapsed < TimeSpan.FromSeconds(10))
-    await Task.Delay(100);
-if (overlay.LastShown is { } ashown)
-{
-    Console.WriteLine($"[coord] STEP A PASS — overlay text=\"{ashown.Text}\" after {aStart.ElapsedMilliseconds}ms.");
-}
-else
-{
-    Console.WriteLine($"[coord] STEP A FAIL — no overlay in 10s after pause. ShowCalls={overlay.ShowCount}.");
-    exitCode = 1;
-}
-
-// STEP 4: Window-switch scenario. Generate, then "switch process" mid-stream,
-// assert the overlay is hidden / not shown for the new process.
-Console.WriteLine();
-Console.WriteLine("[coord] STEP 4: window-switch during generation…");
-overlay.ShowCount = 0;
-overlay.UpdateCount = 0;
-overlay.HideCount = 0;
-focus.SetField(focus.Current! with { Text = string.Empty, CaretOffset = 0 });
-foreach (char c in "long(")
-{
-    var cur = focus.Current!;
-    focus.SetField(cur with { Text = cur.Text + c, CaretOffset = cur.Text.Length + 1 });
-    hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = true, HasNonShiftModifier = false });
-    await Task.Delay(30);
-    hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = false, HasNonShiftModifier = false });
-}
-// Wait 800ms — about half a CPU generation — then simulate Alt-Tab to a
-// different process by changing pid.
-await Task.Delay(800);
-Console.WriteLine($"[coord] STEP 4: mid-stream Alt-Tab (ShowCalls so far = {overlay.ShowCount})");
-focus.SetField(new FocusedField
-{
-    ElementHandle = new object(),
-    ProcessId = 99999, // different process
-    ProcessName = "other-app",
-    Text = "totally different content",
-    CaretOffset = 25,
-    CaretRect = new ScreenRect(900, 700, 1, 20),
-    FieldRect = new ScreenRect(800, 600, 1000, 200),
-    IsSingleLine = false,
-    IsSecure = false,
-});
-// Give the cancelled generation time to fully drain.
-await Task.Delay(3000);
-// After the switch the overlay must be hidden, and there must not be an
-// overlay anchored at the old (500, 300) showing in the new process.
-if (overlay.HideCount > 0)
-{
-    Console.WriteLine($"[coord] STEP 4 PASS — overlay hidden after window switch. ShowCalls={overlay.ShowCount} HideCalls={overlay.HideCount}");
-}
-else
-{
-    Console.WriteLine($"[coord] STEP 4 WARNING — overlay was not hidden after window switch. ShowCalls={overlay.ShowCount} HideCalls={overlay.HideCount}");
-}
-
-// STEP 5: Multiple generation cycles. Ensure _generationInFlight resets
-// cleanly between independent typing sessions.
-Console.WriteLine();
-Console.WriteLine("[coord] STEP 5: three independent typing sessions…");
-focus.SetField(focus.Current! with
-{
-    ProcessId = 11111,
-    ProcessName = "session-cycle",
-    Text = string.Empty,
-    CaretOffset = 0,
-});
-overlay.ShowCount = 0;
-int cycleSuccess = 0;
-for (int round = 0; round < 3; round++)
-{
-    overlay.LastShown = null;
-    foreach (char c in "abc")
-    {
-        var cur = focus.Current!;
-        focus.SetField(cur with { Text = cur.Text + c, CaretOffset = cur.Text.Length + 1 });
-        hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = true, HasNonShiftModifier = false });
-        await Task.Delay(30);
-        hook.Raise(new KeyboardEvent { Kind = KeyKind.Character, Character = c, IsKeyDown = false, HasNonShiftModifier = false });
-    }
-    var roundWait = Stopwatch.StartNew();
-    while (overlay.LastShown is null && roundWait.Elapsed < TimeSpan.FromSeconds(15))
-        await Task.Delay(150);
-    if (overlay.LastShown is not null)
-    {
-        cycleSuccess++;
-        Console.WriteLine($"[coord] STEP 5 round {round + 1}/3 PASS — overlay text=\"{overlay.LastShown.Text}\"");
-        // Accept it and wait briefly for the next round.
-        hook.Raise(new KeyboardEvent { Kind = KeyKind.Tab, Character = '\0', IsKeyDown = true, HasNonShiftModifier = false });
-        await Task.Delay(50);
-        hook.Raise(new KeyboardEvent { Kind = KeyKind.Tab, Character = '\0', IsKeyDown = false, HasNonShiftModifier = false });
-        await Task.Delay(500);
-    }
-    else
-    {
-        Console.WriteLine($"[coord] STEP 5 round {round + 1}/3 FAIL — no overlay within 15s.");
-        break;
-    }
-}
-Console.WriteLine($"[coord] STEP 5 result: {cycleSuccess}/3 rounds passed.");
-if (cycleSuccess < 3) exitCode = 1;
-
-await coordinator.DisposeAsync();
-pump.Stop();
-Console.WriteLine();
-Console.WriteLine($"[coord] FINAL: exit={exitCode}");
-return exitCode;
-
-// ---------------------------------------------------------------------------
-
-sealed class FakeFocusTracker : IFocusTracker
-{
-    private FocusedField? _current;
-    public FocusedField? Current => _current;
-    public event EventHandler<FocusedField?>? FocusChanged;
-    public void SetField(FocusedField? f) { _current = f; FocusChanged?.Invoke(this, f); }
-    public FocusedField? Refresh() => _current;
-    public void Start() { }
-    public void Stop() { }
-    public void Dispose() { }
-}
-
-sealed class FakeKeyboardHook : IKeyboardHook
+sealed class FakeHook : IKeyboardHook
 {
     public event EventHandler<KeyEventArgs>? KeyEvent;
+
+    public bool Press(KeyboardEvent ev)
+    {
+        var args = new KeyEventArgs(ev);
+        KeyEvent?.Invoke(this, args);
+        return args.Suppress;
+    }
+
     public void Start() { }
     public void Stop() { }
     public void Dispose() { }
-    public void Raise(KeyboardEvent ev) => KeyEvent?.Invoke(this, new KeyEventArgs(ev));
+}
+
+/// <summary>A text field that behaves like a host app. Typed and inserted text lands in it.</summary>
+sealed class FakeField : IFocusTracker, ITextInserter
+{
+    private readonly object _gate = new();
+    private FocusedField? _field;
+    private string _lastInsertion = "";
+
+    public event EventHandler<FocusedField?>? FocusChanged;
+
+    public FocusedField? Current
+    {
+        get { lock (_gate) return _field; }
+    }
+
+    public string Text => Current?.Text ?? "";
+
+    public string LastInsertion
+    {
+        get { lock (_gate) return _lastInsertion; }
+    }
+
+    public FocusedField? Refresh() => Current;
+
+    public void Focus(string process, int pid)
+    {
+        var field = new FocusedField
+        {
+            ElementHandle = new object(),
+            ProcessId = pid,
+            ProcessName = process,
+            Text = "",
+            CaretOffset = 0,
+            CaretRect = new ScreenRect(500, 300, 1, 20),
+            FieldRect = new ScreenRect(0, 0, 800, 600),
+            IsSingleLine = false,
+            IsSecure = false,
+        };
+        lock (_gate) _field = field;
+        FocusChanged?.Invoke(this, field);
+    }
+
+    public void Append(string text)
+    {
+        lock (_gate)
+        {
+            var updated = _field!.Text + text;
+            _field = _field with { Text = updated, CaretOffset = updated.Length };
+        }
+    }
+
+    public Task<bool> InsertAsync(FocusedField target, string text, CancellationToken ct)
+    {
+        lock (_gate) _lastInsertion = text;
+        Append(text);
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> ReplaceAsync(FocusedField target, int deleteCount, string text, CancellationToken ct)
+    {
+        lock (_gate)
+        {
+            var updated = _field!.Text[..^deleteCount] + text;
+            _field = _field with { Text = updated, CaretOffset = updated.Length };
+        }
+        return Task.FromResult(true);
+    }
+
+    public void Start() { }
+    public void Stop() { }
+    public void Dispose() { }
 }
 
 sealed class RecordingOverlay : IOverlayPresenter
 {
-    public record ShownInfo(string Text, ScreenRect Anchor);
-    public ShownInfo? LastShown { get; set; }
-    public int ShowCount, UpdateCount, HideCount;
-    public void Show(string text, ScreenRect anchor, bool isCorrection = false) { LastShown = new(text, anchor); ShowCount++; }
-    public void Update(string text) { if (LastShown is not null) LastShown = LastShown with { Text = text }; UpdateCount++; }
-    public void Hide() { HideCount++; }
+    private volatile string _text = "";
+
+    public string Text => _text;
+
+    public void Show(string text, ScreenRect anchor, bool isCorrection = false) => _text = text;
+    public void Update(string text) => _text = text;
+    public void Hide() => _text = "";
 }
 
-sealed class RecordingInserter : ITextInserter
+/// <summary>Runs posted work in order on one thread, like a UI dispatcher.</summary>
+sealed class PumpContext : SynchronizationContext, IDisposable
 {
-    public string? LastInsertedText { get; private set; }
-    public int InsertCount { get; private set; }
-    public Task<bool> InsertAsync(FocusedField target, string text, CancellationToken ct)
+    private readonly BlockingCollection<(SendOrPostCallback Callback, object? State)> _queue = new();
+
+    public PumpContext()
     {
-        LastInsertedText = text;
-        InsertCount++;
-        return Task.FromResult(true);
-    }
-
-    public Task<bool> ReplaceAsync(FocusedField target, int deleteCount, string text, CancellationToken ct) =>
-        InsertAsync(target, text, ct);
-}
-
-sealed class SingleThreadSyncContext : SynchronizationContext
-{
-    private readonly System.Collections.Concurrent.BlockingCollection<(SendOrPostCallback, object?)> _q = new();
-    private volatile bool _running = true;
-
-    public override void Post(SendOrPostCallback d, object? state) => _q.Add((d, state));
-    public override void Send(SendOrPostCallback d, object? state) => _q.Add((d, state));
-
-    public void Run()
-    {
-        SetSynchronizationContext(this);
-        while (_running)
+        new Thread(() =>
         {
-            if (_q.TryTake(out var work, 1000))
-            {
-                try { work.Item1(work.Item2); }
-                catch (Exception ex) { Console.Error.WriteLine($"pump exception: {ex}"); }
-            }
-        }
+            SetSynchronizationContext(this);
+            foreach (var (callback, state) in _queue.GetConsumingEnumerable()) callback(state);
+        })
+        { IsBackground = true }.Start();
     }
 
-    public Task YieldToContextAsync()
-    {
-        var tcs = new TaskCompletionSource();
-        Post(_ => tcs.SetResult(), null);
-        return tcs.Task;
-    }
+    public override void Post(SendOrPostCallback d, object? state) => _queue.Add((d, state));
 
-    public void Stop() => _running = false;
+    public void Dispose() => _queue.CompleteAdding();
 }

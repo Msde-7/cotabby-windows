@@ -1,17 +1,14 @@
 namespace Cotabby.Core.Support;
 
 /// <summary>
-/// Decides whether the caret sits inside a word, in which case the first
-/// generated token must continue that word rather than start a new one.
-/// Direct port of the macOS <c>MidWordContinuationPolicy</c>.
+/// Decides whether the first generated token should be constrained to continue the current word.
+/// The trigger is deliberately narrow. It fires only when the caret sits strictly inside a word,
+/// with a word character on both sides. At a word end it returns false so ordinary next-word
+/// predictions, where a leading space is wanted, are untouched.
 /// </summary>
 public static class MidWordContinuationPolicy
 {
-    public static bool ShouldForceContinuation(string precedingText, string trailingText)
-    {
-        if (precedingText.Length == 0 || trailingText.Length == 0) return false;
-        return IsWordChar(precedingText[^1]) && IsWordChar(trailingText[0]);
-    }
-
-    private static bool IsWordChar(char c) => char.IsLetterOrDigit(c);
+    public static bool ShouldForceContinuation(string precedingText, string trailingText) =>
+        GraphemeString.LastOf(precedingText) is { } before && CaretTokenPosition.IsWordCharacter(before)
+        && GraphemeString.FirstOf(trailingText) is { } after && CaretTokenPosition.IsWordCharacter(after);
 }

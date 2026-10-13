@@ -1,37 +1,64 @@
-using System.Text;
-
 namespace Cotabby.Core.Support;
 
 /// <summary>
-/// Renders the prompt for the base-model completion pipeline. Direct port of
-/// the macOS <c>BaseCompletionPromptRenderer</c>.
-///
-/// Design: a *base* model has no instruction-following channel and will
-/// happily continue a bare "Task:" line as if it were the document, so an
-/// instruction-blob prompt would leak scaffolding into the ghost text. This
-/// renderer treats the model as a pure text continuer: persona, style, and
-/// language are folded into a short conditioning preface (a base model
-/// conditions on description, it does not obey commands), and the caret
-/// prefix is the LAST thing in the prompt with trailing whitespace trimmed so
-/// generation begins at a clean word boundary.
+/// Renders the prompt for the base-model completion pipeline.
+/// <para>
+/// A base model has no instruction-following channel and will continue a bare "Task:" line as if
+/// it were the document. This renderer treats the model as a pure text continuer. Persona, style,
+/// language and supporting context are folded into a short conditioning preface, and the exact
+/// caret prefix is the last thing in the prompt. Spaces, line breaks and indentation remain part of
+/// the text the model continues.
+/// </para>
+/// Sections are budgeted through <see cref="PromptSectionBudget"/> so a large glossary, clipboard
+/// or screen capture can never crowd out the caret text.
 /// </summary>
 public static class BaseCompletionPromptRenderer
 {
     /// <summary>Total character budget for the preface plus caret prefix.</summary>
-    public const int DefaultContextBudget = 2400;
+    public const int DefaultContextBudget = 6400;
 
+    private const int HistoryMaxCharacters = 760;
+
+    /// <param name="prefixText">The windowed text before the caret, rendered last and verbatim.</param>
+    /// <param name="userName">The writer's name, stated only at a sign-off.</param>
+    /// <param name="trailingText">Text after the caret, quoted as reference material.</param>
+    /// <param name="maxSuffixCharacters">Bound on the quoted trailing text.</param>
+    /// <param name="customRules">User style rules.</param>
+    /// <param name="extendedContext">Free-form notes from the user.</param>
+    /// <param name="languageInstruction">Language conditioning sentence.</param>
+    /// <param name="clipboardContext">Distilled clipboard text.</param>
+    /// <param name="visualContextSummary">Text captured near the field.</param>
+    /// <param name="surfaceLines">Composed description of the writing surface, one fact group per line.</param>
+    /// <param name="historyExamples">Earlier sentences by the same writer.</param>
+    /// <param name="contextBudget">Character budget, used when no token budget is given.</param>
+    /// <param name="maxScreenCharacters">Cap on the labelled screen section.</param>
+    /// <param name="screenPriority">Fill priority of the screen section.</param>
+    /// <param name="tokenBudget">When given, sections fill against estimated tokens instead of characters.</param>
     public static string Prompt(
         string prefixText,
         string? userName = null,
+        string trailingText = "",
+        int maxSuffixCharacters = 192,
         IReadOnlyList<string>? customRules = null,
-        string? languageInstruction = null,
         string? extendedContext = null,
-        int contextBudget = DefaultContextBudget)
+        string? languageInstruction = null,
+        string? clipboardContext = null,
+        string? visualContextSummary = null,
+        IReadOnlyList<string>? surfaceLines = null,
+        IReadOnlyList<string>? historyExamples = null,
+        int contextBudget = DefaultContextBudget,
+        int maxScreenCharacters = 4000,
+        int screenPriority = 45,
+        int? tokenBudget = null)
     {
-        var trimmedPrefix = TrimTrailingWhitespace(prefixText);
-
         var sections = new List<PromptSection>();
-        if (PersonaLine(userName) is { } persona)
+        // The surface description leads the preface. Knowing the writing surface is the strongest
+        // situational cue a base model gets.
+        if (surfaceLines is { Count: > 0 })
+        {
+            sections.Add(ContextSection("surface", string.Join(' ', surfaceLines), priority: 70, maxChars: 240));
+        }
+        if (PersonaLine(userName, prefixText) is { } persona)
         {
             sections.Add(ContextSection("persona", persona, priority: 60, maxChars: 200));
         }
@@ -45,95 +72,108 @@ public static class BaseCompletionPromptRenderer
         }
         if (NonEmpty(extendedContext) is { } notes)
         {
+            // The cap must stay at or above the settings limit for extended context plus this
+            // label, so the full user-entered text survives.
             sections.Add(ContextSection(
-                "notes", $"Notes the writer keeps in mind: {notes}", priority: 40, maxChars: 600));
+                "notes", $"Notes the writer keeps in mind: {notes}", priority: 40, maxChars: 1300));
         }
-        // The caret prefix: top priority so it is never starved, kept by its
-        // END (the text nearest the caret), and rendered last with no label so
-        // the model continues from where the user stopped.
+        if (HistorySection(historyExamples) is { } history)
+        {
+            sections.Add(history);
+        }
+        if (NonEmpty(clipboardContext) is { } clip)
+        {
+            sections.Add(ContextSection("clipboard", $"On the clipboard: {clip}", priority: 35, maxChars: 400));
+        }
+        if (NonEmpty(visualContextSummary) is { } screen)
+        {
+            sections.Add(ContextSection(
+                "screen", $"Nearby on screen: {screen}", priority: screenPriority, maxChars: maxScreenCharacters));
+        }
+        string followingText = new GraphemeString(trailingText).Prefix(Math.Max(0, maxSuffixCharacters));
+        if (!ScalarSets.IsBlank(followingText))
+        {
+            // Base models share no universal fill-in-the-middle format. The existing ending is
+            // described as quoted reference material and the caret prefix stays last. The section
+            // is all or nothing, so a tight budget cannot leave an unfinished label or quote.
+            sections.Add(WholeSection("following", $"Later in the same passage:\n“{followingText}”", priority: 80)
+                with { PreservesWhitespace = true });
+        }
+        // The caret prefix has top priority so it is never starved, is kept by its end (the text
+        // nearest the caret), and is rendered last with no label.
         sections.Add(new PromptSection(
             "prefix",
-            trimmedPrefix,
+            prefixText,
             Priority: 100,
             MinChars: 1,
-            MaxChars: Math.Max(1, trimmedPrefix.Length),
-            SectionTruncation.PreserveEnd));
+            MaxChars: Math.Max(1, GraphemeString.CountOf(prefixText)),
+            SectionTruncation.PreserveEnd,
+            PreservesWhitespace: true));
 
-        var kept = PromptSectionBudget.Allocate(sections, contextBudget);
-        var prefix = kept.FirstOrDefault(s => s.Name == "prefix")?.Content ?? trimmedPrefix;
+        var kept = tokenBudget is { } tokens
+            ? PromptSectionBudget.Allocate(sections, tokens, TokenCountEstimator.Estimate)
+            : PromptSectionBudget.Allocate(sections, contextBudget);
+        string prefix = kept.FirstOrDefault(s => s.Name == "prefix")?.Content ?? string.Empty;
         var preface = kept.Where(s => s.Name != "prefix").Select(s => s.Content).ToList();
 
-        if (preface.Count == 0)
+        // With no context to condition on the model gets the bare text. Otherwise a blank line
+        // separates the preface from the live text without a label the model could copy.
+        return preface.Count == 0 ? prefix : string.Join('\n', preface) + "\n\n" + prefix;
+    }
+
+    /// <summary>
+    /// The writer's own earlier sentences, quoted. Examples are dropped whole until the section fits
+    /// its cap, because a trimmed section could end on an unclosed quote and the model would read
+    /// the live caret text as part of it.
+    /// </summary>
+    private static PromptSection? HistorySection(IReadOnlyList<string>? examples)
+    {
+        const string heading = "Earlier writing by the same author:";
+        string content = heading;
+        int count = heading.Length;
+        foreach (string example in examples ?? [])
         {
-            // No context to condition on: hand the model the bare text.
-            return prefix;
+            string trimmed = ScalarSets.TrimWhitespaceAndNewlines(example);
+            if (trimmed.Length == 0) continue;
+            string line = $"\n“{trimmed}”";
+            int lineCount = GraphemeString.CountOf(line);
+            if (count + lineCount > HistoryMaxCharacters) continue;
+            content += line;
+            count += lineCount;
         }
-        // A blank line separates the conditioning preface from the live text
-        // without a label the model could copy. The prefix remains the final
-        // bytes of the prompt.
-        return string.Join("\n", preface) + "\n\n" + prefix;
+        return count > heading.Length ? WholeSection("history", content, priority: 38) : null;
     }
 
     private static PromptSection ContextSection(string name, string content, int priority, int maxChars) =>
         new(name, content, priority, MinChars: 0, maxChars, SectionTruncation.PreserveStart);
 
-    /// <summary>"Written by &lt;name&gt;." or null. Conditions the voice via authorship framing.</summary>
-    private static string? PersonaLine(string? userName) =>
-        NonEmpty(userName) is { } name ? $"Written by {name}." : null;
+    /// <summary>A section that is included in full or not at all.</summary>
+    private static PromptSection WholeSection(string name, string content, int priority)
+    {
+        int count = GraphemeString.CountOf(content);
+        return new(name, content, priority, MinChars: count, MaxChars: count, SectionTruncation.PreserveStart);
+    }
 
-    /// <summary>"Writing style: &lt;rules&gt;." or null.</summary>
+    /// <summary>
+    /// "Written by name." when the caret follows a valediction, null otherwise. At a sign-off the
+    /// name is the one token wanted, and the closing line anchors the model so nothing else leaks.
+    /// </summary>
+    private static string? PersonaLine(string? userName, string prefix) =>
+        NonEmpty(userName) is { } name && SignOffCue.PrecedesSignature(prefix) ? $"Written by {name}." : null;
+
+    /// <summary>"Writing style: rules." or null, on its own line so sentence-shaped rules read correctly.</summary>
     private static string? StyleLine(IReadOnlyList<string>? customRules)
     {
-        if (customRules is null) return null;
-        var rules = customRules
-            .Select(r => r.Trim())
-            .Where(r => r.Length > 0)
+        var rules = (customRules ?? [])
+            .Select(ScalarSets.TrimWhitespaceAndNewlines)
+            .Where(rule => rule.Length > 0)
             .ToList();
         return rules.Count == 0 ? null : $"Writing style: {string.Join(", ", rules)}.";
     }
 
-    /// <summary>Description of the writer's languages, phrased as conditioning
-    /// context (not an instruction — base models condition, they don't obey).</summary>
-    public static string? LanguageInstruction(IReadOnlyList<string>? languages)
-    {
-        if (languages is null) return null;
-        var langs = languages.Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
-        if (langs.Count == 0) return null;
-        return langs.Count == 1
-            ? $"The text is written in {langs[0]}."
-            : $"The text is written in {string.Join(", ", langs[..^1])} or {langs[^1]}.";
-    }
-
     private static string? NonEmpty(string? text)
     {
-        var trimmed = (text ?? string.Empty).Trim();
+        string trimmed = ScalarSets.TrimWhitespaceAndNewlines(text ?? string.Empty);
         return trimmed.Length == 0 ? null : trimmed;
-    }
-
-    /// <summary>Drops trailing spaces, tabs, and newlines so the base-model
-    /// prompt ends at a word boundary.</summary>
-    public static string TrimTrailingWhitespace(string text)
-    {
-        int end = text.Length;
-        while (end > 0 && char.IsWhiteSpace(text[end - 1])) end--;
-        return text[..end];
-    }
-
-    /// <summary>
-    /// Windows the raw caret prefix the way the macOS factory does for the
-    /// llama engine: take the last <paramref name="maxChars"/> characters,
-    /// split on whitespace, and keep the last <paramref name="maxWords"/>
-    /// words joined by single spaces. Collapsing whitespace keeps the prompt
-    /// token count predictable.
-    /// </summary>
-    public static string WindowPrefix(string precedingText, int maxWords = 50, int maxChars = 1000)
-    {
-        string window = precedingText.Length <= maxChars
-            ? precedingText
-            : precedingText[^maxChars..];
-        var words = window.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (words.Length == 0) return window;
-        var kept = words.Length <= maxWords ? words : words[^maxWords..];
-        return string.Join(' ', kept);
     }
 }

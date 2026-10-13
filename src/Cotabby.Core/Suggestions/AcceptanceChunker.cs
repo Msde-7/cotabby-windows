@@ -121,7 +121,7 @@ public static class AcceptanceChunker
     /// <summary>Counts word-like tokens so punctuation-only accepts do not inflate the word counter.</summary>
     public static int AcceptedWordCount(string text) =>
         text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
-            .Count(token => token.Any(char.IsLetterOrDigit));
+            .Count(token => token.EnumerateRunes().Any(IsWordCharacter));
 
     /// <summary>
     /// True when a fresh suggestion only repeats the chunk the user just accepted while
@@ -140,7 +140,8 @@ public static class AcceptanceChunker
     private static bool EndsOnFinishedWord(string chunk)
     {
         if (chunk.Length == 0) return false;
-        var last = LastRune(chunk, chunk.Length);
+        // A character is judged by its base letter so a trailing combining mark still ends a word.
+        var last = Rune.GetRuneAt(chunk, StringInfo.ParseCombiningCharacters(chunk)[^1]);
         return IsWordCharacter(last) && !BeginsSpacelessScriptWord(last);
     }
 
@@ -205,7 +206,8 @@ public static class AcceptanceChunker
         for (int i = tokenStart; i < tokenEnd;)
         {
             var rune = Rune.GetRuneAt(text, i);
-            i += rune.Utf16SequenceLength;
+            // Combining marks stay with their base letter.
+            i += StringInfo.GetNextTextElementLength(text.AsSpan(i, tokenEnd - i));
             if (IsWordCharacter(rune)) lastWordEnd = i;
         }
         return lastWordEnd is { } end && end < tokenEnd ? end : null;
