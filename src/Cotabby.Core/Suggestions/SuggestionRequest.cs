@@ -41,6 +41,3 @@ public sealed record SuggestionRequest
     /// <summary>How many words the suggestion should run to.</summary>
     public SuggestionWordRange? WordRange { get; init; }
 }
-
-/// <summary>One incremental suggestion chunk streamed back from the engine.</summary>
-public readonly record struct SuggestionChunk(string Text, bool IsFinal);

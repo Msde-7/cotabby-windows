@@ -38,28 +38,19 @@ public class OpenAICompatibleSuggestionEngineTests : IDisposable
             settings ?? Settings(),
             NullLogger<OpenAICompatibleSuggestionEngine>.Instance);
 
-    private static async Task<List<SuggestionChunk>> Collect(
-        OpenAICompatibleSuggestionEngine engine,
-        CancellationToken ct = default)
-    {
-        var chunks = new List<SuggestionChunk>();
-        await foreach (var chunk in engine.GenerateAsync(Request, ct))
-        {
-            chunks.Add(chunk);
-        }
-        return chunks;
-    }
+    private static Task<string> Collect(OpenAICompatibleSuggestionEngine engine, CancellationToken ct = default) =>
+        engine.GenerateAsync(Request, ct);
 
     [Fact]
-    public async Task Generation_SendsRequestKnobsAndYieldsNormalizedTextThenFinalChunk()
+    public async Task Generation_SendsRequestKnobsAndReturnsNormalizedText()
     {
         _server.Respond(_ => StubHttpMessageHandler.Sse("data: {\"choices\":[{\"text\":\" world\"}]}\n\ndata: [DONE]\n\n"));
         var engine = MakeEngine(apiKey: "key-123");
 
-        var chunks = await Collect(engine);
+        var text = await Collect(engine);
 
         Assert.True(engine.IsReady);
-        Assert.Equal([new SuggestionChunk(" world", false), new SuggestionChunk("", true)], chunks);
+        Assert.Equal(" world", text);
         var request = Assert.Single(_server.Requests);
         Assert.Equal("http://127.0.0.1:11434/v1/completions", request.Url);
         Assert.Equal("Bearer key-123", request.Authorization);
@@ -72,11 +63,11 @@ public class OpenAICompatibleSuggestionEngineTests : IDisposable
     }
 
     [Fact]
-    public async Task Generation_YieldsOnlyTheFinalChunkWhenTheOutputNormalizesToEmpty()
+    public async Task Generation_ReturnsNothingWhenTheOutputNormalizesToEmpty()
     {
         _server.Respond(_ => StubHttpMessageHandler.Sse("data: {\"choices\":[{\"text\":\"  \"}]}\n\ndata: [DONE]\n\n"));
 
-        Assert.Equal([new SuggestionChunk("", true)], await Collect(MakeEngine()));
+        Assert.Equal("", await Collect(MakeEngine()));
     }
 
     [Fact]
@@ -87,9 +78,9 @@ public class OpenAICompatibleSuggestionEngineTests : IDisposable
         var engine = MakeEngine();
 
         engine.UpdateSettings(Settings("http://192.168.1.50:8000", "other-model", OpenAICompatibleApiMode.ChatCompletions));
-        var chunks = await Collect(engine);
+        var text = await Collect(engine);
 
-        Assert.Equal(" there", chunks[0].Text);
+        Assert.Equal(" there", text);
         var request = Assert.Single(_server.Requests);
         Assert.Equal("http://192.168.1.50:8000/v1/chat/completions", request.Url);
         Assert.Equal("other-model", request.Json.GetProperty("model").GetString());

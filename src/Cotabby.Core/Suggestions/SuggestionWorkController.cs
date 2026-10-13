@@ -35,10 +35,11 @@ public sealed class SuggestionWorkController : IAsyncDisposable
             _inFlight = cts;
         }
 
-        prior?.Cancel();
-        prior?.Dispose();
+        Cancel(prior);
 
-        var task = RunAsync(work, cts);
+        // The work always starts on the thread pool. With no debounce it would otherwise run on
+        // the caller, which is the UI thread.
+        var task = Task.Run(() => RunAsync(work, cts));
         lock (_gate) { _pendingTask = task; }
         return task;
     }
@@ -73,8 +74,19 @@ public sealed class SuggestionWorkController : IAsyncDisposable
             prior = _inFlight;
             _inFlight = null;
         }
-        prior?.Cancel();
-        prior?.Dispose();
+        Cancel(prior);
+    }
+
+    /// <summary>The work disposes its own source when it ends, so a late cancel may find it gone.</summary>
+    private static void Cancel(CancellationTokenSource? source)
+    {
+        try
+        {
+            source?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
     public async ValueTask DisposeAsync()

@@ -13,12 +13,7 @@ public sealed class SuggestionEngineRouterTests
 
     public SuggestionEngineRouterTests() => _router = new SuggestionEngineRouter(_local, _endpoint);
 
-    private async Task<string> Generate()
-    {
-        string text = "";
-        await foreach (var chunk in _router.GenerateAsync(Request, CancellationToken.None)) text += chunk.Text;
-        return text;
-    }
+    private Task<string> Generate() => _router.GenerateAsync(Request, CancellationToken.None);
 
     [Fact]
     public async Task GenerateAsync_UsesTheLocalEngineByDefault()

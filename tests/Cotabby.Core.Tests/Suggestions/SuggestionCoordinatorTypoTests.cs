@@ -57,6 +57,18 @@ public sealed class SuggestionCoordinatorTypoTests : CoordinatorHarness
     }
 
     [Fact]
+    public async Task AutomaticFix_IsSkippedWhenTypingHasAlreadyMovedOn()
+    {
+        Coordinator.Settings = Typos(offer: true, autoFix: true);
+        Engine.Completion = _ => "";
+
+        Type("hello teh n");
+
+        await Task.Delay(300);
+        Assert.Equal("hello teh n", Focus.Current!.Text);
+    }
+
+    [Fact]
     public async Task TypingPastAnOfferedCorrection_DropsIt()
     {
         Type("hello teh ");

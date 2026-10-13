@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Text;
 using Cotabby.Core.Input;
 using Microsoft.Extensions.Logging;
 using static Cotabby.Win32.Interop.NativeMethods;
@@ -37,9 +36,9 @@ public sealed class KeyboardHook : IKeyboardHook
     private bool _disposed;
     private volatile bool _running;
 
-    // Keyboard state buffer reused across ToUnicodeEx calls. Only the hook thread touches it.
-    // It is cleared per call so dead-key state does not leak between presses.
+    // Buffers reused across ToUnicodeEx calls. Only the hook thread touches them.
     private readonly byte[] _keyState = new byte[256];
+    private readonly char[] _translated = new char[8];
 
     // Keys currently down, used to tell auto-repeat from a second press.
     private readonly HashSet<uint> _heldKeys = new();
@@ -136,16 +135,6 @@ public sealed class KeyboardHook : IKeyboardHook
         Stop();
     }
 
-    /// <summary>
-    /// Raises a synthetic <see cref="IKeyboardHook.KeyEvent"/> as if the OS hook had fired.
-    /// For tests only.
-    /// </summary>
-    public void FireSyntheticKey(KeyboardEvent ev)
-    {
-        var args = new KeyEventArgs(ev);
-        KeyEvent?.Invoke(this, args);
-    }
-
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode < 0) return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
@@ -168,18 +157,18 @@ public sealed class KeyboardHook : IKeyboardHook
                 return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
             }
 
-            var modifiers = CurrentModifiers();
-            var (kind, ch) = Classify(data.vkCode, data.scanCode, modifiers);
+            var key = KeyClassifier.Classify(
+                (int)data.vkCode, CurrentModifiers(), isDown, () => Translate(data.vkCode, data.scanCode));
             bool isRepeat = isDown && !_heldKeys.Add(data.vkCode);
             if (isUp) _heldKeys.Remove(data.vkCode);
 
             var evt = new KeyboardEvent
             {
-                Kind = kind,
-                Character = ch,
+                Kind = key.Kind,
+                Character = key.Character,
                 IsKeyDown = isDown,
                 VirtualKey = (int)data.vkCode,
-                Modifiers = modifiers,
+                Modifiers = key.Modifiers,
                 IsRepeat = isRepeat,
             };
 
@@ -220,38 +209,16 @@ public sealed class KeyboardHook : IKeyboardHook
 
     private static bool IsDown(int vk) => (GetKeyState(vk) & 0x8000) != 0;
 
-    private (KeyKind kind, char ch) Classify(uint vk, uint scanCode, KeyModifiers modifiers)
+    /// <summary>
+    /// The character the foreground window's layout gives the key, or '\0'. The hook thread's own
+    /// layout never follows an input language switch.
+    /// </summary>
+    private char Translate(uint vk, uint scanCode)
     {
-        switch (vk)
-        {
-            case VK_TAB: return (KeyKind.Tab, '\0');
-            case VK_ESCAPE: return (KeyKind.Escape, '\0');
-            case VK_RETURN: return (KeyKind.Enter, '\0');
-            case VK_BACK: return (KeyKind.Backspace, '\0');
-            case VK_DELETE: return (KeyKind.Delete, '\0');
-            case VK_LEFT or VK_RIGHT or VK_UP or VK_DOWN
-                or VK_HOME or VK_END or VK_PRIOR or VK_NEXT:
-                return (KeyKind.Arrow, '\0');
-            case VK_SHIFT or VK_CONTROL or VK_MENU or VK_LWIN or VK_RWIN:
-                return (KeyKind.Other, '\0');
-        }
-
-        // Ctrl+A must not surface as the character a.
-        if ((modifiers & ~KeyModifiers.Shift) != 0) return (KeyKind.Other, '\0');
-
-        Array.Clear(_keyState);
         GetKeyboardState(_keyState);
-        var layout = GetKeyboardLayout(0);
-        var buf = new StringBuilder(8);
-        int count = ToUnicodeEx(vk, scanCode, _keyState, buf, buf.Capacity, 0, layout);
-        if (count > 0 && buf.Length > 0)
-        {
-            char c = buf[0];
-            if (!char.IsControl(c))
-            {
-                return (KeyKind.Character, c);
-            }
-        }
-        return (KeyKind.Other, '\0');
+        var layout = GetKeyboardLayout(GetWindowThreadProcessId(GetForegroundWindow(), out _));
+        int count = ToUnicodeEx(
+            vk, scanCode, _keyState, _translated, _translated.Length, TOUNICODE_KEEP_STATE, layout);
+        return count > 0 ? _translated[0] : '\0';
     }
 }

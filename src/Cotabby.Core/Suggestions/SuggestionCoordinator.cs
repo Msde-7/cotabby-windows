@@ -28,6 +28,15 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private const int HostPublishCeilingMs = 400;
     private const int PostInsertSettleMs = 60;
 
+    /// <summary>How often a visible suggestion checks that the caret is still where it was offered.</summary>
+    private const int SessionWatchMs = 250;
+
+    /// <summary>How many characters the host may still owe when the field is compared with what was typed.</summary>
+    private const int PublishLagChars = 8;
+
+    /// <summary>How much of the text before the caret is compared. The field is read through a moving window.</summary>
+    private const int ComparedTailChars = 256;
+
     private static readonly TimeSpan GenerationWatchdog = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan DoubleTapWindow = TimeSpan.FromMilliseconds(300);
 
@@ -55,6 +64,12 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private SuggestionSession? _session;
     private FocusedField? _sessionField;
     private bool _sessionAcceptedAny;
+
+    /// <summary>The text that should sit before the caret, counting what was typed or accepted since the offer.</summary>
+    private string _expectedPreceding = "";
+
+    /// <summary>Accepted characters the host has not been sent yet.</summary>
+    private int _pendingInsertChars;
     private (string RequestId, long Timestamp)? _pendingDoubleTap;
     private AcceptedTail? _lastAcceptedTail;
     private bool _queuedAccept;
@@ -111,6 +126,21 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     /// <summary>True while an inline feature such as the emoji picker owns the keyboard.</summary>
     public Func<bool>? InlineCaptureActive { get; set; }
 
+    /// <summary>
+    /// True when Cotabby may act in this field. The emoji picker and macros follow the same
+    /// rules as suggestions, so turning Cotabby off or excluding an app silences them too.
+    /// </summary>
+    public bool IsAvailableIn(FocusedField field) =>
+        SuggestionAvailability.DisabledReason(_settings, _clock.GetUtcNow(), _batterySaverOn()) is null
+        && SuggestionAvailability.DisabledReason(_settings, field) is null;
+
+    /// <summary>The accept-word key in effect for an app, which is also the key inline features commit on.</summary>
+    public KeyBinding AcceptWordKeyFor(string? processName)
+    {
+        var settings = _settings;
+        return ShortcutResolver.AcceptWord(processName, settings.ShortcutOverrides, settings.AcceptWord);
+    }
+
     public SuggestionSettings Settings
     {
         get => _settings;
@@ -147,11 +177,10 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     {
         Post(() =>
         {
-            // UIA hands out a fresh element for every focus event, so identity is the host process.
             int pid = field?.ProcessId ?? 0;
             bool sameHost = pid != 0 && (_focusedPid == 0 || pid == _focusedPid);
             _focusedPid = pid;
-            if (sameHost) return;
+            if (sameHost && (_sessionField is null || _sessionField.FieldId == field!.FieldId)) return;
             _publishBaseline = null;
             _expectedDelta = 0;
             CancelSession("focus moved");
@@ -226,6 +255,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                     return;
                 case SuggestionSessionReconciler.Outcome.Advance when result.Next is { VisibleText.Length: > 0 } next:
                     _session = next;
+                    _expectedPreceding += ev.Character;
                     _overlay.Update(next.VisibleText);
                     _ = ReanchorAsync(next.RequestId, HostPublishPollMs);
                     return;
@@ -297,7 +327,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             if (!SuggestionAvailability.HasTextToContinue(field)) return;
 
             string preceding = field.PrecedingText;
-            if (await HandleTypoAsync(requestId, settings, field, preceding, ct).ConfigureAwait(false)) return;
+            if (await HandleTypoAsync(requestId, settings, field, sequence, ct).ConfigureAwait(false)) return;
             if (!settings.SuggestWithinWords && CaretWordContext.UnfinishedWord(preceding) is not null) return;
             // A completion inside a token would duplicate or splice what follows the caret.
             if (CaretTokenPosition.IsInsideToken(preceding, field.TrailingText)) return;
@@ -324,7 +354,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 return;
             }
 
-            Post(() => Present(requestId, visible, live, latencyMs, ct));
+            Post(() => Present(requestId, visible, live, latencyMs, sequence, ct));
         }
         catch (OperationCanceledException)
         {
@@ -345,9 +375,10 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     /// replaced the completion with a suppression, an offer or an automatic fix.
     /// </summary>
     private async Task<bool> HandleTypoAsync(
-        string requestId, SuggestionSettings settings, FocusedField field, string preceding, CancellationToken ct)
+        string requestId, SuggestionSettings settings, FocusedField field, long sequence, CancellationToken ct)
     {
         if (_typos is null) return false;
+        string preceding = field.PrecedingText;
         var advice = _typos.Advise(preceding, settings.SpellingDictionaries, settings.Typos);
         var decision = advice.Decision;
         switch (decision.Action)
@@ -355,16 +386,18 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             case TypoGateAction.Proceed:
                 return false;
 
-            case TypoGateAction.ApplyCorrection when advice.Replacement is { } fix:
+            case TypoGateAction.ApplyCorrection when advice.Replacement is not null:
                 if (_lastAutoFixedText == preceding) return true;
                 _lastAutoFixedText = preceding;
-                await _inserter.ReplaceAsync(field, fix.DeletingUtf16Count, fix.ReplacementText, ct).ConfigureAwait(false);
-                Post(RestartPrediction);
+                ct.ThrowIfCancellationRequested();
+                await ApplyCorrectionAsync(
+                    new TypoCorrection(decision.Word!, decision.CorrectedWord!), requiresTrailingSpace: true)
+                    .ConfigureAwait(false);
                 return true;
 
             case TypoGateAction.OfferCorrection:
                 var correction = new TypoCorrection(decision.Word!, decision.CorrectedWord!);
-                Post(() => Present(requestId, decision.CorrectedWord!, field, latencyMs: 0, ct, correction));
+                Post(() => Present(requestId, decision.CorrectedWord!, field, latencyMs: 0, sequence, ct, correction));
                 return true;
 
             default:
@@ -400,8 +433,12 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private static bool HasPublished(FocusedField field, FocusedField? baseline, int delta, char? typed, int waited)
     {
         var preceding = field.PrecedingText;
-        if (typed is { } c && (preceding.Length == 0 || preceding[^1] != c)) return false;
-        if (baseline is null || baseline.ProcessId != field.ProcessId) return waited > 0 || typed is not null;
+        if (baseline is null || baseline.ProcessId != field.ProcessId)
+        {
+            // With nothing to count against, the typed character itself is the evidence. A dead key
+            // can make the host insert an accented form of it, which then waits out the ceiling.
+            return typed is { } c ? preceding.EndsWith(c) : waited > 0;
+        }
 
         int expected = baseline.PrecedingText.Length + delta;
         return delta switch
@@ -416,27 +453,23 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     {
         using var watchdog = new CancellationTokenSource(GenerationWatchdog);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, watchdog.Token);
-        var text = string.Empty;
         try
         {
-            await foreach (var chunk in _engine.GenerateAsync(request, linked.Token).ConfigureAwait(false))
-            {
-                text += chunk.Text;
-            }
+            return await _engine.GenerateAsync(request, linked.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             if (!ct.IsCancellationRequested) _logger.LogWarning("Request {ReqId} hit the watchdog.", request.RequestId);
             return string.Empty;
         }
-        return text;
     }
 
     private void Present(
-        string requestId, string text, FocusedField field, int latencyMs, CancellationToken ct,
+        string requestId, string text, FocusedField field, int latencyMs, long sequence, CancellationToken ct,
         TypoCorrection? correction = null)
     {
-        if (ct.IsCancellationRequested || _session is not null) return;
+        // A key handled after the work finished can no longer cancel it, so the sequence is checked too.
+        if (ct.IsCancellationRequested || _session is not null || _keySequence != sequence) return;
 
         var preceding = field.PrecedingText;
         if (correction is null
@@ -461,16 +494,65 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         };
         _sessionField = field;
         _sessionAcceptedAny = false;
+        _expectedPreceding = preceding;
         PublishOffer();
         _overlay.Show(text, field.CaretRect, StyleFor(field, correction));
         if (correction is null) Metrics.RecordShown(latencyMs);
         _logger.LogInformation("Suggestion shown req={ReqId} latency={Ms}ms chars={Chars}", requestId, latencyMs, text.Length);
         _logger.LogDebug("Suggestion text req={ReqId} \"{Text}\"", requestId, LogText.Escape(text));
 
-        bool acceptQueued = _queuedAccept;
+        _ = WatchSessionAsync(requestId);
+
+        // A queued press only counts while the key is still owned. Later it would accept unseen text.
+        bool acceptQueued = _queuedAccept && _ownership is { } owned && _clock.GetTimestamp() < owned.ExpiresAt;
         _ownership = null;
         _queuedAccept = false;
         if (acceptQueued && correction is null) Accept(all: false, isRepeat: true);
+    }
+
+    /// <summary>
+    /// Drops the suggestion when the caret leaves the place it was offered at. A click elsewhere in
+    /// the same app raises no key and often no focus event, so the field is checked while it shows.
+    /// </summary>
+    private async Task WatchSessionAsync(string requestId)
+    {
+        while (!_disposed)
+        {
+            await Task.Delay(SessionWatchMs).ConfigureAwait(false);
+            var live = _focus.Refresh();
+            var watching = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Post(() =>
+            {
+                bool current = _session?.RequestId == requestId;
+                if (current && !IsStillAtOffer(live))
+                {
+                    CancelSession("the caret left the suggestion");
+                    current = false;
+                }
+                watching.SetResult(current);
+            });
+            if (!await watching.Task.ConfigureAwait(false)) return;
+        }
+    }
+
+    private bool IsStillAtOffer(FocusedField? live) =>
+        live is not null && _sessionField is { } offeredIn
+        && live.ProcessId == offeredIn.ProcessId && live.FieldId == offeredIn.FieldId
+        && FollowsExpected(_expectedPreceding, live.PrecedingText, PublishLagChars + _pendingInsertChars);
+
+    /// <summary>
+    /// True when <paramref name="live"/> is the expected text, or the expected text less a few
+    /// trailing characters the host has not published yet.
+    /// </summary>
+    private static bool FollowsExpected(string expected, string live, int allowedLag)
+    {
+        // A short text is the whole of what precedes the caret, so it has to match from the start.
+        if (live.Length < ComparedTailChars)
+        {
+            return expected.Length - live.Length <= allowedLag && expected.StartsWith(live, StringComparison.Ordinal);
+        }
+        int at = expected.LastIndexOf(live[^ComparedTailChars..], StringComparison.Ordinal);
+        return at >= 0 && expected.Length - (at + ComparedTailChars) <= allowedLag;
     }
 
     private void Accept(bool all, bool isRepeat)
@@ -487,7 +569,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         {
             ClearSession();
             _insertChain = _insertChain
-                .ContinueWith(_ => ApplyCorrectionAsync(correction), TaskScheduler.Default)
+                .ContinueWith(
+                    _ => ApplyCorrectionAsync(correction, requiresTrailingSpace: false), TaskScheduler.Default)
                 .Unwrap();
             return;
         }
@@ -518,6 +601,13 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         bool exhausted = string.IsNullOrWhiteSpace(remaining);
         bool firstChunk = !_sessionAcceptedAny;
 
+        string expected = _expectedPreceding;
+        string insertion = AcceptanceChunker.InsertionChunk(chunk, expected);
+        if (exhausted && settings.AddSpaceAfterAccept) insertion = AcceptanceChunker.AppendingTrailingSpace(insertion);
+        var accepted = new AcceptedChunk(session.RequestId, field, expected, chunk, insertion, exhausted, firstChunk);
+        _expectedPreceding = expected + insertion;
+        _pendingInsertChars += insertion.Length;
+
         if (exhausted)
         {
             ClearSession();
@@ -536,71 +626,79 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
 
         _insertChain = _insertChain
-            .ContinueWith(
-                _ => InsertAcceptedAsync(session.RequestId, chunk, exhausted, firstChunk, settings),
-                TaskScheduler.Default)
+            .ContinueWith(_ => InsertAcceptedAsync(accepted), TaskScheduler.Default)
             .Unwrap();
     }
 
-    private async Task InsertAcceptedAsync(
-        string requestId, string chunk, bool exhausted, bool firstChunk, SuggestionSettings settings)
+    /// <summary>One accept, decided on the UI context and carried out on the thread pool.</summary>
+    private sealed record AcceptedChunk(
+        string RequestId, FocusedField OfferedIn, string ExpectedPreceding, string Chunk, string Insertion,
+        bool Exhausted, bool FirstChunk);
+
+    private async Task InsertAcceptedAsync(AcceptedChunk accepted)
     {
         try
         {
+            // The text goes where the caret is, so it is only sent if the caret is still where the
+            // suggestion was shown.
             var field = _focus.Refresh();
-            if (field is null)
+            if (field is null
+                || field.ProcessId != accepted.OfferedIn.ProcessId || field.FieldId != accepted.OfferedIn.FieldId
+                || !FollowsExpected(accepted.ExpectedPreceding, field.PrecedingText, PublishLagChars))
             {
-                Post(() => CancelSession("no field at accept"));
+                Post(() => CancelSession("the caret left the suggestion before the accept"));
                 return;
             }
 
-            string preceding = field.PrecedingText;
-            string insertion = AcceptanceChunker.InsertionChunk(chunk, preceding);
-            if (exhausted && settings.AddSpaceAfterAccept)
-            {
-                insertion = AcceptanceChunker.AppendingTrailingSpace(insertion);
-            }
-
-            if (insertion.Length > 0
-                && !await _inserter.InsertAsync(field, insertion, CancellationToken.None).ConfigureAwait(false))
+            if (accepted.Insertion.Length > 0
+                && !await _inserter.InsertAsync(field, accepted.Insertion, CancellationToken.None).ConfigureAwait(false))
             {
                 Post(() => CancelSession("insertion failed"));
                 return;
             }
-            Metrics.RecordAccepted(chunk, firstChunk);
+            Metrics.RecordAccepted(accepted.Chunk, accepted.FirstChunk);
             _logger.LogInformation(
-                "Accepted req={ReqId} chars={Chars} exhausted={Exhausted}", requestId, insertion.Length, exhausted);
-            _logger.LogDebug("Accepted text req={ReqId} \"{Inserted}\"", requestId, LogText.Escape(insertion));
+                "Accepted req={ReqId} chars={Chars} exhausted={Exhausted}",
+                accepted.RequestId, accepted.Insertion.Length, accepted.Exhausted);
+            _logger.LogDebug(
+                "Accepted text req={ReqId} \"{Inserted}\"", accepted.RequestId, LogText.Escape(accepted.Insertion));
 
-            if (exhausted)
+            if (accepted.Exhausted)
             {
                 Post(() =>
                 {
-                    _lastAcceptedTail = new AcceptedTail(chunk, preceding);
+                    _lastAcceptedTail = new AcceptedTail(accepted.Chunk, field.PrecedingText);
                     _publishBaseline = field;
-                    _expectedDelta = insertion.Length;
+                    _expectedDelta = accepted.Insertion.Length;
                     SchedulePrediction(typed: null);
                 });
                 return;
             }
 
-            await ReanchorAsync(requestId, PostInsertSettleMs).ConfigureAwait(false);
+            await ReanchorAsync(accepted.RequestId, PostInsertSettleMs).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Accept failed for {ReqId}.", requestId);
+            _logger.LogError(ex, "Accept failed for {ReqId}.", accepted.RequestId);
             Post(() => CancelSession("accept failed"));
+        }
+        finally
+        {
+            Post(() => _pendingInsertChars -= accepted.Insertion.Length);
         }
     }
 
-    /// <summary>Swaps the typo for its fix. The edit is planned against the live text.</summary>
-    private async Task ApplyCorrectionAsync(TypoCorrection correction)
+    /// <summary>
+    /// Swaps the typo for its fix. The edit is planned against the live text, and once it starts
+    /// it is not cancelled, because a cancelled edit would leave the word deleted.
+    /// </summary>
+    private async Task ApplyCorrectionAsync(TypoCorrection correction, bool requiresTrailingSpace)
     {
         try
         {
             if (_focus.Refresh() is not { } field) return;
             var plan = TypoCorrectionReplacementPlanner.Plan(
-                field.PrecedingText, correction.Word, correction.CorrectedWord, requiresTrailingSpace: false);
+                field.PrecedingText, correction.Word, correction.CorrectedWord, requiresTrailingSpace);
             if (plan is not { } fix) return;
             await _inserter.ReplaceAsync(field, fix.DeletingUtf16Count, fix.ReplacementText, CancellationToken.None)
                 .ConfigureAwait(false);

@@ -46,6 +46,9 @@ public sealed class EmojiPickerSession(
 
     public EmojiGender PreferredGender { get; set; }
 
+    /// <summary>Whether a capture may open in a field. The host supplies the app-wide rules.</summary>
+    public Func<FocusedField, bool> CanCapture { get; set; } = _ => true;
+
     public bool IsCapturing => _machine.IsCapturing;
 
     /// <summary>Feeds one keyboard event. Returns whether the key must be kept from the focused app.</summary>
@@ -113,7 +116,7 @@ public sealed class EmojiPickerSession(
 
     private void BeginCapture()
     {
-        if (focus.Current is not { IsSecure: false } field)
+        if (focus.Current is not { IsSecure: false } field || !CanCapture(field))
         {
             _machine.Reset();
             return;

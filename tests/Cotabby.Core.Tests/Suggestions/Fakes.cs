@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Runtime.CompilerServices;
 using Cotabby.Core.Context;
 using Cotabby.Core.Focus;
 using Cotabby.Core.Input;
@@ -97,6 +96,12 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
         }
     }
 
+    /// <summary>Changes the field without a focus event, as a mouse click inside the same app does.</summary>
+    public void Replace(FocusedField field)
+    {
+        lock (_gate) _field = field;
+    }
+
     public void Move(ScreenRect caret)
     {
         lock (_gate) _field = _field! with { CaretRect = caret };
@@ -131,13 +136,11 @@ internal sealed class ScriptedEngine : ISuggestionEngine
     public bool IsReady { get; set; } = true;
     public bool SpacingIsExact => true;
 
-    public async IAsyncEnumerable<SuggestionChunk> GenerateAsync(
-        SuggestionRequest request, [EnumeratorCancellation] CancellationToken ct)
+    public async Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct)
     {
         Requests.Enqueue(request);
         await Task.Yield();
-        yield return new SuggestionChunk(Completion(request), IsFinal: false);
-        yield return new SuggestionChunk(string.Empty, IsFinal: true);
+        return Completion(request);
     }
 }
 

@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
 using Cotabby.Core.Suggestions;
 using Cotabby.Core.Support;
 using Microsoft.Extensions.Logging;
@@ -46,20 +45,14 @@ public sealed class OpenAICompatibleSuggestionEngine : ISuggestionEngine
 
     public bool SpacingIsExact => false;
 
-    public async IAsyncEnumerable<SuggestionChunk> GenerateAsync(
-        SuggestionRequest request,
-        [EnumeratorCancellation] CancellationToken ct)
+    public async Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct)
     {
         var endpoint = _endpoint;
         var configuration = endpoint.Configuration
             ?? throw new OpenAICompatibleEndpointException(endpoint.Error!.Value);
 
         var prompt = CompletionPipeline.Prompt(request, tokenBudget: null);
-        if (prompt.Length == 0)
-        {
-            yield return new SuggestionChunk(string.Empty, IsFinal: true);
-            yield break;
-        }
+        if (prompt.Length == 0) return string.Empty;
 
         var started = Stopwatch.GetTimestamp();
         string raw;
@@ -74,7 +67,7 @@ public sealed class OpenAICompatibleSuggestionEngine : ISuggestionEngine
         }
         catch (OperationCanceledException)
         {
-            yield break;
+            return string.Empty;
         }
         catch (Exception ex)
         {
@@ -82,7 +75,7 @@ public sealed class OpenAICompatibleSuggestionEngine : ISuggestionEngine
             throw;
         }
 
-        if (ct.IsCancellationRequested) yield break;
+        if (ct.IsCancellationRequested) return string.Empty;
 
         var normalized = CompletionPipeline.Normalize(raw, prompt, request);
         _logger.LogInformation(
@@ -91,11 +84,7 @@ public sealed class OpenAICompatibleSuggestionEngine : ISuggestionEngine
             (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds, normalized.Suppression?.ToString() ?? "shown");
         _logger.LogDebug("Req {ReqId}: raw=\"{Raw}\".", request.RequestId, LogText.Escape(raw));
 
-        if (normalized.Suppression is null)
-        {
-            yield return new SuggestionChunk(normalized.Text, IsFinal: false);
-        }
-        yield return new SuggestionChunk(string.Empty, IsFinal: true);
+        return normalized.Text;
     }
 
     /// <summary>

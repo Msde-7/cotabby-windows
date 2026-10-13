@@ -7,7 +7,6 @@ using Cotabby.Core.Focus;
 using Cotabby.Core.Input;
 using Cotabby.Core.Insertion;
 using Cotabby.Core.Models;
-using Cotabby.Core.Overlay;
 using Cotabby.Core.Spelling;
 using Cotabby.Core.Suggestions;
 using Cotabby.Inference;
@@ -44,7 +43,7 @@ public sealed class AppHost : IAsyncDisposable
     private readonly SynchronizationContext _ui;
     private readonly ILogger _logger;
     private readonly GhostOverlayWindow _macroPreview;
-    private readonly SymSpellCorrector _spelling = new();
+    private readonly SymSpellCorrector _spelling;
 
     public SuggestionCoordinator Coordinator { get; }
     public LlamaRuntimeManager Runtime { get; }
@@ -104,6 +103,7 @@ public sealed class AppHost : IAsyncDisposable
         EndpointCredentials = _services.GetRequiredService<IOpenAICompatibleCredentialStore>();
 
         var loggers = _services.GetRequiredService<ILoggerFactory>();
+        _spelling = new SymSpellCorrector(logger: loggers.CreateLogger<SymSpellCorrector>());
         _logger = loggers.CreateLogger("Cotabby.App");
         _hook = _services.GetRequiredService<IKeyboardHook>();
         var focus = _services.GetRequiredService<IFocusTracker>();
@@ -132,6 +132,8 @@ public sealed class AppHost : IAsyncDisposable
                 _spelling, new SpellingLanguageResolver(), new WindowsSpellChecker(_spelling)),
             clipboard: _services.GetRequiredService<ClipboardTextReader>());
         Coordinator.InlineCaptureActive = () => EmojiPicker.IsCapturing || Macros.IsCapturing;
+        EmojiPicker.CanCapture = Macros.CanCapture = Coordinator.IsAvailableIn;
+        EmojiPicker.CommitKeyFor = Macros.CommitKeyFor = Coordinator.AcceptWordKeyFor;
         Coordinator.Metrics.Restore(Settings.WordsAccepted);
 
         ApplySettings();
@@ -170,15 +172,16 @@ public sealed class AppHost : IAsyncDisposable
         Coordinator.Settings = Settings.ToSuggestionSettings();
         _router.UseEndpoint = Settings.Engine == EngineKind.Endpoint;
         Endpoint.UpdateSettings(EndpointSettings);
+        // A cold local server would make the first suggestion wait for the model to load.
+        if (Settings.Engine == EngineKind.Endpoint) _ = Endpoint.PrewarmAsync();
         EmojiPicker.Enabled = Settings.EmojiPickerEnabled;
-        EmojiPicker.CommitKey = Settings.AcceptWord;
         EmojiPicker.PreferredSkinTone = Settings.EmojiSkinTone;
         EmojiPicker.PreferredGender = Settings.EmojiGender;
         Macros.Enabled = Settings.MacrosEnabled;
-        Macros.CommitKey = Settings.AcceptWord;
         Overlay.ApplyAppearance(Settings);
         _macroPreview.ApplyAppearance(Settings);
         LaunchAtLogin.Set(Settings.LaunchAtLogin);
+        LoadSelectedModelIfChanged();
         SettingsApplied?.Invoke();
     }
 
@@ -197,27 +200,33 @@ public sealed class AppHost : IAsyncDisposable
     public void LogError(Exception ex, string message) => _logger.LogError(ex, "{Message}", message);
 
     /// <summary>Loads the selected model if it is already on disk. Never downloads.</summary>
-    public async Task<bool> TryLoadCachedAsync(CancellationToken ct)
+    public async Task<bool> TryLoadCachedAsync()
     {
         var model = ResolveActiveModel();
         if (!ModelDownloader.IsCached(model)) return false;
-        return await LoadAsync(model, ct).ConfigureAwait(false);
+        return await LoadAsync(model).ConfigureAwait(false);
     }
 
-    /// <summary>Downloads the selected model if needed, then loads it.</summary>
+    /// <summary>
+    /// Downloads the selected model if needed, then loads it. Only the download can be cancelled.
+    /// A cancelled load would leave no model in memory, because the old one is released first.
+    /// </summary>
     public async Task<bool> EnsureModelReadyAsync(IProgress<ModelDownloader.Progress>? progress, CancellationToken ct)
     {
         var model = ResolveActiveModel();
         if (!ModelDownloader.IsCached(model))
         {
             await Downloader.DownloadAsync(model, progress, ct).ConfigureAwait(false);
+            // The selection may have changed during a long download.
+            model = ResolveActiveModel();
+            if (!ModelDownloader.IsCached(model)) return Runtime.IsReady;
         }
-        return await LoadAsync(model, ct).ConfigureAwait(false);
+        return await LoadAsync(model).ConfigureAwait(false);
     }
 
-    private async Task<bool> LoadAsync(CotabbyModel model, CancellationToken ct)
+    private async Task<bool> LoadAsync(CotabbyModel model)
     {
-        await Runtime.LoadAsync(model, ModelDownloader.LocalPath(model), ct).ConfigureAwait(false);
+        await Runtime.LoadAsync(model, ModelDownloader.LocalPath(model), CancellationToken.None).ConfigureAwait(false);
         // The tray and any open window show which model is loaded.
         _ui.Post(_ => SettingsApplied?.Invoke(), null);
         return Runtime.IsReady;
@@ -241,18 +250,26 @@ public sealed class AppHost : IAsyncDisposable
     private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
     {
         if (e.Mode != PowerModes.StatusChange) return;
-        _ui.Post(async _ =>
+        _ui.Post(_ => LoadSelectedModelIfChanged(), null);
+    }
+
+    /// <summary>
+    /// Loads the model the settings and the power source now call for, when one is already
+    /// loaded and it is a different one. A first load is left to the caller that shows progress.
+    /// </summary>
+    private async void LoadSelectedModelIfChanged()
+    {
+        try
         {
-            if (PowerSourceModel() is not { } model || Runtime.ActiveModel?.Id == model.Id) return;
-            try
-            {
-                await TryLoadCachedAsync(CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                LogError(ex, "Switching models for the power source failed.");
-            }
-        }, null);
+            if (Settings.Engine != EngineKind.Local || !Runtime.IsReady) return;
+            var wanted = ResolveActiveModel();
+            if (wanted.Id == Runtime.ActiveModel?.Id || !ModelDownloader.IsCached(wanted)) return;
+            await LoadAsync(wanted);
+        }
+        catch (Exception ex)
+        {
+            LogError(ex, "Switching models failed.");
+        }
     }
 
     public async ValueTask DisposeAsync()

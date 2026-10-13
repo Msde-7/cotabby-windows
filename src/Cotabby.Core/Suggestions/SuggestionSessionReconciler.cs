@@ -34,7 +34,7 @@ public static class SuggestionSessionReconciler
                 return new(Outcome.Advance, session with { VisibleText = session.VisibleText[1..] });
 
             case KeyKind.Character or KeyKind.Tab or KeyKind.Backspace or KeyKind.Delete
-                or KeyKind.Escape or KeyKind.Enter or KeyKind.Arrow:
+                or KeyKind.Escape or KeyKind.Enter or KeyKind.Arrow or KeyKind.Shortcut:
                 return new(Outcome.Cancel, null);
 
             default:

@@ -18,15 +18,24 @@ public sealed class EmojiUsageStore
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly string _path;
+    private readonly Action<Action> _runWrite;
+    private readonly object _writeGate = new();
+    private long _version;
+    private long _writtenVersion;
     private List<string> _recents = [];
     private Dictionary<string, int> _frequency = [];
 
     private sealed record Persisted(List<string>? Recents, Dictionary<string, int>? Frequency);
 
     /// <summary>Loads the history stored at <paramref name="path"/>. A missing or corrupt file starts empty.</summary>
-    public EmojiUsageStore(string path)
+    /// <param name="runWrite">
+    /// Runs a file write. The default writes at once. A host that records from a thread that must
+    /// not block, such as the keyboard hook, passes a scheduler instead.
+    /// </param>
+    public EmojiUsageStore(string path, Action<Action>? runWrite = null)
     {
         _path = path;
+        _runWrite = runWrite ?? (write => write());
         try
         {
             if (JsonSerializer.Deserialize<Persisted>(File.ReadAllBytes(path), JsonOptions)
@@ -94,13 +103,24 @@ public sealed class EmojiUsageStore
     // Best effort. A failed write only costs ranking history.
     private void Persist()
     {
-        try
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(new Persisted(_recents, _frequency), JsonOptions);
+        long version = ++_version;
+        _runWrite(() =>
         {
-            if (Path.GetDirectoryName(_path) is { Length: > 0 } directory) Directory.CreateDirectory(directory);
-            File.WriteAllBytes(_path, JsonSerializer.SerializeToUtf8Bytes(new Persisted(_recents, _frequency), JsonOptions));
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-        }
+            lock (_writeGate)
+            {
+                // Scheduled writes can run out of order, and an older state must not win.
+                if (version < _writtenVersion) return;
+                _writtenVersion = version;
+                try
+                {
+                    if (Path.GetDirectoryName(_path) is { Length: > 0 } directory) Directory.CreateDirectory(directory);
+                    File.WriteAllBytes(_path, bytes);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                }
+            }
+        });
     }
 }

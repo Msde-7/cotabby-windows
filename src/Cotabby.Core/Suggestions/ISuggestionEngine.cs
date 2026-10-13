@@ -16,8 +16,8 @@ public interface ISuggestionEngine
     bool SpacingIsExact { get; }
 
     /// <summary>
-    /// Yields the suggestion as chunks, ending with one whose <c>IsFinal</c> is set.
-    /// Implementations stop on end of sequence, the token cap or cancellation.
+    /// The cleaned-up continuation for a request, or an empty string when there is nothing to
+    /// suggest or the request was cancelled.
     /// </summary>
-    IAsyncEnumerable<SuggestionChunk> GenerateAsync(SuggestionRequest request, CancellationToken ct);
+    Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct);
 }

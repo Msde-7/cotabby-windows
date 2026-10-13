@@ -90,12 +90,13 @@ internal static class WritingPane
                 r.Toggle("Offer Corrections on Typo",
                     "After you finish a word, shows a green replacement you can apply with your accept key.",
                     s => s.OfferTypoCorrections, (s, v) => s.OfferTypoCorrections = v)
-                    .Tagged("correct fix spelling autocorrect spell check mistake rewrite"),
+                    .Tagged("correct fix spelling autocorrect spell check mistake rewrite")
+                    .EnabledWhen(s => s.SuppressCompletionsOnTypo),
                 r.Toggle("Automatically Fix Typos",
                     "After you press Space, replaces a misspelled word without requiring your accept key.",
                     s => s.AutoFixTypos, (s, v) => s.AutoFixTypos = v)
                     .Tagged("automatic autocorrect spelling replace instant")
-                    .EnabledWhen(s => s.OfferTypoCorrections),
+                    .EnabledWhen(s => s.SuppressCompletionsOnTypo && s.OfferTypoCorrections),
                 r.Stacked("Spelling Dictionaries",
                     "Choose which bundled dictionaries Cotabby may use for corrections. "
                     + "With several enabled, Cotabby selects one from the surrounding text.",

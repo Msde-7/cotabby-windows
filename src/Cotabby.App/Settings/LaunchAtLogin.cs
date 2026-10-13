@@ -12,17 +12,6 @@ public static class LaunchAtLogin
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string ValueName = "Cotabby";
 
-    /// <summary>True if the Run entry currently points at this exe.</summary>
-    public static bool IsEnabled()
-    {
-        try
-        {
-            using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: false);
-            return key?.GetValue(ValueName) is string s && !string.IsNullOrWhiteSpace(s);
-        }
-        catch { return false; }
-    }
-
     /// <summary>Apply the desired state. Returns true on success.</summary>
     public static bool Set(bool enabled)
     {

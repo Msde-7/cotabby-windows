@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using Cotabby.Core.Support;
 using Cotabby.Core.Suggestions;
 using Microsoft.Extensions.Logging;
@@ -29,16 +28,13 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
 
     public bool SpacingIsExact => true;
 
-    public async IAsyncEnumerable<SuggestionChunk> GenerateAsync(
-        SuggestionRequest request,
-        [EnumeratorCancellation] CancellationToken ct)
+    public async Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct)
     {
         var core = _runtime.Core;
         if (core is null)
         {
             _logger.LogWarning("Generate called while runtime not ready (req={ReqId}).", request.RequestId);
-            yield return new SuggestionChunk(string.Empty, IsFinal: true);
-            yield break;
+            return string.Empty;
         }
 
         var options = new LlamaGenerationOptions
@@ -69,11 +65,7 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
                 request,
                 PromptTokenBudget.ForRequest(
                     PromptTokenBudget.Configured(core.ContextWindowTokens), request.MaxTokens));
-            if (prompt.Length == 0)
-            {
-                yield return new SuggestionChunk(string.Empty, IsFinal: true);
-                yield break;
-            }
+            if (prompt.Length == 0) return string.Empty;
             generation = core.GenerateAsync(prompt, options, ct);
         }
 
@@ -84,10 +76,10 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
         }
         catch (OperationCanceledException)
         {
-            yield break;
+            return string.Empty;
         }
 
-        if (ct.IsCancellationRequested) yield break;
+        if (ct.IsCancellationRequested) return string.Empty;
 
         var normalized = CompletionPipeline.Normalize(raw, prompt, request);
 
@@ -98,12 +90,8 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
                 _logger.LogInformation("Req {ReqId}: suppressed ({Reason}).", request.RequestId, suppression);
                 _logger.LogDebug("Req {ReqId}: raw=\"{Raw}\".", request.RequestId, LogText.Escape(raw));
             }
-            yield return new SuggestionChunk(string.Empty, IsFinal: true);
-            yield break;
         }
-
-        yield return new SuggestionChunk(normalized.Text, IsFinal: false);
-        yield return new SuggestionChunk(string.Empty, IsFinal: true);
+        return normalized.Text;
     }
 
     private static bool HasMeaningfulSuffix(string suffix)

@@ -7,8 +7,8 @@ namespace Cotabby.Win32.Clipboard;
 /// Reads clipboard text through the raw Win32 API, which works from any thread.
 /// </summary>
 /// <remarks>
-/// The inserter pastes long suggestions through the clipboard and then puts the old contents
-/// back. It brackets that with <see cref="BeginOwnWrite"/> and <see cref="EndOwnWrite"/>, and the
+/// The inserter pastes long suggestions through the clipboard and then puts the old text back,
+/// or empties the clipboard when it held none. It brackets that with <see cref="BeginOwnWrite"/> and <see cref="EndOwnWrite"/>, and the
 /// changes made in between are subtracted from <see cref="SequenceNumber"/>. A paste therefore
 /// never looks like a copy by the user.
 /// </remarks>

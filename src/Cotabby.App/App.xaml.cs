@@ -14,7 +14,7 @@ namespace Cotabby.App;
 public partial class App : Application
 {
     private const string SingleInstanceMutexName =
-        "Global\\Cotabby.SingleInstance.{6f3b1d44-2c1b-4d0f-8c3d-2a1f1f7b1b2a}";
+        "Local\\Cotabby.SingleInstance.{6f3b1d44-2c1b-4d0f-8c3d-2a1f1f7b1b2a}";
 
     private Mutex? _singleInstance;
     private AppHost? _host;
@@ -64,7 +64,7 @@ public partial class App : Application
         tray.SetStatus("Loading model…");
         try
         {
-            bool loaded = await host.TryLoadCachedAsync(CancellationToken.None);
+            bool loaded = await host.TryLoadCachedAsync();
             tray.SetStatus(loaded ? null : "No model yet. Open Settings to download one.");
         }
         catch (Exception ex)

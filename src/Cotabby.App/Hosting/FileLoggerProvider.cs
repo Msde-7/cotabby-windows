@@ -10,15 +10,17 @@ namespace Cotabby.App.Hosting;
 /// </summary>
 public sealed class FileLoggerProvider : ILoggerProvider
 {
-    private readonly string _path;
+    private const long MaxBytes = 5 * 1024 * 1024;
+
     private readonly object _gate = new();
     private StreamWriter? _writer;
 
     public FileLoggerProvider(string path)
     {
-        _path = path;
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        // The log is for diagnosing the current session, so it starts over once it has grown large.
+        if (File.Exists(path) && new FileInfo(path).Length > MaxBytes) File.Delete(path);
         _writer = new StreamWriter(new FileStream(
             path, FileMode.Append, FileAccess.Write, FileShare.Read))
         { AutoFlush = true };

@@ -53,6 +53,7 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
                     $"Model file not found at '{path}'. Download it before calling LoadAsync.", path);
             }
 
+            if (_core is not null && _activeModel?.Id == model.Id) return;
             UnloadInternal();
 
             var sw = Stopwatch.StartNew();

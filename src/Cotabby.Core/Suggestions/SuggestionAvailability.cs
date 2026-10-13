@@ -38,13 +38,15 @@ public static class SuggestionAvailability
 
     /// <summary>True when a key press may start a fresh prediction.</summary>
     public static bool SchedulesPrediction(KeyboardEvent ev) =>
-        ev.IsKeyDown && !ev.HasNonShiftModifier
-        && ev.Kind is KeyKind.Character or KeyKind.Backspace or KeyKind.Enter;
+        ev.IsKeyDown
+        && (ev.Kind == KeyKind.Shortcut
+            || (!ev.HasNonShiftModifier && ev.Kind is KeyKind.Character or KeyKind.Backspace or KeyKind.Enter));
 
     /// <summary>True when a key press invalidates a visible suggestion that it does not type through.</summary>
     public static bool ClearsSuggestion(KeyboardEvent ev) =>
         ev.IsKeyDown
-        && ev.Kind is KeyKind.Escape or KeyKind.Enter or KeyKind.Arrow or KeyKind.Delete or KeyKind.Backspace;
+        && ev.Kind is KeyKind.Escape or KeyKind.Enter or KeyKind.Arrow or KeyKind.Delete or KeyKind.Backspace
+            or KeyKind.Shortcut;
 
     /// <summary>At least one non-whitespace character must precede the caret.</summary>
     public static bool HasTextToContinue(FocusedField field) => !string.IsNullOrWhiteSpace(field.PrecedingText);

@@ -50,7 +50,8 @@ public sealed class EmojiPickerController : IDisposable
         _focus = focus;
         _inserter = inserter;
         _logger = logger;
-        _usage = new EmojiUsageStore(usageFilePath ?? DefaultUsageFilePath);
+        // Commits are recorded inside the keyboard hook, which must never wait on the disk.
+        _usage = new EmojiUsageStore(usageFilePath ?? DefaultUsageFilePath, write => Task.Run(write));
         _session = new EmojiPickerSession(
             () => new EmojiMatcher(EmojiCatalog.Bundled),
             new DispatchedPanel(popup, dispatcher),
@@ -76,8 +77,14 @@ public sealed class EmojiPickerController : IDisposable
         set => _session.Enabled = value;
     }
 
-    /// <summary>The key that commits the selected emoji. Follows the accept-word shortcut.</summary>
-    public KeyBinding CommitKey { get; set; } = KeyBinding.Tab;
+    /// <summary>The key that commits the selected emoji in an app. It follows the accept-word shortcut.</summary>
+    public Func<string?, KeyBinding> CommitKeyFor { get; set; } = _ => KeyBinding.Tab;
+
+    public Func<FocusedField, bool> CanCapture
+    {
+        get => _session.CanCapture;
+        set => _session.CanCapture = value;
+    }
 
     public EmojiSkinTone PreferredSkinTone
     {
@@ -122,7 +129,7 @@ public sealed class EmojiPickerController : IDisposable
             }
             else
             {
-                args.Suppress = _session.HandleKey(InlineCommitKey.Normalize(args.Event, CommitKey));
+                args.Suppress = _session.HandleKey(InlineCommitKey.Normalize(args.Event, CommitKeyFor(_focus.Current?.ProcessName)));
             }
             _longPauseTimer.Change(_session.IsCapturing ? LongPause : Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             if (_session.IsCapturing) _ = Task.Run(FollowCaretAsync);

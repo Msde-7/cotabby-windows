@@ -128,7 +128,11 @@ public sealed class AppSettings
         AddSpaceAfterAccept = AddSpaceAfterAccept,
         DisplayMode = DisplayMode,
         SuggestWithinWords = SuggestWithinWords,
-        Typos = new TypoGateSettings(SuppressCompletionsOnTypo, OfferTypoCorrections, AutoFixTypos),
+        // Offering a fix needs typo detection on, and fixing automatically needs offering on.
+        Typos = new TypoGateSettings(
+            SuppressCompletionsOnTypo,
+            SuppressCompletionsOnTypo && OfferTypoCorrections,
+            SuppressCompletionsOnTypo && OfferTypoCorrections && AutoFixTypos),
         SpellingDictionaries = SpellingDictionaryCatalog.Normalize(SpellingDictionaries),
         UserName = UserName,
         ExtendedContext = ExtendedContext,

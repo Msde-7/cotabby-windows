@@ -50,8 +50,11 @@ public sealed class MacroController : IDisposable
         }
     }
 
-    /// <summary>The key that inserts the result. Follows the accept-word shortcut.</summary>
-    public KeyBinding CommitKey { get; set; } = KeyBinding.Tab;
+    /// <summary>The key that inserts the result in an app. It follows the accept-word shortcut.</summary>
+    public Func<string?, KeyBinding> CommitKeyFor { get; set; } = _ => KeyBinding.Tab;
+
+    /// <summary>Whether a macro may open in a field. The host supplies the app-wide rules.</summary>
+    public Func<FocusedField, bool> CanCapture { get; set; } = _ => true;
 
     /// <summary>Whether a macro is being typed, during which suggestions stand down.</summary>
     public bool IsCapturing
@@ -77,13 +80,13 @@ public sealed class MacroController : IDisposable
                 return;
             }
 
-            var outcome = _machine.Apply(InlineCommitKey.Normalize(args.Event, CommitKey), _result is not null);
+            var outcome = _machine.Apply(InlineCommitKey.Normalize(args.Event, CommitKeyFor(_focus.Current?.ProcessName)), _result is not null);
             args.Suppress = _machine.ConsumesKey;
             switch (outcome)
             {
                 case MacroTriggerStateMachine.Outcome.Opened:
                     _capturePid = _focus.Current?.ProcessId ?? 0;
-                    if (!CanCapture(_focus.Current)) End();
+                    if (_focus.Current is not { IsSecure: false } field || !CanCapture(field)) End();
                     break;
                 case MacroTriggerStateMachine.Outcome.QueryChanged:
                     Preview(_engine.Evaluate(_machine.Query));
@@ -99,9 +102,6 @@ public sealed class MacroController : IDisposable
             }
         }
     }
-
-    private static bool CanCapture(FocusedField? field) =>
-        field is { IsSecure: false } && field.ProcessId != Environment.ProcessId;
 
     private void Preview(MacroResult? result)
     {

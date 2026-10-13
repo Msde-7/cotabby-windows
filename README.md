@@ -146,6 +146,7 @@ Settings live in `%APPDATA%\Cotabby\settings.json`, models in `%LOCALAPPDATA%\Co
 | Output cleanup, seam guard, live spacing, dismissal memory | Ported |
 | Word and phrase acceptance, CJK chunking, trailing space, double tap | Ported |
 | Rebindable shortcuts, per-app overrides, global toggle | Ported |
+| Inline ghost text, with a card under the caret when text follows it | Ported |
 | Emoji picker with skin tone, gender, recents and popularity | Ported |
 | Slash macros | Ported |
 | Autocorrect with seven bundled dictionaries | Ported |

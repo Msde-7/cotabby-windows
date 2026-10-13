@@ -42,6 +42,12 @@ public sealed record FocusedField
     /// <summary>True when a non-empty range of text is selected.</summary>
     public bool HasSelection { get; init; }
 
+    /// <summary>
+    /// Identity of the field within its process, stable while focus stays in it. Empty when the
+    /// host gives none.
+    /// </summary>
+    public string FieldId { get; init; } = "";
+
     /// <summary>Accessible name of the field, usually its visible label or placeholder.</summary>
     public string Label { get; init; } = "";
 

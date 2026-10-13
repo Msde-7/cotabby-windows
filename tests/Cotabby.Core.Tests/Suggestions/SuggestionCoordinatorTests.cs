@@ -210,6 +210,55 @@ public sealed class SuggestionCoordinatorTests : CoordinatorHarness
     }
 
     [Fact]
+    public async Task FocusMovingToAnotherFieldOfTheSameApp_HidesTheSuggestion()
+    {
+        Type("hello");
+        await Shown(" world again");
+
+        Focus.Focus(Fields.Text("Search") with { FieldId = "search" });
+
+        await Shown("");
+        Assert.False(Hook.Press(Keys.Tab()));
+    }
+
+    [Fact]
+    public async Task CaretMovedByTheMouse_HidesTheSuggestion()
+    {
+        Type("hello there friend");
+        await Shown(" world again");
+
+        Focus.Replace(Focus.Current! with { CaretOffset = 2 });
+
+        await Shown("");
+    }
+
+    [Fact]
+    public async Task AcceptAfterTheCaretMoved_InsertsNothing()
+    {
+        Type("hello");
+        await Shown(" world again");
+
+        Focus.Replace(Fields.Text("Search"));
+        Hook.Press(Keys.Tab());
+
+        await Shown("");
+        Assert.Empty(Focus.Insertions);
+        Assert.Equal("Search", Focus.Current!.Text);
+    }
+
+    [Fact]
+    public async Task Shortcut_InvalidatesTheSuggestion()
+    {
+        Type("hello");
+        await Shown(" world again");
+        Engine.Completion = _ => "";
+
+        Hook.Press(Keys.Special(KeyKind.Shortcut, 'V') with { Modifiers = KeyModifiers.Control });
+
+        await Shown("");
+    }
+
+    [Fact]
     public async Task FocusMovingToAnotherApp_HidesTheSuggestion()
     {
         Type("hello");

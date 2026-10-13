@@ -61,6 +61,9 @@ public enum KeyKind
     /// <summary>Arrow and navigation keys. Moving the caret invalidates the active suggestion.</summary>
     Arrow,
 
-    /// <summary>Any other key, including a modifier on its own and a modified shortcut.</summary>
+    /// <summary>A key pressed with Ctrl, Alt or Win, such as paste or undo. It can change the text in any way.</summary>
+    Shortcut,
+
+    /// <summary>Any other key, including a modifier on its own.</summary>
     Other,
 }

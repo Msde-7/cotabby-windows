@@ -138,7 +138,10 @@ internal sealed class Rows(SettingsContext context)
         }
 
         box.OnCommit(text => Apply(int.TryParse(text, out int typed) ? typed : get(context.Settings)));
-        context.OnRefresh(() => box.Text = get(context.Settings).ToString(CultureInfo.CurrentCulture));
+        context.OnRefresh(() =>
+        {
+            if (!box.IsKeyboardFocused) box.Text = get(context.Settings).ToString(CultureInfo.CurrentCulture);
+        });
         return Labeled(title, subtitle, Ui.Across(
             box,
             StepButton("\u2212", () => Apply(get(context.Settings) - 1)),

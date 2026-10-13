@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace Cotabby.Win32.Interop;
 
@@ -24,20 +23,8 @@ internal static partial class NativeMethods
     public const int VK_MENU = 0x12; // Alt
     public const int VK_LWIN = 0x5B;
     public const int VK_RWIN = 0x5C;
-    public const int VK_CAPITAL = 0x14;
-    public const int VK_TAB = 0x09;
-    public const int VK_RETURN = 0x0D;
-    public const int VK_ESCAPE = 0x1B;
-    public const int VK_BACK = 0x08;
-    public const int VK_DELETE = 0x2E;
-    public const int VK_LEFT = 0x25;
-    public const int VK_UP = 0x26;
-    public const int VK_RIGHT = 0x27;
-    public const int VK_DOWN = 0x28;
-    public const int VK_HOME = 0x24;
-    public const int VK_END = 0x23;
-    public const int VK_PRIOR = 0x21;
-    public const int VK_NEXT = 0x22;
+    public const int VK_RCONTROL = 0xA3;
+    public const int VK_RMENU = 0xA5;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct KBDLLHOOKSTRUCT
@@ -52,9 +39,9 @@ internal static partial class NativeMethods
     // SendInput
 
     public const uint INPUT_KEYBOARD = 1;
+    public const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
     public const uint KEYEVENTF_KEYUP = 0x0002;
     public const uint KEYEVENTF_UNICODE = 0x0004;
-    public const uint KEYEVENTF_SCANCODE = 0x0008;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct INPUT
@@ -118,17 +105,11 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll", SetLastError = true)]
     public static partial uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
-    /// <summary>
-    /// Suspends physical keyboard and mouse input system-wide. Used during a paste so the user's
-    /// own keystrokes cannot interleave with it. Returns true if input is now blocked. Only the
-    /// calling thread may unblock, and Ctrl+Alt+Delete always gets through.
-    /// </summary>
-    [LibraryImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static partial bool BlockInput([MarshalAs(UnmanagedType.Bool)] bool fBlockIt);
-
     [LibraryImport("user32.dll")]
     public static partial short GetKeyState(int nVirtKey);
+
+    [LibraryImport("user32.dll")]
+    public static partial short GetAsyncKeyState(int vKey);
 
     [LibraryImport("user32.dll")]
     public static partial int GetKeyboardState(byte[] lpKeyState);
@@ -136,14 +117,18 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll")]
     public static partial IntPtr GetKeyboardLayout(uint idThread);
 
-    // ToUnicodeEx must use the older marshaler because StringBuilder is not
-    // supported by LibraryImport. Keep this one DllImport.
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    public static extern int ToUnicodeEx(
+    /// <summary>
+    /// ToUnicodeEx flag that leaves the kernel keyboard state alone, so a dead key the focused
+    /// app is about to combine is not consumed. Windows 10 1607 and later.
+    /// </summary>
+    public const uint TOUNICODE_KEEP_STATE = 0x4;
+
+    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    public static partial int ToUnicodeEx(
         uint wVirtKey,
         uint wScanCode,
         byte[] lpKeyState,
-        StringBuilder pwszBuff,
+        [Out] char[] pwszBuff,
         int cchBuff,
         uint wFlags,
         IntPtr dwhkl);
@@ -171,9 +156,6 @@ internal static partial class NativeMethods
 
     [LibraryImport("user32.dll", EntryPoint = "DispatchMessageW")]
     public static partial IntPtr DispatchMessage(in MSG lpMsg);
-
-    [LibraryImport("user32.dll")]
-    public static partial void PostQuitMessage(int nExitCode);
 
     [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

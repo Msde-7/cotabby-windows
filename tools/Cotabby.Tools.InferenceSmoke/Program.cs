@@ -69,24 +69,10 @@ Console.WriteLine();
 Console.WriteLine("Prompt prefix (tail):");
 Console.WriteLine($"  {request.Prefix.Replace("\n", "\\n")}");
 Console.WriteLine();
-Console.WriteLine("Streamed completion:");
-Console.Write("  ");
-
+Console.WriteLine("Completion:");
 var sw = System.Diagnostics.Stopwatch.StartNew();
-var chunks = 0;
-var chars = 0;
-await foreach (var chunk in engine.GenerateAsync(request, CancellationToken.None))
-{
-    if (chunk.IsFinal) break;
-    Console.Write(chunk.Text);
-    chunks++;
-    chars += chunk.Text.Length;
-}
+string completion = await engine.GenerateAsync(request, CancellationToken.None);
 sw.Stop();
+Console.WriteLine($"  {completion}");
 Console.WriteLine();
-Console.WriteLine();
-Console.WriteLine($"Chunks: {chunks}, chars: {chars}, elapsed: {sw.ElapsedMilliseconds} ms");
-if (sw.ElapsedMilliseconds > 0)
-{
-    Console.WriteLine($"Throughput: {chars * 1000.0 / sw.ElapsedMilliseconds:N1} chars/sec");
-}
+Console.WriteLine($"Chars: {completion.Length}, elapsed: {sw.ElapsedMilliseconds} ms");

@@ -27,21 +27,9 @@ public sealed class UiaFocusTracker : IFocusTracker
 
     public UiaFocusTracker(ILogger<UiaFocusTracker> logger) => _logger = logger;
 
-    public FocusedField? Current => _fakeField ?? _current;
+    public FocusedField? Current => _current;
 
     public event EventHandler<FocusedField?>? FocusChanged;
-
-    private FocusedField? _fakeField;
-
-    /// <summary>
-    /// When set, <see cref="Current"/> and <see cref="Refresh"/> return this field instead of
-    /// asking UI Automation. For tests only.
-    /// </summary>
-    public void SetFakeFieldForTesting(FocusedField? fake)
-    {
-        _fakeField = fake;
-        FocusChanged?.Invoke(this, fake);
-    }
 
     public void Start()
     {
@@ -80,7 +68,6 @@ public sealed class UiaFocusTracker : IFocusTracker
 
     public FocusedField? Refresh()
     {
-        if (_fakeField is not null) return _fakeField;
         TryCaptureFocused(out var snap);
         _current = snap;
         return snap;
@@ -108,7 +95,7 @@ public sealed class UiaFocusTracker : IFocusTracker
                 return;
             }
 
-            // UIA gives no stable element identity, so every focus event counts as a change.
+            // Every focus event is passed on. Listeners compare FieldId to tell a new field.
             _current = snap;
             FocusChanged?.Invoke(this, snap);
         }
@@ -204,6 +191,7 @@ public sealed class UiaFocusTracker : IFocusTracker
             IsSingleLine = FieldShape.IsSingleLine(info.ControlType == ControlType.Edit, fieldRect, caretRect),
             IsSecure = isSecure,
             HasSelection = hasSelection,
+            FieldId = ReadFieldId(element, info),
             Label = label,
             HelpText = helpText,
             AutomationId = info.AutomationId ?? string.Empty,
@@ -212,29 +200,31 @@ public sealed class UiaFocusTracker : IFocusTracker
         };
     }
 
+    /// <summary>Text kept before the caret. The request factory sends at most this much prefix.</summary>
+    private const int MaxCharsBeforeCaret = 14000;
+    private const int MaxCharsAfterCaret = 512;
+
+    /// <summary>Cap of the document read when the host reports no caret.</summary>
+    private const int MaxDocumentChars = 16 * 1024;
+
     private static (string text, int caretOffset, bool hasSelection) ReadTextAndCaret(AutomationElement element)
     {
-        // TextPattern is preferred because it gives the full text and the caret as a selection.
+        // TextPattern is preferred because it gives the caret as a selection.
         if (element.TryGetCurrentPattern(TextPattern.Pattern, out var rawText)
             && rawText is TextPattern textPattern)
         {
             try
             {
-                // Capped at 16 KB. Only a window around the caret is needed.
-                string full = textPattern.DocumentRange.GetText(16 * 1024);
-                int caret = 0;
-                bool hasSelection = false;
-                var sel = textPattern.GetSelection();
-                if (sel is { Length: > 0 })
+                var selections = textPattern.GetSelection();
+                if (selections is not { Length: > 0 })
                 {
-                    var range = sel[0];
-                    hasSelection = range.GetText(1).Length > 0;
-                    var preCaret = textPattern.DocumentRange.Clone();
-                    preCaret.MoveEndpointByRange(
-                        TextPatternRangeEndpoint.End, range, TextPatternRangeEndpoint.Start);
-                    caret = preCaret.GetText(16 * 1024).Length;
+                    return (textPattern.DocumentRange.GetText(MaxDocumentChars), 0, false);
                 }
-                return (full, caret, hasSelection);
+
+                var selection = selections[0];
+                bool hasSelection = selection.GetText(1).Length > 0;
+                var (before, after) = ReadAroundSelection(textPattern.DocumentRange, selection);
+                return (before + after, before.Length, hasSelection);
             }
             catch (Exception) { /* fall through */ }
         }
@@ -247,6 +237,45 @@ public sealed class UiaFocusTracker : IFocusTracker
         }
 
         return (string.Empty, 0, false);
+    }
+
+    /// <summary>
+    /// The text before the start of the selection and the text after its end, each cut to a
+    /// window next to the caret.
+    /// </summary>
+    /// <remarks>
+    /// The ranges are built with MoveEndpointByRange only. MoveEndpointByUnit by character takes
+    /// seconds in a WPF text box, and reading up to the caret takes milliseconds.
+    /// </remarks>
+    private static (string before, string after) ReadAroundSelection(TextPatternRange document, TextPatternRange selection)
+    {
+        var toCaret = document.Clone();
+        toCaret.MoveEndpointByRange(TextPatternRangeEndpoint.End, selection, TextPatternRangeEndpoint.Start);
+        string before = toCaret.GetText(-1);
+        if (before.Length > MaxCharsBeforeCaret)
+        {
+            before = before[^MaxCharsBeforeCaret..];
+            // The cut must not leave half a surrogate pair.
+            if (char.IsLowSurrogate(before[0])) before = before[1..];
+        }
+
+        var fromCaret = document.Clone();
+        fromCaret.MoveEndpointByRange(TextPatternRangeEndpoint.Start, selection, TextPatternRangeEndpoint.End);
+        string after = fromCaret.GetText(MaxCharsAfterCaret);
+        if (after.Length > 0 && char.IsHighSurrogate(after[^1])) after = after[..^1];
+
+        return (before, after);
+    }
+
+    private static string ReadFieldId(AutomationElement element, AutomationElement.AutomationElementInformation info)
+    {
+        int[]? runtimeId = null;
+        try { runtimeId = element.GetRuntimeId(); }
+        catch (Exception) { /* fall through */ }
+
+        return runtimeId is { Length: > 0 }
+            ? string.Join('.', runtimeId)
+            : $"{info.AutomationId}|{info.ControlType.ProgrammaticName}";
     }
 
     private static ScreenRect ReadCaretRect(AutomationElement element)

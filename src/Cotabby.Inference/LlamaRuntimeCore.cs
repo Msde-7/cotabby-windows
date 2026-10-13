@@ -133,6 +133,8 @@ public sealed class LlamaRuntimeCore : IDisposable
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            // The model can be unloaded while this request waited for its turn.
+            if (_disposed) return string.Empty;
             return await Task.Run(() => Generate(promptTokens, healingPrefix, options, ct), CancellationToken.None)
                 .ConfigureAwait(false);
         }
@@ -189,7 +191,13 @@ public sealed class LlamaRuntimeCore : IDisposable
         int lastLogitsIndex = 0;
         for (int i = evalFrom; i < promptTokens.Length; i += batchSize)
         {
-            if (ct.IsCancellationRequested) return string.Empty;
+            if (ct.IsCancellationRequested)
+            {
+                // Memory now holds part of this prompt, which no longer matches the remembered one.
+                handle.MemoryClear(true);
+                _lastPromptTokens = [];
+                return string.Empty;
+            }
             batch.Clear();
             int end = Math.Min(promptTokens.Length, i + batchSize);
             for (int j = i; j < end; j++)
@@ -421,7 +429,15 @@ public sealed class LlamaRuntimeCore : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _context.Dispose();
-        _gate.Dispose();
+        // A decode in flight reads the context, so it is freed only once that decode has ended.
+        _gate.Wait();
+        try
+        {
+            _context.Dispose();
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 }
