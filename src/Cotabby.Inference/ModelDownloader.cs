@@ -58,7 +58,7 @@ public sealed class ModelDownloader
         {
             if (ReadPlan(SegmentsPath(model), Expected(model)) is { } plan)
             {
-                return plan.Segments.Select((s, i) => Math.Min(FileLength(SegmentFile(model, i)), s.Size)).Sum();
+                return KeptBytes(model, plan, JoinedCount(plan, FileLength(SegmentFile(model, 0))));
             }
             return FileLength(PartPath(model));
         }
@@ -277,20 +277,8 @@ public sealed class ModelDownloader
     private async Task DownloadSegmentsAsync(
         CotabbyModel model, SegmentPlan plan, HttpResponseMessage? first, IProgress<Progress>? progress, CancellationToken ct)
     {
-        long kept = 0;
-        for (int i = 0; i < plan.Segments.Count; i++)
-        {
-            var path = SegmentFile(model, i);
-            // A segment longer than its range was part way through joining. Trim it back.
-            if (FileLength(path) > plan.Segments[i].Size)
-            {
-                using var file = new FileStream(path, FileMode.Open, FileAccess.Write);
-                file.SetLength(plan.Segments[i].Size);
-            }
-            kept += Math.Min(FileLength(path), plan.Segments[i].Size);
-        }
-
-        var tracker = new DownloadProgressTracker(kept, plan.Total, progress);
+        int joined = RecoverJoin(model, plan);
+        var tracker = new DownloadProgressTracker(KeptBytes(model, plan, joined), plan.Total, progress);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Exception? failure = null;
         var workers = plan.Segments.Select((_, i) => FetchSegmentAsync(i, i == 0 ? first : null)).ToList();
@@ -306,7 +294,7 @@ public sealed class ModelDownloader
         }
         tracker.Complete();
 
-        await JoinSegmentsAsync(model, plan, ct).ConfigureAwait(false);
+        await JoinSegmentsAsync(model, plan, joined, ct).ConfigureAwait(false);
 
         async Task FetchSegmentAsync(int index, HttpResponseMessage? response)
         {
@@ -314,6 +302,7 @@ public sealed class ModelDownloader
             var path = SegmentFile(model, index);
             try
             {
+                if (index > 0 && index < joined) return;
                 long have = Math.Min(FileLength(path), segment.Size);
                 if (have == segment.Size) return;
                 long from = segment.Start + have;
@@ -354,12 +343,45 @@ public sealed class ModelDownloader
         }
     }
 
-    private static async Task JoinSegmentsAsync(CotabbyModel model, SegmentPlan plan, CancellationToken ct)
+    /// <summary>
+    /// How many segments, counted from the first, are already joined into the first segment's file.
+    /// A join appends each segment there and only then deletes its own file.
+    /// </summary>
+    private static int JoinedCount(SegmentPlan plan, long firstLength)
+    {
+        int count = 1;
+        while (count < plan.Segments.Count && plan.Segments[count].End < firstLength) count++;
+        return count;
+    }
+
+    private static long KeptBytes(CotabbyModel model, SegmentPlan plan, int joined) =>
+        plan.Segments.Select((s, i) => i < joined && i > 0 ? s.Size : Math.Min(FileLength(SegmentFile(model, i)), s.Size)).Sum();
+
+    /// <summary>
+    /// Cuts a join that was interrupted back to its last whole segment and deletes the files of the
+    /// segments it already holds. Returns how many segments it holds.
+    /// </summary>
+    private static int RecoverJoin(CotabbyModel model, SegmentPlan plan)
+    {
+        var firstPath = SegmentFile(model, 0);
+        long length = FileLength(firstPath);
+        int joined = JoinedCount(plan, length);
+        long whole = joined > 1 ? plan.Segments[joined - 1].End + 1 : plan.Segments[0].Size;
+        if (length > whole)
+        {
+            using var file = new FileStream(firstPath, FileMode.Open, FileAccess.Write);
+            file.SetLength(whole);
+        }
+        for (int i = 1; i < joined; i++) File.Delete(SegmentFile(model, i));
+        return joined;
+    }
+
+    private static async Task JoinSegmentsAsync(CotabbyModel model, SegmentPlan plan, int joined, CancellationToken ct)
     {
         var firstPath = SegmentFile(model, 0);
         await using (var target = OpenForAppend(firstPath, append: true))
         {
-            for (int i = 1; i < plan.Segments.Count; i++)
+            for (int i = joined; i < plan.Segments.Count; i++)
             {
                 await using (var source = File.OpenRead(SegmentFile(model, i)))
                 {

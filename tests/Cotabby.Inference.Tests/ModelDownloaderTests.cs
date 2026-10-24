@@ -105,6 +105,15 @@ public sealed class ModelDownloaderTests : IDisposable
         new ModelDownloader(new HttpClient(handler), NullLogger<ModelDownloader>.Instance) { RetryDelay = TimeSpan.Zero }
             .DownloadAsync(model, progress: null, ct);
 
+    /// <summary>Leaves a segmented download's plan for <see cref="Large"/> and the given part files behind.</summary>
+    private void WriteSegments(params (int Index, byte[] Bytes)[] parts)
+    {
+        Directory.CreateDirectory(SegmentsPath);
+        File.WriteAllText(Path.Combine(SegmentsPath, "plan.json"),
+            """{"Total":64,"Segments":[{"Start":0,"End":15},{"Start":16,"End":31},{"Start":32,"End":47},{"Start":48,"End":63}]}""");
+        foreach (var (index, bytes) in parts) File.WriteAllBytes(Path.Combine(SegmentsPath, index.ToString()), bytes);
+    }
+
     // A 64 byte model fetched over four connections of 16 bytes each.
     private static readonly byte[] Large = [.. "GGUF"u8, .. Enumerable.Range(0, 60).Select(i => (byte)i)];
 
@@ -374,6 +383,20 @@ public sealed class ModelDownloaderTests : IDisposable
 
         Assert.Equal(Large, File.ReadAllBytes(FinalPath));
         Assert.Contains(handler.Ranges, r => r.From % 16 == 5);
+    }
+
+    [Fact]
+    public async Task Segmented_ResumesAnInterruptedJoinWithoutRefetchingJoinedParts()
+    {
+        // The join had appended parts 1 and half of 2 to part 0, and deleted part 1, when it stopped.
+        WriteSegments((0, Large[..40]), (2, Large[32..48]));
+        Assert.Equal(new ModelDownloadState.Paused(0.75), ModelDownloader.StateOnDisk(LargeModel));
+        var handler = new Handler(request => Serve(Large, request));
+
+        await DownloadSegmented(handler, LargeModel);
+
+        Assert.Equal(Large, File.ReadAllBytes(FinalPath));
+        Assert.Equal([(48L, 63L)], handler.Ranges);
     }
 
     [Fact]
