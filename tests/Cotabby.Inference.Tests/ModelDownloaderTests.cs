@@ -224,6 +224,22 @@ public sealed class ModelDownloaderTests : IDisposable
     }
 
     [Fact]
+    public async Task Download_RefusesASecondDownloadOfTheSameModel()
+    {
+        using var cts = new CancellationTokenSource();
+        var stalled = new TaskCompletionSource();
+        var first = Download(new Handler(request => Serve(Gguf, request, sendOnly: 6, stall: stalled.SetResult)), _model, cts.Token);
+        await stalled.Task;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Download(new Handler(request => Serve(Gguf, request))));
+
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        await Download(new Handler(request => Serve(Gguf, request)));
+        Assert.True(ModelDownloader.IsCached(_model));
+    }
+
+    [Fact]
     public void Cancel_DeletesThePartial()
     {
         WritePartial(Gguf[..5]);

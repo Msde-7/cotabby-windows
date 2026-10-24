@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
@@ -17,6 +18,7 @@ namespace Cotabby.Inference;
 public sealed class ModelDownloader
 {
     private static readonly byte[] GgufMagic = "GGUF"u8.ToArray();
+    private static readonly ConcurrentDictionary<string, byte> Running = new(StringComparer.OrdinalIgnoreCase);
 
     private readonly HttpClient _http;
     private readonly ILogger<ModelDownloader> _logger;
@@ -93,18 +95,28 @@ public sealed class ModelDownloader
     /// </summary>
     public async Task DownloadAsync(CotabbyModel model, IProgress<Progress>? progress, CancellationToken ct)
     {
-        for (int attempt = 0; ; attempt++)
+        // The first-run window and the settings can both start one, and two would share part files.
+        string path = LocalPath(model);
+        if (!Running.TryAdd(path, 0)) throw new InvalidOperationException($"{model.DisplayName} is already downloading.");
+        try
         {
-            try
+            for (int attempt = 0; ; attempt++)
             {
-                await DownloadOnceAsync(model, progress, ct).ConfigureAwait(false);
-                return;
+                try
+                {
+                    await DownloadOnceAsync(model, progress, ct).ConfigureAwait(false);
+                    return;
+                }
+                catch (Exception ex) when (attempt == 0 && !ct.IsCancellationRequested && IsTransient(ex))
+                {
+                    _logger.LogWarning(ex, "Download of {Model} dropped. Retrying once.", model.Id);
+                    await Task.Delay(RetryDelay, ct).ConfigureAwait(false);
+                }
             }
-            catch (Exception ex) when (attempt == 0 && !ct.IsCancellationRequested && IsTransient(ex))
-            {
-                _logger.LogWarning(ex, "Download of {Model} dropped. Retrying once.", model.Id);
-                await Task.Delay(RetryDelay, ct).ConfigureAwait(false);
-            }
+        }
+        finally
+        {
+            Running.TryRemove(path, out _);
         }
     }
 
