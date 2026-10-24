@@ -70,6 +70,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     /// <summary>Accepted characters the host has not been sent yet.</summary>
     private int _pendingInsertChars;
     private readonly DoubleTapAcceptanceState _doubleTap = new();
+    private readonly TypingCadence _cadence = new();
+    private volatile string _focusIdentity = "";
     private AcceptedTail? _lastAcceptedTail;
     private bool _queuedAccept;
 
@@ -195,6 +197,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         Post(() =>
         {
             int pid = field?.ProcessId ?? 0;
+            _focusIdentity = field is null ? "" : FocusIdentity(field);
             bool sameHost = pid != 0 && (_focusedPid == 0 || pid == _focusedPid);
             _focusedPid = pid;
             if (sameHost && (_sessionField is null || _sessionField.FieldId == field!.FieldId)) return;
@@ -260,6 +263,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
 
         TrackForHostPublish(ev);
+        _cadence.Record(_focusIdentity, ev.Kind == KeyKind.Character ? ev.Character.ToString() : "", Now());
 
         if (_session is { } session)
         {
@@ -365,6 +369,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             ct.ThrowIfCancellationRequested();
             if (text.Length == 0 && CaretWordContext.UnfinishedWord(preceding) is null) return;
 
+            // Mid-word, a result waits for a pause a little longer than the recent gap between
+            // letters, so it does not flash up between two keys. Cancellation still owns the wait.
+            double pause = _cadence.RemainingDelay(FocusIdentity(field), preceding, Now());
+            if (pause > 0) await Task.Delay(TimeSpan.FromSeconds(pause), ct).ConfigureAwait(false);
+
             // Generation took a while. Show the suggestion only if the text it continues is still there.
             var live = _focus.Refresh();
             if (live is null || live.ProcessId != field.ProcessId
@@ -398,6 +407,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             _logger.LogWarning(ex, "Request {ReqId} failed.", requestId);
         }
     }
+
+    private static string FocusIdentity(FocusedField field) => $"{field.ProcessId}:{field.FieldId}";
 
     /// <summary>Paces the next request by how long the engine just took.</summary>
     private void UpdateDebounce(SuggestionSettings settings, int? lastLatencyMs) =>
