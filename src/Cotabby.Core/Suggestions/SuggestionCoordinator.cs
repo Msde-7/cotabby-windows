@@ -152,6 +152,24 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Re-checks availability when battery saver turns on or off, instead of waiting for the next
+    /// key. A visible suggestion goes away when suggestions pause, and a new one is asked for
+    /// when they resume.
+    /// </summary>
+    public void BatterySaverChanged() => Post(() =>
+    {
+        if (SuggestionAvailability.DisabledReason(_settings, _clock.GetUtcNow(), _batterySaverOn()) is { } reason)
+        {
+            CancelSession(reason);
+            return;
+        }
+        if (_session is not null) return;
+        _publishBaseline = null;
+        _expectedDelta = 0;
+        SchedulePrediction(typed: null);
+    });
+
     public void Start()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -354,6 +372,13 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             if (CompletionFinalizer.VisibleText(text, live, settings, _engine.SpacingIsExact, _typos) is not { } visible)
             {
                 _logger.LogInformation("Request {ReqId} dropped by the final presentation checks.", requestId);
+                return;
+            }
+
+            // Suggestions may have been paused, or battery saver turned on, while this generated.
+            if (SuggestionAvailability.DisabledReason(_settings, _clock.GetUtcNow(), _batterySaverOn()) is { } paused)
+            {
+                _logger.LogInformation("Request {ReqId} dropped: {Reason}", requestId, paused);
                 return;
             }
 

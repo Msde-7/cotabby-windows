@@ -398,4 +398,43 @@ public sealed class SuggestionCoordinatorTests : CoordinatorHarness
         Assert.True(Hook.Press(Backtick));
         Assert.True(Hook.Press(Keys.Tab()));
     }
+
+    [Fact]
+    public async Task BatterySaverTurningOn_ClearsAVisibleSuggestion()
+    {
+        Type("hello");
+        await Shown(" world again");
+
+        BatterySaver = true;
+        Coordinator.BatterySaverChanged();
+
+        await Eventually(() => Overlay.Text == "", "the suggestion is cleared");
+    }
+
+    [Fact]
+    public async Task BatterySaverTurningOff_PredictsWithoutAnotherKey()
+    {
+        BatterySaver = true;
+        Type("hello");
+        await StaysHidden();
+
+        BatterySaver = false;
+        Coordinator.BatterySaverChanged();
+
+        await Shown(" world again");
+    }
+
+    [Fact]
+    public async Task BatterySaverTurningOnDuringGeneration_DropsTheResult()
+    {
+        Engine.Completion = _ =>
+        {
+            BatterySaver = true;
+            return " world again";
+        };
+
+        Type("hello");
+
+        await StaysHidden();
+    }
 }

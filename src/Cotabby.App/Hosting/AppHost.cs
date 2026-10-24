@@ -44,6 +44,7 @@ public sealed class AppHost : IAsyncDisposable
     private readonly ILogger _logger;
     private readonly GhostOverlayWindow _macroPreview;
     private readonly SymSpellCorrector _spelling;
+    private readonly BatterySaverMonitor _batterySaver = new();
 
     public SuggestionCoordinator Coordinator { get; }
     public LlamaRuntimeManager Runtime { get; }
@@ -131,6 +132,7 @@ public sealed class AppHost : IAsyncDisposable
             typos: new TypoCorrectionAdvisor(
                 _spelling, new SpellingLanguageResolver(), new WindowsSpellChecker(_spelling)),
             clipboard: _services.GetRequiredService<ClipboardTextReader>());
+        _batterySaver.Changed += OnBatterySaverChanged;
         Coordinator.InlineCaptureActive = () => EmojiPicker.IsCapturing || Macros.IsCapturing;
         EmojiPicker.CanCapture = Macros.CanCapture = Coordinator.IsAvailableIn;
         EmojiPicker.CommitKeyFor = Macros.CommitKeyFor = Coordinator.AcceptWordKeyFor;
@@ -247,6 +249,12 @@ public sealed class AppHost : IAsyncDisposable
         return ModelCatalog.FindById(id) is { } model && ModelDownloader.IsCached(model) ? model : null;
     }
 
+    private void OnBatterySaverChanged(bool on)
+    {
+        _logger.LogInformation("Battery saver turned {State}.", on ? "on" : "off");
+        Coordinator.BatterySaverChanged();
+    }
+
     private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
     {
         if (e.Mode != PowerModes.StatusChange) return;
@@ -278,6 +286,8 @@ public sealed class AppHost : IAsyncDisposable
         SettingsStore.Save(Settings);
         _hook.KeyEvent -= OnGlobalToggleKey;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        _batterySaver.Changed -= OnBatterySaverChanged;
+        _batterySaver.Dispose();
         EmojiPicker.Dispose();
         Macros.Dispose();
         _spelling.Dispose();
