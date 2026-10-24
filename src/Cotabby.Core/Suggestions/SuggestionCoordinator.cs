@@ -373,7 +373,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 _logger.LogInformation("Request {ReqId} dropped because the field changed during generation.", requestId);
                 return;
             }
-            if (CompletionFinalizer.VisibleText(text, live, settings, _engine.SpacingIsExact, _typos) is not { } visible)
+            if (CompletionFinalizer.Finalize(text, live, settings, _engine.SpacingIsExact, _typos) is not { } visible)
             {
                 _logger.LogInformation("Request {ReqId} dropped by the final presentation checks.", requestId);
                 return;
@@ -429,7 +429,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
             case TypoGateAction.OfferCorrection:
                 var correction = new TypoCorrection(decision.Word!, decision.CorrectedWord!);
-                Post(() => Present(requestId, decision.CorrectedWord!, field, latencyMs: 0, sequence, ct, correction));
+                Post(() => Present(
+                    requestId, new FinalCompletion(decision.CorrectedWord!), field, latencyMs: 0, sequence, ct, correction));
                 return true;
 
             default:
@@ -500,12 +501,21 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     }
 
     private void Present(
-        string requestId, string text, FocusedField field, int latencyMs, long sequence, CancellationToken ct,
-        TypoCorrection? correction = null)
+        string requestId, FinalCompletion completion, FocusedField field, int latencyMs, long sequence,
+        CancellationToken ct, TypoCorrection? correction = null)
     {
         // A key handled after the work finished can no longer cancel it, so the sequence is checked too.
         if (ct.IsCancellationRequested || _session is not null || _keySequence != sequence) return;
 
+        var session = new SuggestionSession
+        {
+            RequestId = requestId,
+            PredictedText = completion.Predicted,
+            FirstOfferLength = completion.FirstOfferLength,
+            ShowFollowingWords = _settings.ShowFollowingWords,
+            Correction = correction,
+        };
+        string text = session.VisibleText;
         var preceding = field.PrecedingText;
         if (correction is null
             && _dismissals.Suppresses((ulong)field.ProcessId, preceding, field.TrailingText, text, Now()))
@@ -514,19 +524,14 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             return;
         }
         if (_lastAcceptedTail is { } tail
-            && AcceptanceChunker.IsStaleAcceptanceEcho(text, tail.Text, preceding, tail.PrecedingText))
+            && AcceptanceChunker.IsStaleAcceptanceEcho(completion.Predicted, tail.Text, preceding, tail.PrecedingText))
         {
             _logger.LogInformation("Request {ReqId} dropped as an echo of the last accepted chunk.", requestId);
             return;
         }
         _lastAcceptedTail = null;
 
-        _session = new SuggestionSession
-        {
-            RequestId = requestId,
-            VisibleText = text,
-            Correction = correction,
-        };
+        _session = session;
         _sessionField = field;
         _sessionAcceptedAny = false;
         _expectedPreceding = preceding;
@@ -618,10 +623,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 ? AcceptanceChunker.NextPhrase(visible, settings.AcceptPunctuationWithWord)
                 : AcceptanceChunker.NextChunk(visible, settings.AcceptPunctuationWithWord);
         if (chunk.Length == 0) chunk = visible;
-        if (settings.AddSpaceAfterAccept) chunk = AcceptanceChunker.ConsumingTrailingSpace(chunk, visible);
+        // The space after a word may sit in the part of the prediction not shown yet.
+        if (settings.AddSpaceAfterAccept) chunk = AcceptanceChunker.ConsumingTrailingSpace(chunk, session.PredictedText);
 
-        string remaining = visible[chunk.Length..];
-        bool exhausted = string.IsNullOrWhiteSpace(remaining);
+        var next = session.Advancing(chunk.Length);
+        bool exhausted = next.IsExhausted;
         bool firstChunk = !_sessionAcceptedAny;
 
         string expected = _expectedPreceding;
@@ -643,9 +649,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
         else
         {
-            _session = session with { VisibleText = remaining };
+            _session = next;
             _sessionAcceptedAny = true;
-            _overlay.Update(remaining);
+            _overlay.Update(next.VisibleText);
             if (!all && doubleTapApplies) _doubleTap.RecordWordAccept(session.RequestId, now);
         }
 

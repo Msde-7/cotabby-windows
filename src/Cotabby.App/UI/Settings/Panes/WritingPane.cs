@@ -55,7 +55,12 @@ internal static class WritingPane
                 r.Toggle("Suggest Within Words",
                     "Offer a suggestion while a word is still being typed. Off waits until the word is finished.",
                     s => s.SuggestWithinWords, (s, v) => s.SuggestWithinWords = v)
-                    .Tagged("mid word partial unfinished typing boundary")),
+                    .Tagged("mid word partial unfinished typing boundary"),
+                r.Toggle("Show Following Words",
+                    "Preview the phrase after the current word. Turn off to see one word at a time. "
+                    + "The next words stay ready as you finish typing or accept each word.",
+                    s => s.ShowFollowingWords, (s, v) => s.ShowFollowingWords = v)
+                    .Tagged("one word at a time preview phrase next words reveal single")),
             new SettingsCard("Acceptance",
                 r.Segmented("Acceptance Mode",
                     "What the Accept Word key takes per press. Word inserts one word at a time; "

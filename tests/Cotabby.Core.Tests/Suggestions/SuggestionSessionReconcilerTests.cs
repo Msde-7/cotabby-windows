@@ -9,7 +9,7 @@ public sealed class SuggestionSessionReconcilerTests
     private static readonly SuggestionSession Session = new()
     {
         RequestId = "request",
-        VisibleText = "world",
+        PredictedText = "world",
     };
 
     [Fact]
@@ -18,13 +18,13 @@ public sealed class SuggestionSessionReconcilerTests
         var result = SuggestionSessionReconciler.Apply(Session, Keys.Char('w'));
 
         Assert.Equal(Outcome.Advance, result.Outcome);
-        Assert.Equal(Session with { VisibleText = "orld" }, result.Next);
+        Assert.Equal(Session with { PredictedText = "orld" }, result.Next);
     }
 
     [Fact]
     public void Apply_TypingTheLastCharacter_AdvancesToAnEmptySuggestion()
     {
-        var result = SuggestionSessionReconciler.Apply(Session with { VisibleText = "d" }, Keys.Char('d'));
+        var result = SuggestionSessionReconciler.Apply(Session with { PredictedText = "d" }, Keys.Char('d'));
 
         Assert.Equal(Outcome.Advance, result.Outcome);
         Assert.Equal("", result.Next?.VisibleText);
@@ -40,7 +40,7 @@ public sealed class SuggestionSessionReconcilerTests
     public void Apply_TypingIntoAnEmptySuggestion_Cancels() =>
         Assert.Equal(
             new(Outcome.Cancel, null),
-            SuggestionSessionReconciler.Apply(Session with { VisibleText = "" }, Keys.Char('w')));
+            SuggestionSessionReconciler.Apply(Session with { PredictedText = "" }, Keys.Char('w')));
 
     [Theory]
     [InlineData(KeyKind.Tab)]
@@ -69,7 +69,7 @@ public sealed class SuggestionSessionReconcilerTests
     [Fact]
     public void Apply_TypingASpace_AdvancesPastANonBreakingSpace()
     {
-        var result = SuggestionSessionReconciler.Apply(Session with { VisibleText = "\u00A0world" }, Keys.Char(' '));
+        var result = SuggestionSessionReconciler.Apply(Session with { PredictedText = "\u00A0world" }, Keys.Char(' '));
 
         Assert.Equal(Outcome.Advance, result.Outcome);
         Assert.Equal("world", result.Next?.VisibleText);
