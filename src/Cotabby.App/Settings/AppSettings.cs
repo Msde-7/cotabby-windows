@@ -114,7 +114,7 @@ public sealed class AppSettings
         PauseOnBatterySaver = PauseOnBatterySaver,
         BlockedApps = new HashSet<string>(BlockedApps, StringComparer.OrdinalIgnoreCase),
         SuggestInIntegratedTerminals = SuggestInIntegratedTerminals,
-        DebounceMs = Math.Clamp(DebounceMs, 0, 500),
+        DebounceMs = SettingsValues.DebounceMs(DebounceMs),
         UsesEndpoint = Engine == EngineKind.Endpoint,
         SurfaceContext = IncludeAppContext,
         WordRange = new SuggestionWordRange(WordRange.Low, WordRange.High),
@@ -213,9 +213,57 @@ public sealed class SettingsStore
     {
         if (JsonNode.Parse(json) is not JsonObject root) return new AppSettings();
         MigrateLegacyKeys(root);
-        var settings = root.Deserialize<AppSettings>(JsonOpts) ?? new AppSettings();
-        settings.ShortcutOverrides = ShortcutConflicts.Normalize(settings.ShortcutOverrides);
+        AppSettings settings;
+        try
+        {
+            settings = root.Deserialize<AppSettings>(JsonOpts) ?? new AppSettings();
+        }
+        catch (JsonException)
+        {
+            settings = ParseFieldByField(root);
+        }
+        Sanitize(settings);
         return settings;
+    }
+
+    /// <summary>
+    /// Reads each value on its own, so one value of the wrong type falls back to its default
+    /// instead of resetting every setting.
+    /// </summary>
+    private static AppSettings ParseFieldByField(JsonObject root)
+    {
+        var settings = new AppSettings();
+        foreach (var (name, node) in root)
+        {
+            var property = typeof(AppSettings).GetProperty(name);
+            if (property is not { CanWrite: true }) continue;
+            try
+            {
+                var single = new JsonObject { [name] = node?.DeepClone() };
+                if (single.Deserialize<AppSettings>(JsonOpts) is { } parsed)
+                {
+                    property.SetValue(settings, property.GetValue(parsed));
+                }
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException or NotSupportedException)
+            {
+            }
+        }
+        return settings;
+    }
+
+    /// <summary>Puts values a hand edit or an older version may have left out of range back in it.</summary>
+    private static void Sanitize(AppSettings settings)
+    {
+        settings.DebounceMs = SettingsValues.DebounceMs(settings.DebounceMs);
+        settings.FadeInSeconds = SettingsValues.FadeSeconds(settings.FadeInSeconds);
+        settings.GhostTextOpacity = SettingsValues.Opacity(settings.GhostTextOpacity);
+        settings.GhostTextSizeMultiplier = SettingsValues.SizeMultiplier(settings.GhostTextSizeMultiplier);
+        settings.GhostTextColor = SettingsValues.GhostColor(settings.GhostTextColor);
+        settings.ShortcutOverrides = ShortcutConflicts.Normalize(settings.ShortcutOverrides);
+        settings.Languages ??= [.. LanguageCatalog.DefaultLanguages];
+        settings.BlockedApps ??= [];
+        settings.SpellingDictionaries ??= [.. SpellingDictionaryCatalog.DefaultEnabledCodes];
     }
 
     /// <summary>Files written before shortcuts were recordable stored the accept-all key by name.</summary>

@@ -1,3 +1,4 @@
+using Cotabby.Core.Support;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -11,11 +12,11 @@ namespace Cotabby.App.UI.Settings.Panes;
 internal static class AppearancePane
 {
     // The ranges and steps match the macOS app.
-    private const double MinOpacity = 0.3;
-    private const double MinSize = 0.7;
-    private const double MaxSize = 1.3;
-    private const double FastestFade = 0.05;
-    private const double SlowestFade = 0.30;
+    private const double MinOpacity = SettingsValues.MinOpacity;
+    private const double MinSize = SettingsValues.MinSizeMultiplier;
+    private const double MaxSize = SettingsValues.MaxSizeMultiplier;
+    private const double FastestFade = SettingsValues.MinFadeSeconds;
+    private const double SlowestFade = SettingsValues.MaxFadeSeconds;
     private const double PreviewFontSize = 16;
 
     /// <summary>Half dark and half light, which reads as following the system theme.</summary>

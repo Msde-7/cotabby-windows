@@ -13,7 +13,7 @@ internal static class AdvancedPane
                 r.Slider("Suggestion Delay",
                     "How long Cotabby waits after a keystroke before asking the model. "
                     + "Lower feels snappier; higher saves work while you type in bursts.",
-                    0, 300, 10, v => $"{v:0} ms",
+                    10, 300, 10, v => $"{v:0} ms",
                     s => s.DebounceMs, (s, v) => s.DebounceMs = (int)v)
                     .Tagged("debounce trigger wait pause typing latency")),
             new SettingsCard("Files",
