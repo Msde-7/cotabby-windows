@@ -200,7 +200,7 @@ internal sealed class RecordingOverlay : IOverlayPresenter
 
     public ScreenRect Anchor { get; private set; }
 
-    public void Show(string text, ScreenRect anchor, OverlayStyle style = OverlayStyle.Inline)
+    public void Show(string text, ScreenRect anchor, OverlayStyle style = OverlayStyle.Inline, FocusedField? field = null)
     {
         Style = style;
         Anchor = anchor;

@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using Cotabby.Core.Emoji;
 using Cotabby.Core.Input;
 using Cotabby.Core.Overlay;
+using Cotabby.Core.Overlay.Font;
 using Cotabby.Core.Spelling;
 using Cotabby.Core.Suggestions;
 using Cotabby.Inference.OpenAICompatible;
@@ -88,6 +89,12 @@ public sealed class AppSettings
     public string GhostTextColor { get; set; } = "auto";
     public double GhostTextOpacity { get; set; } = 1.0;
     public double GhostTextSizeMultiplier { get; set; } = 1.0;
+
+    /// <summary>Smallest size ghost text renders at, whatever the host's font. Kept at or below the ceiling.</summary>
+    public double GhostFontSizeFloor { get; set; } = GhostFontSizeLimits.DefaultFloor;
+
+    /// <summary>Largest size ghost text renders at.</summary>
+    public double GhostFontSizeCeiling { get; set; } = GhostFontSizeLimits.DefaultCeiling;
     public bool ShowAcceptanceHint { get; set; } = true;
     public SuggestionDisplayMode DisplayMode { get; set; }
     public bool FadeInSuggestions { get; set; } = true;

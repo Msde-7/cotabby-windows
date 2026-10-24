@@ -496,7 +496,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         _sessionAcceptedAny = false;
         _expectedPreceding = preceding;
         PublishOffer();
-        _overlay.Show(text, field.CaretRect, StyleFor(field, correction));
+        _overlay.Show(text, field.CaretRect, StyleFor(field, correction), field);
         if (correction is null) Metrics.RecordShown(latencyMs);
         _logger.LogInformation("Suggestion shown req={ReqId} latency={Ms}ms chars={Chars}", requestId, latencyMs, text.Length);
         _logger.LogDebug("Suggestion text req={ReqId} \"{Text}\"", requestId, LogText.Escape(text));
@@ -720,7 +720,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         {
             if (_session is not { } live || live.RequestId != requestId) return;
             _sessionField = after;
-            _overlay.Show(live.VisibleText, after.CaretRect, StyleFor(after, live.Correction));
+            _overlay.Show(live.VisibleText, after.CaretRect, StyleFor(after, live.Correction), after);
         });
     }
 
