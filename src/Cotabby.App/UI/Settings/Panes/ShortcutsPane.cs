@@ -17,7 +17,9 @@ internal static class ShortcutsPane
             r.Toggle("Double Tap to Accept Entire Suggestion",
                 "Press the Accept Word key twice quickly to insert the whole suggestion. "
                 + "A single press still inserts the next word.",
-                s => s.DoubleTapAcceptsAll, (s, v) => s.DoubleTapAcceptsAll = v)
+                // It is a double press of Accept Word, so it needs that key.
+                s => s.DoubleTapAcceptsAll && s.AcceptWord.IsBound,
+                (s, v) => s.DoubleTapAcceptsAll = v && s.AcceptWord.IsBound)
                 .Tagged("double-tap twice tab tab press twice accept all"),
             r.Shortcut(GlobalShortcut.Toggle,
                 "Turn Cotabby on or off from anywhere without opening the system tray.")
@@ -82,8 +84,8 @@ internal static class ShortcutsPane
             Children =
             {
                 new DockPanel { Children = { remove, name } },
-                OverrideKey(context, GlobalShortcut.AcceptWord, entry.AcceptWord, key => Replace(entry with { AcceptWord = key })),
-                OverrideKey(context, GlobalShortcut.AcceptAll, entry.AcceptAll, key => Replace(entry with { AcceptAll = key })),
+                OverrideKey(context, entry, GlobalShortcut.AcceptWord, entry.AcceptWord, key => Replace(entry with { AcceptWord = key })),
+                OverrideKey(context, entry, GlobalShortcut.AcceptAll, entry.AcceptAll, key => Replace(entry with { AcceptAll = key })),
             },
         };
     }
@@ -93,13 +95,14 @@ internal static class ShortcutsPane
     /// key turns the action off in that app.
     /// </summary>
     private static DockPanel OverrideKey(
-        SettingsContext context, GlobalShortcut global, KeyBinding? key, Action<KeyBinding?> set)
+        SettingsContext context, PerAppShortcutOverride entry, GlobalShortcut global, KeyBinding? key,
+        Action<KeyBinding?> set)
     {
         var recorder = new KeyRecorder();
         recorder.Recorded += binding => set(binding);
         recorder.Show(key switch
         {
-            null => $"Uses global ({global.Label(context.Settings)})",
+            null => $"Uses global ({global.LabelFor(context.Settings, entry.ProcessName)})",
             { IsBound: false } => "Disabled",
             { } bound => bound.Label,
         });

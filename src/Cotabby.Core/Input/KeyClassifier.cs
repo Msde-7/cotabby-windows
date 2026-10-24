@@ -28,6 +28,10 @@ public static class KeyClassifier
         return new(chord == KeyModifiers.None ? KeyKind.Other : KeyKind.Shortcut, '\0', held);
     }
 
+    /// <summary>True for Shift, Ctrl, Alt and Win, with the left and right codes a low-level hook reports.</summary>
+    public static bool IsModifier(int virtualKey) =>
+        virtualKey is 0x10 or 0x11 or 0x12 or 0x5B or 0x5C or (>= 0xA0 and <= 0xA5);
+
     /// <summary>The kind of a key that keeps it whatever modifiers are held, or null for every other key.</summary>
     private static KeyKind? NamedKind(int virtualKey) => virtualKey switch
     {

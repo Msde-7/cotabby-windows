@@ -38,7 +38,6 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private const int ComparedTailChars = 256;
 
     private static readonly TimeSpan GenerationWatchdog = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan DoubleTapWindow = TimeSpan.FromMilliseconds(300);
 
     /// <summary>How long the accept key stays owned after the last chunk while the continuation generates.</summary>
     private static readonly TimeSpan PostExhaustionWindow = TimeSpan.FromMilliseconds(800);
@@ -70,7 +69,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
     /// <summary>Accepted characters the host has not been sent yet.</summary>
     private int _pendingInsertChars;
-    private (string RequestId, long Timestamp)? _pendingDoubleTap;
+    private readonly DoubleTapAcceptanceState _doubleTap = new();
     private AcceptedTail? _lastAcceptedTail;
     private bool _queuedAccept;
 
@@ -243,9 +242,14 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
     private void HandleEvent(KeyboardEvent ev)
     {
-        if (ev.Kind == KeyKind.Other) return;
+        if (ev.Kind == KeyKind.Other)
+        {
+            // Any key between two accept presses breaks the pair. Modifiers alone do not.
+            if (!KeyClassifier.IsModifier(ev.VirtualKey)) _doubleTap.Reset();
+            return;
+        }
 
-        _pendingDoubleTap = null;
+        _doubleTap.Reset();
         _ownership = null;
         _queuedAccept = false;
 
@@ -600,15 +604,12 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         bool doubleTapApplies = settings.DoubleTapAcceptsAll
             && !isRepeat
             && !ShortcutResolver.OverridesAcceptAll(field.ProcessName, settings.ShortcutOverrides);
-        long now = _clock.GetTimestamp();
-        if (!all && doubleTapApplies
-            && _pendingDoubleTap is { } pending
-            && pending.RequestId == session.RequestId
-            && _clock.GetElapsedTime(pending.Timestamp, now) <= DoubleTapWindow)
+        double now = Now();
+        if (!all && doubleTapApplies && _doubleTap.ConsumeDoubleTap(session.RequestId, now))
         {
             all = true;
         }
-        _pendingDoubleTap = null;
+        _doubleTap.Reset();
 
         string visible = session.VisibleText;
         string chunk = all
@@ -645,7 +646,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             _session = session with { VisibleText = remaining };
             _sessionAcceptedAny = true;
             _overlay.Update(remaining);
-            if (!all && doubleTapApplies) _pendingDoubleTap = (session.RequestId, now);
+            if (!all && doubleTapApplies) _doubleTap.RecordWordAccept(session.RequestId, now);
         }
 
         _insertChain = _insertChain
@@ -781,7 +782,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private void CancelSession(string reason)
     {
         if (_session is not null) _logger.LogInformation("Suggestion cleared ({Reason}).", reason);
-        _pendingDoubleTap = null;
+        _doubleTap.Reset();
         _ownership = null;
         _queuedAccept = false;
         ClearSession();

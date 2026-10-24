@@ -233,3 +233,15 @@ internal sealed class PumpContext : SynchronizationContext, IDisposable
 
     public void Dispose() => _queue.CompleteAdding();
 }
+
+/// <summary>A clock that only moves when the test advances it.</summary>
+internal sealed class ManualClock : TimeProvider
+{
+    private long _milliseconds = 1_000_000;
+
+    public override long TimestampFrequency => 1000;
+
+    public override long GetTimestamp() => Interlocked.Read(ref _milliseconds);
+
+    public void Advance(TimeSpan by) => Interlocked.Add(ref _milliseconds, (long)by.TotalMilliseconds);
+}
