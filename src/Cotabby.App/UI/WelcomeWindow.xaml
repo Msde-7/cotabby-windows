@@ -235,6 +235,9 @@
                     <TextBlock x:Name="DoneModelStatus" FontSize="13"
                                Foreground="{DynamicResource TextSecondary}"
                                VerticalAlignment="Center" />
+                    <Button x:Name="DoneResumeButton" Style="{StaticResource LinkBtn}" Content="Resume"
+                            VerticalAlignment="Center" Margin="8,0,0,0" Visibility="Collapsed"
+                            Click="OnResumeModel" />
                 </StackPanel>
                 <TextBlock FontSize="13" FontWeight="SemiBold" HorizontalAlignment="Center"
                            Margin="0,22,0,0" Text="Cotabby lives in your system tray" />

@@ -159,7 +159,9 @@ public partial class WelcomeWindow : Window
         bool ready = ModelDownloader.IsCached(model);
         TemplateStatusText.Text = ready
             ? "Model ready"
-            : $"Will download {model.ApproxSizeBytes / 1_000_000_000.0:0.#} GB on Continue";
+            : ModelDownloader.StateOnDisk(model) is ModelDownloadState.Paused paused
+                ? $"{paused.StatusText} · resumes on Continue"
+                : $"Will download {model.ApproxSizeBytes / 1_000_000_000.0:0.#} GB on Continue";
         TemplateStatusText.SetResourceReference(TextBlock.ForegroundProperty, ready ? "GreenBrush" : "TextSecondary");
     }
 
@@ -239,15 +241,27 @@ public partial class WelcomeWindow : Window
     {
         bool ready = _modelReadyFor is not null;
         bool busy = !ready && _modelError is null && _ensureBusy;
+        // A download that stopped with its partial kept shows as paused and can be resumed here.
+        var paused = !ready && !_ensureBusy && _lastEnsureFor is { } id && ModelCatalog.FindById(id) is { } model
+            ? ModelDownloader.StateOnDisk(model) as ModelDownloadState.Paused
+            : null;
         DoneSpinner.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         DoneCheck.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
+        DoneResumeButton.Visibility = paused is not null ? Visibility.Visible : Visibility.Collapsed;
         DoneModelStatus.SetResourceReference(TextBlock.ForegroundProperty, ready ? "GreenBrush" : "TextSecondary");
         DoneModelStatus.Text =
             ready ? "Your model is ready"
+            : paused is { Progress: { } fraction } ? $"Model download paused ({ModelDownloadState.Percent(fraction)}%)"
+            : paused is not null ? "Model download paused"
             : _modelError is not null ? "Model setup didn't finish. You can retry from Settings."
             : !busy ? ""
             : _modelPercent is int percent ? $"Downloading your model… {percent}%"
             : "Preparing your model…";
+    }
+
+    private void OnResumeModel(object sender, RoutedEventArgs e)
+    {
+        if (_lastEnsureFor is { } id) StartModelEnsure(id);
     }
 
     private void StartSpinner()
