@@ -100,6 +100,16 @@ public sealed class TypingHistoryIndexTests
     }
 
     [Fact]
+    public void TermsKeepDecomposedAccentsAndLettersBeyondTheBmpInOneWord()
+    {
+        string accent = ((char)0x301).ToString();
+        string resume = $"re{accent}sume{accent}";
+        string ideographs = char.ConvertFromUtf32(0x20000) + char.ConvertFromUtf32(0x20001);
+
+        Assert.Equal([resume, ideographs], TypingHistoryIndex.Terms($"{resume}, {ideographs}!"));
+    }
+
+    [Fact]
     public void StableTextOnlyChangesOnWholeWordBlocks()
     {
         Assert.Equal("", TypingHistoryQuery.StableText("one two three", wordsPerBlock: 4));

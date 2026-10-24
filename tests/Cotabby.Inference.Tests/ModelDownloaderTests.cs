@@ -105,6 +105,15 @@ public sealed class ModelDownloaderTests : IDisposable
         new ModelDownloader(new HttpClient(handler), NullLogger<ModelDownloader>.Instance) { RetryDelay = TimeSpan.Zero }
             .DownloadAsync(model, progress: null, ct);
 
+    /// <summary>Leaves a segmented download's plan for <see cref="Large"/> and the given part files behind.</summary>
+    private void WriteSegments(params (int Index, byte[] Bytes)[] parts)
+    {
+        Directory.CreateDirectory(SegmentsPath);
+        File.WriteAllText(Path.Combine(SegmentsPath, "plan.json"),
+            """{"Total":64,"Segments":[{"Start":0,"End":15},{"Start":16,"End":31},{"Start":32,"End":47},{"Start":48,"End":63}]}""");
+        foreach (var (index, bytes) in parts) File.WriteAllBytes(Path.Combine(SegmentsPath, index.ToString()), bytes);
+    }
+
     // A 64 byte model fetched over four connections of 16 bytes each.
     private static readonly byte[] Large = [.. "GGUF"u8, .. Enumerable.Range(0, 60).Select(i => (byte)i)];
 
@@ -212,6 +221,22 @@ public sealed class ModelDownloaderTests : IDisposable
         Assert.Equal(6, new FileInfo(FinalPath + ".part").Length);
         Assert.Equal(new ModelDownloadState.Paused(0.5), ModelDownloader.StateOnDisk(_model));
         Assert.Equal("Paused (50%)", ModelDownloader.StateOnDisk(_model).StatusText);
+    }
+
+    [Fact]
+    public async Task Download_RefusesASecondDownloadOfTheSameModel()
+    {
+        using var cts = new CancellationTokenSource();
+        var stalled = new TaskCompletionSource();
+        var first = Download(new Handler(request => Serve(Gguf, request, sendOnly: 6, stall: stalled.SetResult)), _model, cts.Token);
+        await stalled.Task;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Download(new Handler(request => Serve(Gguf, request))));
+
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        await Download(new Handler(request => Serve(Gguf, request)));
+        Assert.True(ModelDownloader.IsCached(_model));
     }
 
     [Fact]
@@ -374,6 +399,69 @@ public sealed class ModelDownloaderTests : IDisposable
 
         Assert.Equal(Large, File.ReadAllBytes(FinalPath));
         Assert.Contains(handler.Ranges, r => r.From % 16 == 5);
+    }
+
+    [Fact]
+    public async Task Segmented_ResumesAnInterruptedJoinWithoutRefetchingJoinedParts()
+    {
+        // The join had appended parts 1 and half of 2 to part 0, and deleted part 1, when it stopped.
+        WriteSegments((0, Large[..40]), (2, Large[32..48]));
+        Assert.Equal(new ModelDownloadState.Paused(0.75), ModelDownloader.StateOnDisk(LargeModel));
+        var handler = new Handler(request => Serve(Large, request));
+
+        await DownloadSegmented(handler, LargeModel);
+
+        Assert.Equal(Large, File.ReadAllBytes(FinalPath));
+        Assert.Equal([(48L, 63L)], handler.Ranges);
+    }
+
+    [Fact]
+    public async Task Segmented_StartsOverWhenAResumingServerIgnoresRanges()
+    {
+        WriteSegments((0, Large[..8]), (1, Large[16..20]));
+        var handler = new Handler(_ => Body(HttpStatusCode.OK, Large));
+
+        await DownloadSegmented(handler, LargeModel);
+
+        Assert.Equal(Large, File.ReadAllBytes(FinalPath));
+        Assert.False(Directory.Exists(SegmentsPath));
+        Assert.Contains(handler.Ranges, r => r.From is null);
+    }
+
+    [Fact]
+    public async Task Download_RetriesAStalledTransferWhereItStopped()
+    {
+        int calls = 0;
+        var handler = new Handler(request => Interlocked.Increment(ref calls) == 1
+            ? Serve(Gguf, request, sendOnly: 6, stall: () => { })
+            : Serve(Gguf, request));
+        var downloader = new ModelDownloader(new HttpClient(handler), NullLogger<ModelDownloader>.Instance)
+        {
+            RetryDelay = TimeSpan.Zero,
+            StallTimeout = TimeSpan.FromMilliseconds(100),
+        };
+
+        await downloader.DownloadAsync(_model, progress: null, CancellationToken.None);
+
+        Assert.Equal([null, 6L], handler.RangeStarts);
+        Assert.Equal(Gguf, File.ReadAllBytes(FinalPath));
+    }
+
+    [Fact]
+    public async Task Download_RefusesAResumeAtTheWrongOffset()
+    {
+        WritePartial(Gguf[..5]);
+        var handler = new Handler(_ =>
+        {
+            var response = Body(HttpStatusCode.PartialContent, Gguf);
+            response.Content.Headers.ContentRange = new ContentRangeHeaderValue(0, Gguf.Length - 1, Gguf.Length);
+            return response;
+        });
+
+        await Assert.ThrowsAsync<IOException>(() => Download(handler));
+
+        Assert.False(ModelDownloader.IsCached(_model));
+        Assert.Equal(Gguf[..5], File.ReadAllBytes(FinalPath + ".part"));
     }
 
     [Fact]

@@ -80,7 +80,9 @@ public static class CotypistExportImporter
     {
         try
         {
-            using var document = JsonDocument.Parse(data);
+            // Windows editors often save JSON with a byte order mark, which the parser rejects.
+            int start = data.AsSpan().StartsWith("\uFEFF"u8) ? 3 : 0;
+            using var document = JsonDocument.Parse(data.AsMemory(start));
             if (document.RootElement.ValueKind != JsonValueKind.Array) throw new CotypistImportException();
             var rows = new List<Row>();
             foreach (var element in document.RootElement.EnumerateArray())

@@ -1,3 +1,4 @@
+using System.Globalization;
 using Cotabby.Core.Text;
 
 namespace Cotabby.Core.History;
@@ -178,8 +179,7 @@ public sealed class TypingHistoryIndex
         string lower = text.ToLowerInvariant();
         for (int i = 0; i <= lower.Length; i++)
         {
-            bool inWord = i < lower.Length && char.IsLetterOrDigit(lower[i]);
-            if (inWord)
+            if (i < lower.Length && IsWordUnit(lower, i, start >= 0))
             {
                 if (start < 0) start = i;
                 continue;
@@ -192,6 +192,23 @@ public sealed class TypingHistoryIndex
             start = -1;
         }
         return terms;
+    }
+
+    /// <summary>
+    /// Letters and numbers, including ones outside the BMP, and the marks that continue a word, so
+    /// a decomposed accent does not split it. Matches upstream's per-character letter or number test.
+    /// </summary>
+    private static bool IsWordUnit(string text, int index, bool inWord)
+    {
+        if (char.IsLowSurrogate(text[index])) return inWord && index > 0 && char.IsHighSurrogate(text[index - 1]);
+        return CharUnicodeInfo.GetUnicodeCategory(text, index) switch
+        {
+            UnicodeCategory.UppercaseLetter or UnicodeCategory.LowercaseLetter or UnicodeCategory.TitlecaseLetter
+                or UnicodeCategory.ModifierLetter or UnicodeCategory.OtherLetter
+                or UnicodeCategory.DecimalDigitNumber or UnicodeCategory.LetterNumber or UnicodeCategory.OtherNumber => true,
+            UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark => inWord,
+            _ => false,
+        };
     }
 
     /// <summary>

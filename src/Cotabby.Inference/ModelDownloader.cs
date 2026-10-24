@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
@@ -17,6 +18,7 @@ namespace Cotabby.Inference;
 public sealed class ModelDownloader
 {
     private static readonly byte[] GgufMagic = "GGUF"u8.ToArray();
+    private static readonly ConcurrentDictionary<string, byte> Running = new(StringComparer.OrdinalIgnoreCase);
 
     private readonly HttpClient _http;
     private readonly ILogger<ModelDownloader> _logger;
@@ -34,6 +36,9 @@ public sealed class ModelDownloader
 
     /// <summary>Files smaller than this use one stream, where the extra requests would not pay off.</summary>
     public long SegmentedMinimumBytes { get; init; } = 64L << 20;
+
+    /// <summary>A connection that sends nothing for this long counts as dropped.</summary>
+    public TimeSpan StallTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
     /// <summary>Wait before the one automatic retry after a dropped connection.</summary>
     public TimeSpan RetryDelay { get; init; } = TimeSpan.FromSeconds(2);
@@ -58,7 +63,7 @@ public sealed class ModelDownloader
         {
             if (ReadPlan(SegmentsPath(model), Expected(model)) is { } plan)
             {
-                return plan.Segments.Select((s, i) => Math.Min(FileLength(SegmentFile(model, i)), s.Size)).Sum();
+                return KeptBytes(model, plan, JoinedCount(plan, FileLength(SegmentFile(model, 0))));
             }
             return FileLength(PartPath(model));
         }
@@ -90,18 +95,28 @@ public sealed class ModelDownloader
     /// </summary>
     public async Task DownloadAsync(CotabbyModel model, IProgress<Progress>? progress, CancellationToken ct)
     {
-        for (int attempt = 0; ; attempt++)
+        // The first-run window and the settings can both start one, and two would share part files.
+        string path = LocalPath(model);
+        if (!Running.TryAdd(path, 0)) throw new InvalidOperationException($"{model.DisplayName} is already downloading.");
+        try
         {
-            try
+            for (int attempt = 0; ; attempt++)
             {
-                await DownloadOnceAsync(model, progress, ct).ConfigureAwait(false);
-                return;
+                try
+                {
+                    await DownloadOnceAsync(model, progress, ct).ConfigureAwait(false);
+                    return;
+                }
+                catch (Exception ex) when (attempt == 0 && !ct.IsCancellationRequested && IsTransient(ex))
+                {
+                    _logger.LogWarning(ex, "Download of {Model} dropped. Retrying once.", model.Id);
+                    await Task.Delay(RetryDelay, ct).ConfigureAwait(false);
+                }
             }
-            catch (Exception ex) when (attempt == 0 && !ct.IsCancellationRequested && IsTransient(ex))
-            {
-                _logger.LogWarning(ex, "Download of {Model} dropped. Retrying once.", model.Id);
-                await Task.Delay(RetryDelay, ct).ConfigureAwait(false);
-            }
+        }
+        finally
+        {
+            Running.TryRemove(path, out _);
         }
     }
 
@@ -129,15 +144,30 @@ public sealed class ModelDownloader
             // A joined download whose last step was interrupted only needs checking.
             if (Directory.Exists(segmentsPath)) Directory.Delete(segmentsPath, recursive: true);
         }
-        else if (ReadPlan(segmentsPath, expected) is { } plan)
-        {
-            await DownloadSegmentsAsync(model, plan, first: null, progress, ct).ConfigureAwait(false);
-        }
         else
         {
-            if (Directory.Exists(segmentsPath)) Directory.Delete(segmentsPath, recursive: true);
-            bool segmented = !File.Exists(partPath) && Connections > 1 && expected >= SegmentedMinimumBytes
-                && await TryStartSegmentsAsync(model, expected!.Value, progress, ct).ConfigureAwait(false);
+            bool segmented;
+            try
+            {
+                if (ReadPlan(segmentsPath, expected) is { } plan)
+                {
+                    await DownloadSegmentsAsync(model, plan, first: null, progress, ct).ConfigureAwait(false);
+                    segmented = true;
+                }
+                else
+                {
+                    if (Directory.Exists(segmentsPath)) Directory.Delete(segmentsPath, recursive: true);
+                    segmented = !File.Exists(partPath) && Connections > 1 && expected >= SegmentedMinimumBytes
+                        && await TryStartSegmentsAsync(model, expected!.Value, progress, ct).ConfigureAwait(false);
+                }
+            }
+            catch (RangesRefusedException)
+            {
+                // Parts kept from an earlier session cannot be finished without ranges, so start over.
+                _logger.LogWarning("The server for {Model} stopped answering range requests. Using one stream.", model.Id);
+                Directory.Delete(segmentsPath, recursive: true);
+                segmented = false;
+            }
             if (!segmented) await DownloadSingleAsync(model, expected, progress, ct).ConfigureAwait(false);
         }
 
@@ -181,6 +211,10 @@ public sealed class ModelDownloader
         // A server that ignores the range sends the whole file again, so the partial is discarded.
         bool resumed = response.StatusCode == HttpStatusCode.PartialContent;
         if (!resumed) resumeFrom = 0;
+        else if (response.Content.Headers.ContentRange?.From is { } from && from != resumeFrom)
+        {
+            throw new IOException($"The server resumed at byte {from} instead of {resumeFrom}.");
+        }
         long? total = response.Content.Headers.ContentLength + resumeFrom;
         if (total is { } offered && expected is { } size && offered != size)
         {
@@ -277,20 +311,8 @@ public sealed class ModelDownloader
     private async Task DownloadSegmentsAsync(
         CotabbyModel model, SegmentPlan plan, HttpResponseMessage? first, IProgress<Progress>? progress, CancellationToken ct)
     {
-        long kept = 0;
-        for (int i = 0; i < plan.Segments.Count; i++)
-        {
-            var path = SegmentFile(model, i);
-            // A segment longer than its range was part way through joining. Trim it back.
-            if (FileLength(path) > plan.Segments[i].Size)
-            {
-                using var file = new FileStream(path, FileMode.Open, FileAccess.Write);
-                file.SetLength(plan.Segments[i].Size);
-            }
-            kept += Math.Min(FileLength(path), plan.Segments[i].Size);
-        }
-
-        var tracker = new DownloadProgressTracker(kept, plan.Total, progress);
+        int joined = RecoverJoin(model, plan);
+        var tracker = new DownloadProgressTracker(KeptBytes(model, plan, joined), plan.Total, progress);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Exception? failure = null;
         var workers = plan.Segments.Select((_, i) => FetchSegmentAsync(i, i == 0 ? first : null)).ToList();
@@ -306,7 +328,7 @@ public sealed class ModelDownloader
         }
         tracker.Complete();
 
-        await JoinSegmentsAsync(model, plan, ct).ConfigureAwait(false);
+        await JoinSegmentsAsync(model, plan, joined, ct).ConfigureAwait(false);
 
         async Task FetchSegmentAsync(int index, HttpResponseMessage? response)
         {
@@ -314,6 +336,7 @@ public sealed class ModelDownloader
             var path = SegmentFile(model, index);
             try
             {
+                if (index > 0 && index < joined) return;
                 long have = Math.Min(FileLength(path), segment.Size);
                 if (have == segment.Size) return;
                 long from = segment.Start + have;
@@ -326,7 +349,7 @@ public sealed class ModelDownloader
                 if (!IsRange(response, from, segment.End, plan.Total))
                 {
                     response.EnsureSuccessStatusCode();
-                    throw new IOException("The server stopped answering range requests.");
+                    throw new RangesRefusedException();
                 }
 
                 long copied;
@@ -354,12 +377,45 @@ public sealed class ModelDownloader
         }
     }
 
-    private static async Task JoinSegmentsAsync(CotabbyModel model, SegmentPlan plan, CancellationToken ct)
+    /// <summary>
+    /// How many segments, counted from the first, are already joined into the first segment's file.
+    /// A join appends each segment there and only then deletes its own file.
+    /// </summary>
+    private static int JoinedCount(SegmentPlan plan, long firstLength)
+    {
+        int count = 1;
+        while (count < plan.Segments.Count && plan.Segments[count].End < firstLength) count++;
+        return count;
+    }
+
+    private static long KeptBytes(CotabbyModel model, SegmentPlan plan, int joined) =>
+        plan.Segments.Select((s, i) => i < joined && i > 0 ? s.Size : Math.Min(FileLength(SegmentFile(model, i)), s.Size)).Sum();
+
+    /// <summary>
+    /// Cuts a join that was interrupted back to its last whole segment and deletes the files of the
+    /// segments it already holds. Returns how many segments it holds.
+    /// </summary>
+    private static int RecoverJoin(CotabbyModel model, SegmentPlan plan)
+    {
+        var firstPath = SegmentFile(model, 0);
+        long length = FileLength(firstPath);
+        int joined = JoinedCount(plan, length);
+        long whole = joined > 1 ? plan.Segments[joined - 1].End + 1 : plan.Segments[0].Size;
+        if (length > whole)
+        {
+            using var file = new FileStream(firstPath, FileMode.Open, FileAccess.Write);
+            file.SetLength(whole);
+        }
+        for (int i = 1; i < joined; i++) File.Delete(SegmentFile(model, i));
+        return joined;
+    }
+
+    private static async Task JoinSegmentsAsync(CotabbyModel model, SegmentPlan plan, int joined, CancellationToken ct)
     {
         var firstPath = SegmentFile(model, 0);
         await using (var target = OpenForAppend(firstPath, append: true))
         {
-            for (int i = 1; i < plan.Segments.Count; i++)
+            for (int i = joined; i < plan.Segments.Count; i++)
             {
                 await using (var source = File.OpenRead(SegmentFile(model, i)))
                 {
@@ -373,6 +429,8 @@ public sealed class ModelDownloader
         File.Move(firstPath, PartPath(model), overwrite: true);
         Directory.Delete(SegmentsPath(model), recursive: true);
     }
+
+    private sealed class RangesRefusedException() : IOException("The server stopped answering range requests.");
 
     private static bool IsRange(HttpResponseMessage response, long from, long to, long total) =>
         response.StatusCode == HttpStatusCode.PartialContent
@@ -392,13 +450,25 @@ public sealed class ModelDownloader
         path, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None,
         bufferSize: 1 << 16, useAsync: true);
 
-    private static async Task<long> CopyAsync(Stream source, Stream target, DownloadProgressTracker tracker, CancellationToken ct)
+    private async Task<long> CopyAsync(Stream source, Stream target, DownloadProgressTracker tracker, CancellationToken ct)
     {
         var buffer = new byte[1 << 16];
         long copied = 0;
-        int read;
-        while ((read = await source.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+        // The client timeout ends once the headers arrive, so a body that stops flowing needs its own.
+        using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        while (true)
         {
+            idle.CancelAfter(StallTimeout);
+            int read;
+            try
+            {
+                read = await source.ReadAsync(buffer, idle.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new IOException($"The download received nothing for {StallTimeout.TotalSeconds:0} seconds.");
+            }
+            if (read == 0) break;
             await target.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
             copied += read;
             tracker.Add(read);
