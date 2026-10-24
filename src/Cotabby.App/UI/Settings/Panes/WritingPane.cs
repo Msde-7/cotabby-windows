@@ -116,7 +116,8 @@ internal static class WritingPane
                     "Notes about you that the model keeps in mind, such as a glossary, names or style notes. "
                     + "They are sent with every suggestion, so long notes slow completions down.",
                     ExtendedContext(r))
-                    .Tagged("glossary reference notes jargon instructions memory background vocabulary")));
+                    .Tagged("glossary reference notes jargon instructions memory background vocabulary")),
+            TypingHistorySection.Build(r));
     }
 
     private static void SetCustomRange(AppSettings settings, int low, int high) =>

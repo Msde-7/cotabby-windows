@@ -4,6 +4,7 @@ using Cotabby.App.Macros;
 using Cotabby.App.Overlay;
 using Cotabby.App.Settings;
 using Cotabby.Core.Focus;
+using Cotabby.Core.History;
 using Cotabby.Core.Input;
 using Cotabby.Core.Insertion;
 using Cotabby.Core.Models;
@@ -56,6 +57,7 @@ public sealed class AppHost : IAsyncDisposable
     public OpenAICompatibleSuggestionEngine Endpoint { get; }
     public OpenAICompatibleApiClient EndpointClient { get; }
     public IOpenAICompatibleCredentialStore EndpointCredentials { get; }
+    public TypingHistoryStore TypingHistory { get; }
 
     /// <summary>Raised on the UI thread after settings were applied or a model was loaded, so open windows and the tray can refresh.</summary>
     public event Action? SettingsApplied;
@@ -113,6 +115,12 @@ public sealed class AppHost : IAsyncDisposable
             EndpointClient, EndpointCredentials, EndpointSettings,
             loggers.CreateLogger<OpenAICompatibleSuggestionEngine>());
         _router = new SuggestionEngineRouter(_services.GetRequiredService<LlamaSuggestionEngine>(), Endpoint);
+        // Typing history owns its own encrypted archive. Phrase shortcuts answer before the router
+        // runs, and the live engine is read per request so the endpoint never gets one.
+        TypingHistory = new TypingHistoryStore(
+            DpapiTypingHistoryKeyStore.StandardVault(), Settings.TypingHistoryPreferences,
+            logger: loggers.CreateLogger<TypingHistoryStore>());
+        var historyAwareEngine = new TypingHistoryPhraseEngine(_router, TypingHistory, () => _router.UseEndpoint);
 
         IcuWordBreaker.Install();
 
@@ -125,13 +133,15 @@ public sealed class AppHost : IAsyncDisposable
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
 
         Coordinator = new SuggestionCoordinator(
-            _hook, focus, _router, overlay, inserter, new SuggestionWorkController(TimeSpan.Zero),
+            _hook, focus, historyAwareEngine, overlay, inserter, new SuggestionWorkController(TimeSpan.Zero),
             loggers.CreateLogger<SuggestionCoordinator>(), ui,
             batterySaverOn: () => PowerStatus.IsBatterySaverOn,
             typos: new TypoCorrectionAdvisor(
                 _spelling, new SpellingLanguageResolver(), new WindowsSpellChecker(_spelling)),
             clipboard: _services.GetRequiredService<ClipboardTextReader>());
         Coordinator.InlineCaptureActive = () => EmojiPicker.IsCapturing || Macros.IsCapturing;
+        Coordinator.History = TypingHistory;
+        Coordinator.HistoryRecorder = TypingHistory;
         EmojiPicker.CanCapture = Macros.CanCapture = Coordinator.IsAvailableIn;
         EmojiPicker.CommitKeyFor = Macros.CommitKeyFor = Coordinator.AcceptWordKeyFor;
         Coordinator.Metrics.Restore(Settings.WordsAccepted);
@@ -172,6 +182,7 @@ public sealed class AppHost : IAsyncDisposable
         Coordinator.Settings = Settings.ToSuggestionSettings();
         _router.UseEndpoint = Settings.Engine == EngineKind.Endpoint;
         Endpoint.UpdateSettings(EndpointSettings);
+        TypingHistory.ApplyPreferences(Settings.TypingHistoryPreferences);
         // A cold local server would make the first suggestion wait for the model to load.
         if (Settings.Engine == EngineKind.Endpoint) _ = Endpoint.PrewarmAsync();
         EmojiPicker.Enabled = Settings.EmojiPickerEnabled;
@@ -282,6 +293,8 @@ public sealed class AppHost : IAsyncDisposable
         Macros.Dispose();
         _spelling.Dispose();
         await Coordinator.DisposeAsync().ConfigureAwait(false);
+        // Write the field being typed in now. The debounced background save may not have run yet.
+        TypingHistory.Flush();
         await Runtime.DisposeAsync().ConfigureAwait(false);
         EndpointClient.Dispose();
         await _services.DisposeAsync().ConfigureAwait(false);
