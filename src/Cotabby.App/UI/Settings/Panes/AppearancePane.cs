@@ -5,6 +5,7 @@ using System.Windows.Media;
 using System.Windows.Shapes;
 using Cotabby.App.UI.Controls;
 using Cotabby.Core.Overlay;
+using Cotabby.Core.Overlay.Font;
 
 namespace Cotabby.App.UI.Settings.Panes;
 
@@ -65,7 +66,20 @@ internal static class AppearancePane
                 "Fine-tune how large suggestions appear. Lower it if the ghost text looks too big.",
                 MinSize, MaxSize, 0.1, v => $"{v * 100:0}%",
                 s => s.GhostTextSizeMultiplier, (s, v) => s.GhostTextSizeMultiplier = v)
-                .Tagged("font scale bigger smaller larger zoom multiplier")));
+                .Tagged("font scale bigger smaller larger zoom multiplier"),
+            // Each limit pushes the other along so the floor never sits above the ceiling.
+            r.Slider("Smallest Ghost Text",
+                "Suggestions never render below this size, even in fields that report tiny text.",
+                GhostFontSizeLimits.MinimumFloor, GhostFontSizeLimits.MaximumFloor, 1, v => $"{v:0}",
+                s => s.GhostFontSizeFloor,
+                (s, v) => (s.GhostFontSizeFloor, s.GhostFontSizeCeiling) = (v, Math.Max(s.GhostFontSizeCeiling, v)))
+                .Tagged("smallest minimum floor limit min tiny too small point size clamp font"),
+            r.Slider("Largest Ghost Text",
+                "Suggestions never render above this size, even in fields with very large text.",
+                GhostFontSizeLimits.MinimumCeiling, GhostFontSizeLimits.MaximumCeiling, 1, v => $"{v:0}",
+                s => s.GhostFontSizeCeiling,
+                (s, v) => (s.GhostFontSizeCeiling, s.GhostFontSizeFloor) = (v, Math.Min(s.GhostFontSizeFloor, v)))
+                .Tagged("largest maximum ceiling cap limit max too big oversized point size clamp font")));
 
     private static double Mirror(double fade) => Math.Round(FastestFade + SlowestFade - fade, 2);
 

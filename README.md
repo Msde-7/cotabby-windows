@@ -147,6 +147,7 @@ Settings live in `%APPDATA%\Cotabby\settings.json`, models in `%LOCALAPPDATA%\Co
 | Word and phrase acceptance, CJK chunking, trailing space, double tap | Ported |
 | Rebindable shortcuts, per-app overrides, global toggle | Ported |
 | Inline ghost text, with a card under the caret when text follows it | Ported |
+| Ghost text in the host's font and size, wrapped inside the field, Electron editors woken | Ported |
 | Emoji picker with skin tone, gender, recents and popularity | Ported |
 | Slash macros | Ported |
 | Autocorrect with seven bundled dictionaries | Ported |
@@ -157,7 +158,7 @@ Settings live in `%APPDATA%\Cotabby\settings.json`, models in `%LOCALAPPDATA%\Co
 | Searchable settings, first-run setup, performance pane with live CPU, memory and GPU graphs | Ported |
 | Opt-in typing history with Cotypist import, encrypted with AES-GCM under a DPAPI key | Ported |
 | Apple Intelligence engine | Not applicable on Windows |
-| Screen context through OCR, host font matching | Not ported |
+| Screen context through OCR | Not ported |
 | Streaming partial suggestions and predict-ahead while typing | Not ported |
 | Per-domain disable in browsers, automatic updates | Not ported |
 | Performance tracking toggle and per-request log | Not ported |

@@ -19,6 +19,7 @@ internal static class Fields
         CaretRect = new ScreenRect(10, 10, 1, 20),
         FieldRect = new ScreenRect(0, 0, 400, 200),
         IsSingleLine = singleLine,
+        IsTextFieldRole = singleLine,
         IsSecure = false,
     };
 }
@@ -79,7 +80,7 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
         get { lock (_gate) return _field; }
     }
 
-    public FocusedField? Refresh() => Current;
+    public FocusedField? Refresh(bool readHostText = false) => Current;
 
     public void Focus(FocusedField? field)
     {
@@ -199,7 +200,7 @@ internal sealed class RecordingOverlay : IOverlayPresenter
 
     public ScreenRect Anchor { get; private set; }
 
-    public void Show(string text, ScreenRect anchor, OverlayStyle style = OverlayStyle.Inline)
+    public void Show(string text, ScreenRect anchor, OverlayStyle style = OverlayStyle.Inline, FocusedField? field = null)
     {
         Style = style;
         Anchor = anchor;

@@ -131,7 +131,7 @@ sealed class FakeField : IFocusTracker, ITextInserter
         get { lock (_gate) return _lastInsertion; }
     }
 
-    public FocusedField? Refresh() => Current;
+    public FocusedField? Refresh(bool readHostText = false) => Current;
 
     public void Focus(string process, int pid)
     {
@@ -187,7 +187,8 @@ sealed class RecordingOverlay : IOverlayPresenter
 
     public string Text => _text;
 
-    public void Show(string text, ScreenRect anchor, OverlayStyle style = OverlayStyle.Inline) => _text = text;
+    public void Show(string text, ScreenRect anchor, OverlayStyle style = OverlayStyle.Inline, FocusedField? field = null) =>
+        _text = text;
     public void Update(string text) => _text = text;
     public void Hide() => _text = "";
 }

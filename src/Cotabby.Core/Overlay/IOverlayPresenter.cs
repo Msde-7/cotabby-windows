@@ -8,8 +8,11 @@ namespace Cotabby.Core.Overlay;
 /// </summary>
 public interface IOverlayPresenter
 {
-    /// <summary>Show ghost text at the given screen rect. Replaces any visible text.</summary>
-    void Show(string text, ScreenRect anchor, OverlayStyle style = OverlayStyle.Inline);
+    /// <summary>
+    /// Show ghost text at the given screen rect. Replaces any visible text. The field the anchor was
+    /// read from, when given, lets the ghost take the host's font.
+    /// </summary>
+    void Show(string text, ScreenRect anchor, OverlayStyle style = OverlayStyle.Inline, FocusedField? field = null);
 
     /// <summary>Update the visible text in place without moving the anchor.</summary>
     void Update(string text);

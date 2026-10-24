@@ -5,8 +5,9 @@ namespace Cotabby.Core.Focus;
 /// <summary>
 /// Recognizes sign-in and verification fields (email, username, phone, one-time
 /// codes, card numbers) where a completion would only guess at who the user is.
-/// Applies to single-line fields only. A multi-line field labelled "email" is an
-/// email body, which is where completions belong. Every signal is matched by whole
+/// Applies to one-line inputs only, judged by control type and not by height, so a tall
+/// search box still counts. A document labelled "email" is an email body, which is where
+/// completions belong. Every signal is matched by whole
 /// words or whole id parts so "Email subject" and "phonebook-search" stay ordinary fields.
 /// </summary>
 public static partial class CredentialFieldDetector
@@ -45,7 +46,7 @@ public static partial class CredentialFieldDetector
     private const int MaximumIdentifierLength = 64;
 
     public static bool IsCredentialField(FocusedField field) =>
-        field.IsSingleLine
+        field.IsTextFieldRole
         && (LabelNamesCredential(field.Label)
             || LabelNamesCredential(field.HelpText)
             || IdentifierNamesCredential(field.AutomationId)

@@ -383,7 +383,7 @@ public sealed class EmojiPickerSessionTests : IDisposable
 
         public event EventHandler<FocusedField?>? FocusChanged { add { } remove { } }
 
-        public FocusedField? Refresh()
+        public FocusedField? Refresh(bool readHostText = false)
         {
             RefreshCount++;
             return Field;

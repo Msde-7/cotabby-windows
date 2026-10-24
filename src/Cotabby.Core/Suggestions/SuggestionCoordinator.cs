@@ -352,7 +352,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             if (text.Length == 0 || ct.IsCancellationRequested) return;
 
             // Generation took a while. Show the suggestion only if the text it continues is still there.
-            var live = _focus.Refresh();
+            var live = _focus.Refresh(readHostText: true);
             if (live is null || live.ProcessId != field.ProcessId || live.PrecedingText != preceding)
             {
                 _logger.LogInformation("Request {ReqId} dropped because the field changed during generation.", requestId);
@@ -506,7 +506,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         _sessionAcceptedAny = false;
         _expectedPreceding = preceding;
         PublishOffer();
-        _overlay.Show(text, field.CaretRect, StyleFor(field, correction));
+        _overlay.Show(text, field.CaretRect, StyleFor(field, correction), field);
         if (correction is null) Metrics.RecordShown(latencyMs);
         _logger.LogInformation("Suggestion shown req={ReqId} latency={Ms}ms chars={Chars}", requestId, latencyMs, text.Length);
         _logger.LogDebug("Suggestion text req={ReqId} \"{Text}\"", requestId, LogText.Escape(text));
@@ -724,14 +724,14 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private async Task ReanchorAsync(string requestId, int settleMs)
     {
         await Task.Delay(settleMs).ConfigureAwait(false);
-        var after = _focus.Refresh();
+        var after = _focus.Refresh(readHostText: true);
         RecordHistory(after);
         if (after is null || after.CaretRect.IsEmpty) return;
         Post(() =>
         {
             if (_session is not { } live || live.RequestId != requestId) return;
             _sessionField = after;
-            _overlay.Show(live.VisibleText, after.CaretRect, StyleFor(after, live.Correction));
+            _overlay.Show(live.VisibleText, after.CaretRect, StyleFor(after, live.Correction), after);
         });
     }
 

@@ -204,4 +204,19 @@ internal static partial class NativeMethods
 
     [LibraryImport("kernel32.dll")]
     public static partial nuint GlobalSize(IntPtr hMem);
+
+    // Accessibility priming and window styles
+
+    public const uint WM_GETOBJECT = 0x003D;
+    public const int UiaRootObjectId = -25;
+    public const uint SMTO_ABORTIFHUNG = 0x0002;
+    public const int GWL_STYLE = -16;
+    public const int ES_MULTILINE = 0x0004;
+
+    [LibraryImport("user32.dll", EntryPoint = "SendMessageTimeoutW")]
+    public static partial IntPtr SendMessageTimeout(
+        IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, uint flags, uint timeoutMs, out IntPtr result);
+
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongW")]
+    public static partial int GetWindowLong(IntPtr hWnd, int nIndex);
 }
