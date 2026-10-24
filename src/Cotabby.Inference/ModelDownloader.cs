@@ -73,18 +73,26 @@ public sealed class ModelDownloader
         }
     }
 
-    /// <summary>What the disk says about the model. A kept partial reads as paused.</summary>
+    /// <summary>True while a download of the model runs, in this window or another.</summary>
+    public static bool IsDownloading(CotabbyModel model) => Running.ContainsKey(LocalPath(model));
+
+    /// <summary>
+    /// What the disk says about the model. A kept partial reads as paused, or as downloading
+    /// while another window's download of it runs.
+    /// </summary>
     public static ModelDownloadState StateOnDisk(CotabbyModel model)
     {
         if (IsCached(model)) return new ModelDownloadState.Downloaded();
+        if (IsDownloading(model)) return new ModelDownloadState.Downloading(null);
         long kept = PartialBytes(model);
         if (kept <= 0) return new ModelDownloadState.Idle();
         return new ModelDownloadState.Paused(Expected(model) is { } total ? Math.Min(1, (double)kept / total) : null);
     }
 
-    /// <summary>Deletes a stopped download's partial files. Call it only once the download has stopped.</summary>
+    /// <summary>Deletes a stopped download's partial files. Does nothing while a download of the model runs.</summary>
     public static void DiscardPartial(CotabbyModel model)
     {
+        if (IsDownloading(model)) return;
         File.Delete(PartPath(model));
         if (Directory.Exists(SegmentsPath(model))) Directory.Delete(SegmentsPath(model), recursive: true);
     }

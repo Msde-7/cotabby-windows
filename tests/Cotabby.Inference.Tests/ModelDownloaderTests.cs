@@ -240,6 +240,23 @@ public sealed class ModelDownloaderTests : IDisposable
     }
 
     [Fact]
+    public async Task Cancel_LeavesARunningDownloadAlone()
+    {
+        using var cts = new CancellationTokenSource();
+        var stalled = new TaskCompletionSource();
+        var first = Download(new Handler(request => Serve(Gguf, request, sendOnly: 6, stall: stalled.SetResult)), _model, cts.Token);
+        await stalled.Task;
+
+        Assert.Equal(new ModelDownloadState.Downloading(null), ModelDownloader.StateOnDisk(_model));
+        ModelDownloader.DiscardPartial(_model);
+        Assert.True(File.Exists(FinalPath + ".part"));
+
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        Assert.IsType<ModelDownloadState.Paused>(ModelDownloader.StateOnDisk(_model));
+    }
+
+    [Fact]
     public void Cancel_DeletesThePartial()
     {
         WritePartial(Gguf[..5]);

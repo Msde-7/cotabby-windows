@@ -66,13 +66,17 @@ internal sealed class ModelList : StackPanel
         bool loadingThis = Busy && selected;
         bool downloadingThis = loadingThis && _downloading;
         // A partial left by an earlier download shows as paused, also after a restart.
-        var paused = loadingThis ? null : ModelDownloader.StateOnDisk(model) as ModelDownloadState.Paused;
+        var onDisk = loadingThis ? null : ModelDownloader.StateOnDisk(model);
+        var paused = onDisk as ModelDownloadState.Paused;
+        // The first-run window may be downloading this model, which this list cannot pause or cancel.
+        bool downloadingElsewhere = onDisk is ModelDownloadState.Downloading;
 
         var names = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
         names.Children.Add(new TextBlock { Text = model.DisplayName, FontSize = 13, FontWeight = FontWeights.SemiBold });
         var subtitle = Ui.Text(model.Subtitle, "Caption");
         subtitle.Margin = new Thickness(0, 2, 0, 0);
         if (downloadingThis) _status = subtitle;
+        if (downloadingElsewhere) subtitle.Text = onDisk!.StatusText;
         if (paused is not null)
         {
             subtitle.Text = paused.StatusText;
@@ -97,6 +101,10 @@ internal sealed class ModelList : StackPanel
             check.Themed(TextBlock.ForegroundProperty, "GreenBrush");
             active.Themed(TextBlock.ForegroundProperty, "GreenBrush");
             trailing = Ui.Across(check, active);
+        }
+        else if (downloadingElsewhere)
+        {
+            trailing = Ui.Text("In setup window", "Caption");
         }
         else if (paused is not null)
         {
