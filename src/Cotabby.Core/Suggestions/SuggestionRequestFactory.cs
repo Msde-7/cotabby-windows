@@ -8,15 +8,56 @@ namespace Cotabby.Core.Suggestions;
 public static class SuggestionRequestFactory
 {
     private const int MaxPrefixChars = 14000;
+    private const int MaxPrefixWords = 2400;
     private const int MaxSuffixChars = 192;
     private const int MaxClipboardContextCharacters = 1200;
     private const string ClipMarker = "...";
 
+    /// <summary>
+    /// True when the text before the caret is worth continuing: some non-whitespace, and when
+    /// suggestions wait for a finished word, no word still being typed. Scripts without spaces
+    /// and code-like tokens never count as unfinished, so they are not starved.
+    /// </summary>
+    public static bool ShouldGenerate(string preceding, bool suggestWithinWords = true) =>
+        !string.IsNullOrWhiteSpace(preceding)
+        && (suggestWithinWords || Support.CaretWordContext.UnfinishedWord(preceding) is null);
+
+    /// <summary>The full gate before generating: <see cref="ShouldGenerate(string, bool)"/> and a caret outside a token.</summary>
+    public static bool ShouldGenerate(string preceding, string trailing, bool suggestWithinWords = true) =>
+        ShouldGenerate(preceding, suggestWithinWords) && !Support.CaretTokenPosition.IsInsideToken(preceding, trailing);
+
     /// <summary>The windowed text before the caret, as a request carries it.</summary>
-    public static string Prefix(FocusedField field)
+    public static string Prefix(FocusedField field) => Prefix(field.PrecedingText);
+
+    /// <summary>
+    /// The last <paramref name="maxCharacters"/> characters, cut further to the last
+    /// <paramref name="maxWords"/> words. The cut keeps the original whitespace, since line breaks
+    /// and the space before the caret matter to the continuation.
+    /// </summary>
+    public static string Prefix(string preceding, int maxCharacters = MaxPrefixChars, int maxWords = MaxPrefixWords)
     {
-        var preceding = field.PrecedingText;
-        return preceding[Math.Max(0, preceding.Length - MaxPrefixChars)..];
+        if (maxCharacters <= 0 || maxWords <= 0) return "";
+        string window = preceding.Length <= maxCharacters
+            ? preceding
+            : new GraphemeString(preceding).Suffix(maxCharacters);
+
+        // Walk back from the end and stop at the start of the word one past the budget.
+        int words = 0;
+        int i = window.Length;
+        while (i > 0)
+        {
+            while (i > 0 && char.IsWhiteSpace(window[i - 1])) i--;
+            if (i == 0) break;
+            if (words == maxWords)
+            {
+                int end = i;
+                while (end < window.Length && char.IsWhiteSpace(window[end])) end++;
+                return window[end..];
+            }
+            while (i > 0 && !char.IsWhiteSpace(window[i - 1])) i--;
+            words++;
+        }
+        return window;
     }
 
     /// <param name="clipboardContext">Clipboard text that already passed the relevance filter, or null.</param>

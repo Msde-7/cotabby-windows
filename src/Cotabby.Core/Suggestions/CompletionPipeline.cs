@@ -11,11 +11,13 @@ public static class CompletionPipeline
     /// <summary>Character budget for a prompt that leaves the PC.</summary>
     private const int EndpointContextBudget = 2400;
 
-    /// <param name="tokenBudget">Prompt token budget of the local model, or null for an endpoint.</param>
-    public static string Prompt(SuggestionRequest request, int? tokenBudget)
-    {
-        bool forEndpoint = tokenBudget is null;
-        return BaseCompletionPromptRenderer.Prompt(
+    /// <summary>Context window the endpoint prompt is sized for. It shares the local model's prefix window.</summary>
+    public const int EndpointContextWindowTokens = 4096;
+
+    /// <param name="tokenBudget">Prompt token budget, already reduced by the request's output allowance.</param>
+    /// <param name="forEndpoint">True when the prompt leaves the PC.</param>
+    public static string Prompt(SuggestionRequest request, int tokenBudget, bool forEndpoint = false) =>
+        BaseCompletionPromptRenderer.Prompt(
             request.Prefix,
             userName: request.UserName,
             // Text after the caret stays on the PC.
@@ -27,7 +29,13 @@ public static class CompletionPipeline
             historyExamples: forEndpoint ? [] : request.HistoryExamples,
             contextBudget: forEndpoint ? EndpointContextBudget : BaseCompletionPromptRenderer.DefaultContextBudget,
             tokenBudget: tokenBudget);
-    }
+
+    /// <summary>The endpoint prompt, budgeted like the local one so the whole output fits beside it.</summary>
+    public static string EndpointPrompt(SuggestionRequest request) =>
+        Prompt(
+            request,
+            PromptTokenBudget.ForRequest(PromptTokenBudget.Configured(EndpointContextWindowTokens), request.MaxTokens),
+            forEndpoint: true);
 
     public static SuggestionNormalizationResult Normalize(string raw, string prompt, SuggestionRequest request) =>
         SuggestionTextNormalizer.NormalizeDetailed(

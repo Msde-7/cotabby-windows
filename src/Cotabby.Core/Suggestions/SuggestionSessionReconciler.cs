@@ -28,10 +28,11 @@ public static class SuggestionSessionReconciler
 
         switch (ev.Kind)
         {
-            // A correction replaces a word as a unit, so typing never advances it.
+            // A correction replaces a word as a unit, so typing never advances it. Typing may run
+            // on into predicted words that are not shown yet.
             case KeyKind.Character when session.Correction is null
-                && session.VisibleText.Length > 0 && session.VisibleText[0] == ev.Character:
-                return new(Outcome.Advance, session with { VisibleText = session.VisibleText[1..] });
+                && session.PredictedText.Length > 0 && SameKey(session.PredictedText[0], ev.Character):
+                return new(Outcome.Advance, session.Advancing(1));
 
             case KeyKind.Character or KeyKind.Tab or KeyKind.Backspace or KeyKind.Delete
                 or KeyKind.Escape or KeyKind.Enter or KeyKind.Arrow or KeyKind.Shortcut:
@@ -41,4 +42,34 @@ public static class SuggestionSessionReconciler
                 return new(Outcome.Ignore, session);
         }
     }
+
+    /// <summary>
+    /// Chromium and some editors publish a space typed at the end of a line as U+00A0 and turn it
+    /// back into a plain space once the next character arrives. Both are the same key to the
+    /// user, so every comparison treats them alike. Each is one UTF-16 unit, so offsets hold.
+    /// </summary>
+    public static string SpaceNormalized(string text) => text.Replace(NoBreakSpace, ' ');
+
+    private const char NoBreakSpace = '\u00A0';
+
+    /// <summary>
+    /// True when <paramref name="live"/> is the expected text, or the expected text less a few
+    /// trailing characters the host has not published yet. A long text is compared through its
+    /// last <paramref name="comparedTail"/> characters, since the field is read through a moving window.
+    /// </summary>
+    public static bool FollowsExpected(string expected, string live, int allowedLag, int comparedTail = 256)
+    {
+        expected = SpaceNormalized(expected);
+        live = SpaceNormalized(live);
+        // A short text is the whole of what precedes the caret, so it has to match from the start.
+        if (live.Length < comparedTail)
+        {
+            return expected.Length - live.Length <= allowedLag && expected.StartsWith(live, StringComparison.Ordinal);
+        }
+        int at = expected.LastIndexOf(live[^comparedTail..], StringComparison.Ordinal);
+        return at >= 0 && expected.Length - (at + comparedTail) <= allowedLag;
+    }
+
+    private static bool SameKey(char shown, char typed) =>
+        shown == typed || (shown is ' ' or NoBreakSpace && typed is ' ' or NoBreakSpace);
 }

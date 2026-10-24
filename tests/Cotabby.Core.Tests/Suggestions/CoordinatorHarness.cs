@@ -22,13 +22,15 @@ public abstract class CoordinatorHarness : IAsyncDisposable
     protected SuggestionCoordinator Coordinator { get; }
     protected bool BatterySaver { get; set; }
 
-    protected CoordinatorHarness(TypoCorrectionAdvisor? typos = null, IClipboardReader? clipboard = null)
+    protected CoordinatorHarness(
+        TypoCorrectionAdvisor? typos = null, IClipboardReader? clipboard = null, TimeProvider? clock = null)
     {
         Coordinator = new SuggestionCoordinator(
             Hook, Focus, Engine, Overlay, Focus,
             new SuggestionWorkController(TimeSpan.FromMilliseconds(5)),
             NullLogger<SuggestionCoordinator>.Instance, _pump,
             batterySaverOn: () => BatterySaver,
+            clock: clock,
             typos: typos,
             clipboard: clipboard);
         Coordinator.Start();

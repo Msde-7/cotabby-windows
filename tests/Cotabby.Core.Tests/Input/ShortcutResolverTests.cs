@@ -95,4 +95,36 @@ public sealed class ShortcutResolverTests
         Assert.False(ShortcutResolver.OverridesAcceptAll("chrome", [Override(acceptAll: CtrlEnter)]));
         Assert.False(ShortcutResolver.OverridesAcceptAll(App, []));
     }
+
+    private static string? AllLabel(string? process, bool doubleTap, params PerAppShortcutOverride[] overrides) =>
+        ShortcutResolver.AcceptAllLabel(process, overrides, GlobalWord, GlobalAll, doubleTap);
+
+    [Fact]
+    public void AcceptAllLabel_ShowsTheKeyOrTheDoubleTap()
+    {
+        Assert.Equal("`", AllLabel(App, doubleTap: false));
+        Assert.Equal("Tab Tab", AllLabel(App, doubleTap: true));
+        Assert.Null(ShortcutResolver.AcceptAllLabel(App, [], GlobalWord, KeyBinding.Unbound, doubleTap: false));
+    }
+
+    [Fact]
+    public void AcceptAllLabel_InheritedDoubleTapUsesTheAppsOwnAcceptWordKey()
+    {
+        var returnKey = new KeyBinding(0x0D, KeyModifiers.None, "Enter");
+        var terminal = Override(acceptWord: returnKey, process: "WindowsTerminal");
+
+        Assert.Equal("Tab Tab", AllLabel("thunderbird", doubleTap: true, terminal));
+        Assert.Equal("Enter Enter", AllLabel("WindowsTerminal", doubleTap: true, terminal));
+    }
+
+    [Fact]
+    public void AcceptAllLabel_HasNoDoubleTapWhereAcceptWordIsDisabled() =>
+        Assert.Null(AllLabel(App, doubleTap: true, Override(acceptWord: KeyBinding.Unbound)));
+
+    [Fact]
+    public void AcceptAllLabel_AnAppsOwnBindingWinsOverTheDoubleTap()
+    {
+        Assert.Equal("Ctrl+Enter", AllLabel(App, doubleTap: true, Override(acceptAll: CtrlEnter)));
+        Assert.Null(AllLabel(App, doubleTap: true, Override(acceptAll: KeyBinding.Unbound)));
+    }
 }

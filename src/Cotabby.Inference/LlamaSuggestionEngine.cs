@@ -43,6 +43,7 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
             SingleLine = request.SingleLine,
             ForceWordContinuation =
                 MidWordContinuationPolicy.ShouldForceContinuation(request.Prefix, request.Suffix),
+            SentenceStopMinimumWords = request.WordRange?.LowWords ?? 0,
         };
 
         // Fill-in-the-middle is used only when real text follows on the same line and the model

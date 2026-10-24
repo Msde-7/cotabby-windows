@@ -39,7 +39,6 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private const int ComparedTailChars = 256;
 
     private static readonly TimeSpan GenerationWatchdog = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan DoubleTapWindow = TimeSpan.FromMilliseconds(300);
 
     /// <summary>How long the accept key stays owned after the last chunk while the continuation generates.</summary>
     private static readonly TimeSpan PostExhaustionWindow = TimeSpan.FromMilliseconds(800);
@@ -71,7 +70,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
     /// <summary>Accepted characters the host has not been sent yet.</summary>
     private int _pendingInsertChars;
-    private (string RequestId, long Timestamp)? _pendingDoubleTap;
+    private readonly DoubleTapAcceptanceState _doubleTap = new();
+    private readonly TypingCadence _cadence = new();
+    private volatile string _focusIdentity = "";
     private AcceptedTail? _lastAcceptedTail;
     private bool _queuedAccept;
 
@@ -159,6 +160,24 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Re-checks availability when battery saver turns on or off, instead of waiting for the next
+    /// key. A visible suggestion goes away when suggestions pause, and a new one is asked for
+    /// when they resume.
+    /// </summary>
+    public void BatterySaverChanged() => Post(() =>
+    {
+        if (SuggestionAvailability.DisabledReason(_settings, _clock.GetUtcNow(), _batterySaverOn()) is { } reason)
+        {
+            CancelSession(reason);
+            return;
+        }
+        if (_session is not null) return;
+        _publishBaseline = null;
+        _expectedDelta = 0;
+        SchedulePrediction(typed: null);
+    });
+
     public void Start()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -186,6 +205,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         {
             RecordHistory(field);
             int pid = field?.ProcessId ?? 0;
+            _focusIdentity = field is null ? "" : FocusIdentity(field);
             bool sameHost = pid != 0 && (_focusedPid == 0 || pid == _focusedPid);
             _focusedPid = pid;
             if (sameHost && (_sessionField is null || _sessionField.FieldId == field!.FieldId)) return;
@@ -233,9 +253,14 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
     private void HandleEvent(KeyboardEvent ev)
     {
-        if (ev.Kind == KeyKind.Other) return;
+        if (ev.Kind == KeyKind.Other)
+        {
+            // Any key between two accept presses breaks the pair. Modifiers alone do not.
+            if (!KeyClassifier.IsModifier(ev.VirtualKey)) _doubleTap.Reset();
+            return;
+        }
 
-        _pendingDoubleTap = null;
+        _doubleTap.Reset();
         _ownership = null;
         _queuedAccept = false;
 
@@ -246,6 +271,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
 
         TrackForHostPublish(ev);
+        _cadence.Record(_focusIdentity, ev.Kind == KeyKind.Character ? ev.Character.ToString() : "", Now());
 
         if (_session is { } session)
         {
@@ -302,23 +328,25 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
     }
 
-    private void SchedulePrediction(char? typed)
+    /// <param name="requiresTextChange">Wait until the text differs from the baseline, as after a correction.</param>
+    private void SchedulePrediction(char? typed, bool requiresTextChange = false)
     {
         var requestId = "req_" + Guid.NewGuid().ToString("N")[..8];
         var settings = _settings;
         var baseline = _publishBaseline;
         int delta = _expectedDelta;
         long sequence = _keySequence;
-        _ = _work.Submit(ct => PredictAsync(requestId, settings, baseline, delta, typed, sequence, ct));
+        _ = _work.Submit(ct => PredictAsync(requestId, settings, baseline, delta, typed, requiresTextChange, sequence, ct));
     }
 
     private async Task PredictAsync(
         string requestId, SuggestionSettings settings, FocusedField? baseline, int delta, char? typed,
-        long sequence, CancellationToken ct)
+        bool requiresTextChange, long sequence, CancellationToken ct)
     {
         try
         {
-            var field = await WaitForHostPublishAsync(baseline, delta, typed, ct).ConfigureAwait(false);
+            var field = await WaitForHostPublishAsync(baseline, delta, typed, requiresTextChange, ct)
+                .ConfigureAwait(false);
             RecordHistory(field);
             if (field is null) return;
             Post(() =>
@@ -337,9 +365,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
             string preceding = field.PrecedingText;
             if (await HandleTypoAsync(requestId, settings, field, sequence, ct).ConfigureAwait(false)) return;
-            if (!settings.SuggestWithinWords && CaretWordContext.UnfinishedWord(preceding) is not null) return;
             // A completion inside a token would duplicate or splice what follows the caret.
-            if (CaretTokenPosition.IsInsideToken(preceding, field.TrailingText)) return;
+            if (!SuggestionRequestFactory.ShouldGenerate(preceding, field.TrailingText, settings.SuggestWithinWords)) return;
             if (!_engine.IsReady) return;
 
             var request = SuggestionRequestFactory.Build(
@@ -349,18 +376,34 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             string text = await GenerateAsync(request, ct).ConfigureAwait(false);
             int latencyMs = (int)stopwatch.ElapsedMilliseconds;
             UpdateDebounce(settings, latencyMs);
-            if (text.Length == 0 || ct.IsCancellationRequested) return;
+            ct.ThrowIfCancellationRequested();
+            if (text.Length == 0 && CaretWordContext.UnfinishedWord(preceding) is null) return;
+
+            // Mid-word, a result waits for a pause a little longer than the recent gap between
+            // letters, so it does not flash up between two keys. Cancellation still owns the wait.
+            double pause = _cadence.RemainingDelay(FocusIdentity(field), preceding, Now());
+            if (pause > 0) await Task.Delay(TimeSpan.FromSeconds(pause), ct).ConfigureAwait(false);
 
             // Generation took a while. Show the suggestion only if the text it continues is still there.
             var live = _focus.Refresh(readHostText: true);
-            if (live is null || live.ProcessId != field.ProcessId || live.PrecedingText != preceding)
+            if (live is null || live.ProcessId != field.ProcessId
+                || SuggestionSessionReconciler.SpaceNormalized(live.PrecedingText)
+                    != SuggestionSessionReconciler.SpaceNormalized(preceding))
             {
                 _logger.LogInformation("Request {ReqId} dropped because the field changed during generation.", requestId);
                 return;
             }
-            if (CompletionFinalizer.VisibleText(text, live, settings, _engine.SpacingIsExact, _typos) is not { } visible)
+            // An unusable result mid-word may still offer a local word ending.
+            if (CompletionFinalizer.Finalize(text, live, settings, _engine.SpacingIsExact, _typos) is not { } visible)
             {
                 _logger.LogInformation("Request {ReqId} dropped by the final presentation checks.", requestId);
+                return;
+            }
+
+            // Suggestions may have been paused, or battery saver turned on, while this generated.
+            if (SuggestionAvailability.DisabledReason(_settings, _clock.GetUtcNow(), _batterySaverOn()) is { } paused)
+            {
+                _logger.LogInformation("Request {ReqId} dropped: {Reason}", requestId, paused);
                 return;
             }
 
@@ -374,6 +417,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             _logger.LogWarning(ex, "Request {ReqId} failed.", requestId);
         }
     }
+
+    private static string FocusIdentity(FocusedField field) => $"{field.ProcessId}:{field.FieldId}";
 
     /// <summary>Paces the next request by how long the engine just took.</summary>
     private void UpdateDebounce(SuggestionSettings settings, int? lastLatencyMs) =>
@@ -407,7 +452,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
             case TypoGateAction.OfferCorrection:
                 var correction = new TypoCorrection(decision.Word!, decision.CorrectedWord!);
-                Post(() => Present(requestId, decision.CorrectedWord!, field, latencyMs: 0, sequence, ct, correction));
+                Post(() => Present(
+                    requestId, new FinalCompletion(decision.CorrectedWord!), field, latencyMs: 0, sequence, ct, correction));
                 return true;
 
             default:
@@ -415,16 +461,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
     }
 
-    /// <summary>Predicts again after an edit whose size the key count cannot describe.</summary>
-    private void RestartPrediction()
-    {
-        _publishBaseline = null;
-        _expectedDelta = 0;
-        SchedulePrediction(typed: null);
-    }
-
     private async Task<FocusedField?> WaitForHostPublishAsync(
-        FocusedField? baseline, int delta, char? typed, CancellationToken ct)
+        FocusedField? baseline, int delta, char? typed, bool requiresTextChange, CancellationToken ct)
     {
         int waited = 0;
         int interval = HostPublishFirstPollMs;
@@ -433,21 +471,32 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             ct.ThrowIfCancellationRequested();
             var field = _focus.Refresh();
             if (field is null) return null;
-            if (waited >= HostPublishCeilingMs || HasPublished(field, baseline, delta, typed, waited)) return field;
+            if (waited >= HostPublishCeilingMs || HasPublished(field, baseline, delta, typed, requiresTextChange, waited))
+            {
+                return field;
+            }
             await Task.Delay(interval, ct).ConfigureAwait(false);
             waited += interval;
             interval = HostPublishPollMs;
         }
     }
 
-    private static bool HasPublished(FocusedField field, FocusedField? baseline, int delta, char? typed, int waited)
+    private static bool HasPublished(
+        FocusedField field, FocusedField? baseline, int delta, char? typed, bool requiresTextChange, int waited)
     {
         var preceding = field.PrecedingText;
+        if (requiresTextChange && baseline is not null)
+        {
+            return SuggestionSessionReconciler.SpaceNormalized(preceding)
+                != SuggestionSessionReconciler.SpaceNormalized(baseline.PrecedingText);
+        }
         if (baseline is null || baseline.ProcessId != field.ProcessId)
         {
             // With nothing to count against, the typed character itself is the evidence. A dead key
             // can make the host insert an accented form of it, which then waits out the ceiling.
-            return typed is { } c ? preceding.EndsWith(c) : waited > 0;
+            return typed is { } c
+                ? preceding.EndsWith(c) || (c == ' ' && preceding.EndsWith('\u00A0'))
+                : waited > 0;
         }
 
         int expected = baseline.PrecedingText.Length + delta;
@@ -475,12 +524,21 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     }
 
     private void Present(
-        string requestId, string text, FocusedField field, int latencyMs, long sequence, CancellationToken ct,
-        TypoCorrection? correction = null)
+        string requestId, FinalCompletion completion, FocusedField field, int latencyMs, long sequence,
+        CancellationToken ct, TypoCorrection? correction = null)
     {
         // A key handled after the work finished can no longer cancel it, so the sequence is checked too.
         if (ct.IsCancellationRequested || _session is not null || _keySequence != sequence) return;
 
+        var session = new SuggestionSession
+        {
+            RequestId = requestId,
+            PredictedText = completion.Predicted,
+            FirstOfferLength = completion.FirstOfferLength,
+            ShowFollowingWords = _settings.ShowFollowingWords,
+            Correction = correction,
+        };
+        string text = session.VisibleText;
         var preceding = field.PrecedingText;
         if (correction is null
             && _dismissals.Suppresses((ulong)field.ProcessId, preceding, field.TrailingText, text, Now()))
@@ -489,19 +547,14 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             return;
         }
         if (_lastAcceptedTail is { } tail
-            && AcceptanceChunker.IsStaleAcceptanceEcho(text, tail.Text, preceding, tail.PrecedingText))
+            && AcceptanceChunker.IsStaleAcceptanceEcho(completion.Predicted, tail.Text, preceding, tail.PrecedingText))
         {
             _logger.LogInformation("Request {ReqId} dropped as an echo of the last accepted chunk.", requestId);
             return;
         }
         _lastAcceptedTail = null;
 
-        _session = new SuggestionSession
-        {
-            RequestId = requestId,
-            VisibleText = text,
-            Correction = correction,
-        };
+        _session = session;
         _sessionField = field;
         _sessionAcceptedAny = false;
         _expectedPreceding = preceding;
@@ -550,20 +603,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         && live.ProcessId == offeredIn.ProcessId && live.FieldId == offeredIn.FieldId
         && FollowsExpected(_expectedPreceding, live.PrecedingText, PublishLagChars + _pendingInsertChars);
 
-    /// <summary>
-    /// True when <paramref name="live"/> is the expected text, or the expected text less a few
-    /// trailing characters the host has not published yet.
-    /// </summary>
-    private static bool FollowsExpected(string expected, string live, int allowedLag)
-    {
-        // A short text is the whole of what precedes the caret, so it has to match from the start.
-        if (live.Length < ComparedTailChars)
-        {
-            return expected.Length - live.Length <= allowedLag && expected.StartsWith(live, StringComparison.Ordinal);
-        }
-        int at = expected.LastIndexOf(live[^ComparedTailChars..], StringComparison.Ordinal);
-        return at >= 0 && expected.Length - (at + ComparedTailChars) <= allowedLag;
-    }
+    private static bool FollowsExpected(string expected, string live, int allowedLag) =>
+        SuggestionSessionReconciler.FollowsExpected(expected, live, allowedLag, ComparedTailChars);
 
     private void Accept(bool all, bool isRepeat)
     {
@@ -578,6 +619,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         if (session.Correction is { } correction)
         {
             ClearSession();
+            // Keep the key for a moment so a quick second press accepts the next suggestion
+            // instead of reaching the host as a Tab.
+            OwnAcceptKeyBriefly(field, settings);
             _insertChain = _insertChain
                 .ContinueWith(
                     _ => ApplyCorrectionAsync(correction, requiresTrailingSpace: false), TaskScheduler.Default)
@@ -588,15 +632,12 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         bool doubleTapApplies = settings.DoubleTapAcceptsAll
             && !isRepeat
             && !ShortcutResolver.OverridesAcceptAll(field.ProcessName, settings.ShortcutOverrides);
-        long now = _clock.GetTimestamp();
-        if (!all && doubleTapApplies
-            && _pendingDoubleTap is { } pending
-            && pending.RequestId == session.RequestId
-            && _clock.GetElapsedTime(pending.Timestamp, now) <= DoubleTapWindow)
+        double now = Now();
+        if (!all && doubleTapApplies && _doubleTap.ConsumeDoubleTap(session.RequestId, now))
         {
             all = true;
         }
-        _pendingDoubleTap = null;
+        _doubleTap.Reset();
 
         string visible = session.VisibleText;
         string chunk = all
@@ -605,10 +646,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 ? AcceptanceChunker.NextPhrase(visible, settings.AcceptPunctuationWithWord)
                 : AcceptanceChunker.NextChunk(visible, settings.AcceptPunctuationWithWord);
         if (chunk.Length == 0) chunk = visible;
-        if (settings.AddSpaceAfterAccept) chunk = AcceptanceChunker.ConsumingTrailingSpace(chunk, visible);
+        // The space after a word may sit in the part of the prediction not shown yet.
+        if (settings.AddSpaceAfterAccept) chunk = AcceptanceChunker.ConsumingTrailingSpace(chunk, session.PredictedText);
 
-        string remaining = visible[chunk.Length..];
-        bool exhausted = string.IsNullOrWhiteSpace(remaining);
+        var next = session.Advancing(chunk.Length);
+        bool exhausted = next.IsExhausted;
         bool firstChunk = !_sessionAcceptedAny;
 
         string expected = _expectedPreceding;
@@ -622,23 +664,29 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         {
             ClearSession();
             // Keep owning the accept key so a fast follow-up press is queued for the
-            // continuation instead of leaking into the host.
-            _ownership = new AcceptKeyOwnership(
-                ShortcutResolver.AcceptWord(field.ProcessName, settings.ShortcutOverrides, settings.AcceptWord),
-                now + (long)(PostExhaustionWindow.TotalSeconds * _clock.TimestampFrequency));
+            // continuation instead of leaking into the host. Only when a continuation will be asked for.
+            if (SuggestionRequestFactory.ShouldGenerate(_expectedPreceding, settings.SuggestWithinWords))
+            {
+                OwnAcceptKeyBriefly(field, settings);
+            }
         }
         else
         {
-            _session = session with { VisibleText = remaining };
+            _session = next;
             _sessionAcceptedAny = true;
-            _overlay.Update(remaining);
-            if (!all && doubleTapApplies) _pendingDoubleTap = (session.RequestId, now);
+            _overlay.Update(next.VisibleText);
+            if (!all && doubleTapApplies) _doubleTap.RecordWordAccept(session.RequestId, now);
         }
 
         _insertChain = _insertChain
             .ContinueWith(_ => InsertAcceptedAsync(accepted), TaskScheduler.Default)
             .Unwrap();
     }
+
+    private void OwnAcceptKeyBriefly(FocusedField field, SuggestionSettings settings) =>
+        _ownership = new AcceptKeyOwnership(
+            ShortcutResolver.AcceptWord(field.ProcessName, settings.ShortcutOverrides, settings.AcceptWord),
+            _clock.GetTimestamp() + (long)(PostExhaustionWindow.TotalSeconds * _clock.TimestampFrequency));
 
     /// <summary>One accept, decided on the UI context and carried out on the thread pool.</summary>
     private sealed record AcceptedChunk(
@@ -712,7 +760,13 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             if (plan is not { } fix) return;
             await _inserter.ReplaceAsync(field, fix.DeletingUtf16Count, fix.ReplacementText, CancellationToken.None)
                 .ConfigureAwait(false);
-            Post(RestartPrediction);
+            // The edit publishes asynchronously. Predicting before it lands could offer the same fix again.
+            Post(() =>
+            {
+                _publishBaseline = field;
+                _expectedDelta = 0;
+                SchedulePrediction(typed: null, requiresTextChange: true);
+            });
         }
         catch (Exception ex)
         {
@@ -771,7 +825,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private void CancelSession(string reason)
     {
         if (_session is not null) _logger.LogInformation("Suggestion cleared ({Reason}).", reason);
-        _pendingDoubleTap = null;
+        _doubleTap.Reset();
         _ownership = null;
         _queuedAccept = false;
         ClearSession();

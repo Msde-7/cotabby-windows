@@ -45,6 +45,21 @@ public static class ShortcutResolver
     public static bool OverridesAcceptAll(string? processName, IReadOnlyList<PerAppShortcutOverride> overrides) =>
         Find(processName, overrides)?.AcceptAll is not null;
 
+    /// <summary>
+    /// What accepts the whole suggestion in an app, as a label, or null when nothing does. With
+    /// double tap on, it is a double press of that app's own accept-word key, so an app that
+    /// disables accept-word has none. An app's own accept-all binding wins over the double tap.
+    /// </summary>
+    public static string? AcceptAllLabel(
+        string? processName, IReadOnlyList<PerAppShortcutOverride> overrides,
+        KeyBinding acceptWord, KeyBinding acceptAll, bool doubleTap)
+    {
+        if (Find(processName, overrides)?.AcceptAll is { } own) return own.IsBound ? own.Label : null;
+        if (!doubleTap) return acceptAll.IsBound ? acceptAll.Label : null;
+        var word = AcceptWord(processName, overrides, acceptWord);
+        return word.IsBound ? $"{word.Label} {word.Label}" : null;
+    }
+
     private static PerAppShortcutOverride? Find(string? processName, IReadOnlyList<PerAppShortcutOverride> overrides)
     {
         if (string.IsNullOrEmpty(processName)) return null;

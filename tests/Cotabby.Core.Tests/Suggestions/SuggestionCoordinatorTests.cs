@@ -359,4 +359,82 @@ public sealed class SuggestionCoordinatorTests : CoordinatorHarness
         await StaysHidden();
         Assert.Empty(Engine.Requests);
     }
+
+    [Fact]
+    public async Task ASpaceTheHostPublishesAsNonBreaking_StillTypesThroughTheSuggestion()
+    {
+        Type("hello");
+        await Shown(" world again");
+
+        Hook.Press(Keys.Char(' '));
+        Focus.Append("\u00A0");
+        await Shown("world again");
+
+        Assert.True(Hook.Press(Keys.Tab()));
+        await Eventually(() => Focus.Insertions.Contains("world"), "the word is inserted after the non-breaking space");
+    }
+
+    [Fact]
+    public async Task AcceptingTheLastChunk_KeepsTheKeyOnlyWhenAContinuationWillFollow()
+    {
+        Coordinator.Settings = SuggestionSettings.Default with { SuggestWithinWords = false };
+        Engine.Completion = _ => "world again";
+        Type("hello ");
+        await Shown("world again");
+
+        Assert.True(Hook.Press(Backtick));
+        await Eventually(() => Focus.Current!.Text == "hello world again", "everything is inserted");
+
+        // The text ends inside a word and suggestions wait for it to finish, so Tab goes to the host.
+        Assert.False(Hook.Press(Keys.Tab()));
+    }
+
+    [Fact]
+    public async Task AcceptingTheLastChunk_OwnsTheKeyWhileTheContinuationLoads()
+    {
+        Type("hello");
+        await Shown(" world again");
+
+        Assert.True(Hook.Press(Backtick));
+        Assert.True(Hook.Press(Keys.Tab()));
+    }
+
+    [Fact]
+    public async Task BatterySaverTurningOn_ClearsAVisibleSuggestion()
+    {
+        Type("hello");
+        await Shown(" world again");
+
+        BatterySaver = true;
+        Coordinator.BatterySaverChanged();
+
+        await Eventually(() => Overlay.Text == "", "the suggestion is cleared");
+    }
+
+    [Fact]
+    public async Task BatterySaverTurningOff_PredictsWithoutAnotherKey()
+    {
+        BatterySaver = true;
+        Type("hello");
+        await StaysHidden();
+
+        BatterySaver = false;
+        Coordinator.BatterySaverChanged();
+
+        await Shown(" world again");
+    }
+
+    [Fact]
+    public async Task BatterySaverTurningOnDuringGeneration_DropsTheResult()
+    {
+        Engine.Completion = _ =>
+        {
+            BatterySaver = true;
+            return " world again";
+        };
+
+        Type("hello");
+
+        await StaysHidden();
+    }
 }

@@ -54,6 +54,9 @@ public sealed record SuggestionSettings
 
     public SuggestionDisplayMode DisplayMode { get; init; }
 
+    /// <summary>When off, one word of the prediction shows at a time and the rest waits behind it.</summary>
+    public bool ShowFollowingWords { get; init; } = true;
+
     /// <summary>When off, a new suggestion waits for the word being typed to be finished.</summary>
     public bool SuggestWithinWords { get; init; } = true;
 

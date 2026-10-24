@@ -52,6 +52,19 @@ public sealed class TypoCorrectionAdvisor(
         return replacement is null ? new TypoAdvice(TypoGateDecision.Suppress) : new TypoAdvice(decision, replacement);
     }
 
+    /// <summary>
+    /// Dictionary words starting with <paramref name="prefix"/>, in the one language the text is in.
+    /// Empty when the language is ambiguous or its dictionary is still loading.
+    /// </summary>
+    public IReadOnlyList<WordPrefixIndex.Candidate> CompletionCandidates(
+        string prefix, string precedingText, IEnumerable<string> enabledDictionaryCodes)
+    {
+        var languages = SpellingDictionaryCatalog.Languages(enabledDictionaryCodes);
+        return resolver.Resolve(precedingText, prefix, languages) is { } language
+            ? corrector.CompletionCandidates(prefix, language)
+            : [];
+    }
+
     /// <summary>Whether a word a completion would produce is known, a fixable typo or an unknown word.</summary>
     public CompletionSeamGuard.SpellingAssessment Assess(
         string word, string precedingText, IEnumerable<string> enabledDictionaryCodes)

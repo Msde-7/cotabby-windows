@@ -90,4 +90,16 @@ public sealed class SuggestionCoordinatorTypoTests : CoordinatorHarness
         await Shown("world again");
         Assert.False(Overlay.ShowsCorrection);
     }
+
+    [Fact]
+    public async Task AQuickSecondPressAfterACorrection_AcceptsTheNextSuggestion()
+    {
+        Type("hello teh ");
+        await Shown("the");
+
+        Assert.True(Hook.Press(Keys.Tab()));
+        Assert.True(Hook.Press(Keys.Tab()));
+
+        await Eventually(() => Focus.Current!.Text == "hello the world", "the next word is accepted");
+    }
 }
