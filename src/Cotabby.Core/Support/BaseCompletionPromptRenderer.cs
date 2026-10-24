@@ -29,6 +29,7 @@ public static class BaseCompletionPromptRenderer
     /// <param name="languageInstruction">Language conditioning sentence.</param>
     /// <param name="clipboardContext">Distilled clipboard text.</param>
     /// <param name="surfaceLines">Composed description of the writing surface, one fact group per line.</param>
+    /// <param name="historyExamples">Passages of the user's own earlier writing.</param>
     /// <param name="contextBudget">Character budget, used when no token budget is given.</param>
     /// <param name="tokenBudget">When given, sections fill against estimated tokens instead of characters.</param>
     public static string Prompt(
@@ -39,6 +40,7 @@ public static class BaseCompletionPromptRenderer
         string? languageInstruction = null,
         string? clipboardContext = null,
         IReadOnlyList<string>? surfaceLines = null,
+        IReadOnlyList<string>? historyExamples = null,
         int contextBudget = DefaultContextBudget,
         int? tokenBudget = null)
     {
@@ -63,6 +65,10 @@ public static class BaseCompletionPromptRenderer
             // label, so the full user-entered text survives.
             sections.Add(ContextSection(
                 "notes", $"Notes the writer keeps in mind: {notes}", priority: 40, maxChars: 1300));
+        }
+        if (HistorySection(historyExamples) is { } history)
+        {
+            sections.Add(history);
         }
         if (NonEmpty(clipboardContext) is { } clip)
         {
@@ -107,6 +113,34 @@ public static class BaseCompletionPromptRenderer
     {
         int count = GraphemeString.CountOf(content);
         return new(name, content, priority, MinChars: count, MaxChars: count, SectionTruncation.PreserveStart);
+    }
+
+    private const int HistoryMaxCharacters = 760;
+
+    /// <summary>
+    /// The user's own earlier sentences, quoted. A base model conditions strongly on nearby text in
+    /// the same voice, so a couple of real examples pull its word choice toward how this person
+    /// writes. It sits after the stable preface and before the clipboard: the examples change only
+    /// every few words, so placing them earlier keeps more of the prompt's head cached.
+    /// <para>
+    /// All or nothing, like the following section: a trimmed history section could end on an
+    /// unclosed quote, and the model would read the caret text as part of it. Examples are dropped
+    /// whole until the section fits its cap.
+    /// </para>
+    /// </summary>
+    private static PromptSection? HistorySection(IReadOnlyList<string>? examples)
+    {
+        const string heading = "Earlier writing by the same author:";
+        string content = heading;
+        foreach (var example in examples ?? [])
+        {
+            string trimmed = ScalarSets.TrimWhitespaceAndNewlines(example);
+            if (trimmed.Length == 0) continue;
+            string line = $"\n“{trimmed}”";
+            if (GraphemeString.CountOf(content) + GraphemeString.CountOf(line) > HistoryMaxCharacters) continue;
+            content += line;
+        }
+        return content.Length == heading.Length ? null : WholeSection("history", content, priority: 38);
     }
 
     /// <summary>

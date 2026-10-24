@@ -26,8 +26,13 @@ public sealed class SuggestionEngineRouter : ISuggestionEngine
 
     public bool SpacingIsExact => Active.SpacingIsExact;
 
-    public Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct) =>
-        Active.GenerateAsync(request, ct);
+    public Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct)
+    {
+        // The request was built from a settings snapshot, and the engine can change in between.
+        // Typing history must never leave this PC, so a request that carries it is dropped.
+        if (_useEndpoint && request.HistoryExamples.Count > 0) return Task.FromResult(string.Empty);
+        return Active.GenerateAsync(request, ct);
+    }
 
     private ISuggestionEngine Active => _useEndpoint ? _endpoint : _local;
 }

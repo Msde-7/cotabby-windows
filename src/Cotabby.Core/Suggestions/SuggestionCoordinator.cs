@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Cotabby.Core.Context;
 using Cotabby.Core.Focus;
+using Cotabby.Core.History;
 using Cotabby.Core.Input;
 using Cotabby.Core.Insertion;
 using Cotabby.Core.Overlay;
@@ -126,6 +127,12 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     /// <summary>True while an inline feature such as the emoji picker owns the keyboard.</summary>
     public Func<bool>? InlineCaptureActive { get; set; }
 
+    /// <summary>The user's typing history, read for prompt examples. Null runs without it.</summary>
+    public ISuggestionHistoryProvider? History { get; set; }
+
+    /// <summary>Records what the user types. It sees each fresh read of the focused field.</summary>
+    public ITypingHistoryObserver? HistoryRecorder { get; set; }
+
     /// <summary>
     /// True when Cotabby may act in this field. The emoji picker and macros follow the same
     /// rules as suggestions, so turning Cotabby off or excluding an app silences them too.
@@ -177,6 +184,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     {
         Post(() =>
         {
+            RecordHistory(field);
             int pid = field?.ProcessId ?? 0;
             bool sameHost = pid != 0 && (_focusedPid == 0 || pid == _focusedPid);
             _focusedPid = pid;
@@ -311,6 +319,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         try
         {
             var field = await WaitForHostPublishAsync(baseline, delta, typed, ct).ConfigureAwait(false);
+            RecordHistory(field);
             if (field is null) return;
             Post(() =>
             {
@@ -334,7 +343,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             if (!_engine.IsReady) return;
 
             var request = SuggestionRequestFactory.Build(
-                field, requestId, settings, settings.ClipboardContext ? _clipboard?.For(field) : null);
+                field, requestId, settings, settings.ClipboardContext ? _clipboard?.For(field) : null,
+                History?.HistoryExamples(field, settings.UsesEndpoint));
             var stopwatch = Stopwatch.StartNew();
             string text = await GenerateAsync(request, ct).ConfigureAwait(false);
             int latencyMs = (int)stopwatch.ElapsedMilliseconds;
@@ -715,6 +725,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     {
         await Task.Delay(settleMs).ConfigureAwait(false);
         var after = _focus.Refresh();
+        RecordHistory(after);
         if (after is null || after.CaretRect.IsEmpty) return;
         Post(() =>
         {
@@ -722,6 +733,19 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             _sessionField = after;
             _overlay.Show(live.VisibleText, after.CaretRect, StyleFor(after, live.Correction));
         });
+    }
+
+    /// <summary>Hands a fresh read of the field to the history recorder, which applies the same rules as suggestions.</summary>
+    private void RecordHistory(FocusedField? field)
+    {
+        try
+        {
+            HistoryRecorder?.Observe(field, () => field is not null && IsAvailableIn(field));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Recording typing history failed.");
+        }
     }
 
     private OverlayStyle StyleFor(FocusedField field, TypoCorrection? correction) =>

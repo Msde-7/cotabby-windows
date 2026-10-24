@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Cotabby.Core.Emoji;
+using Cotabby.Core.History;
 using Cotabby.Core.Input;
 using Cotabby.Core.Overlay;
 using Cotabby.Core.Spelling;
@@ -71,6 +72,18 @@ public sealed class AppSettings
     /// <summary>Tells the model which app and window the text is being written in.</summary>
     public bool IncludeAppContext { get; set; } = true;
     public string ExtendedContext { get; set; } = "";
+
+    // Typing history. Both switches are off by default.
+    public bool TypingHistoryEnabled { get; set; }
+    public bool TypingHistoryRecording { get; set; }
+
+    /// <summary>Process names, without extension, whose fields are never recorded.</summary>
+    public List<string> TypingHistoryExcludedApps { get; set; } = [];
+
+    /// <summary>The preferences the typing history store follows.</summary>
+    [JsonIgnore]
+    public TypingHistoryPreferences TypingHistoryPreferences =>
+        new(TypingHistoryEnabled, TypingHistoryRecording, [.. TypingHistoryExcludedApps]);
 
     // Shortcuts
     public KeyBinding AcceptWord { get; set; } = KeyBinding.Tab;

@@ -24,6 +24,7 @@ public static class CompletionPipeline
             languageInstruction: request.LanguageInstruction,
             clipboardContext: request.ClipboardContext,
             surfaceLines: request.SurfaceLines,
+            historyExamples: forEndpoint ? [] : request.HistoryExamples,
             contextBudget: forEndpoint ? EndpointContextBudget : BaseCompletionPromptRenderer.DefaultContextBudget,
             tokenBudget: tokenBudget);
     }

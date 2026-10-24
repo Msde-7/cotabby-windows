@@ -20,8 +20,10 @@ public static class SuggestionRequestFactory
     }
 
     /// <param name="clipboardContext">Clipboard text that already passed the relevance filter, or null.</param>
+    /// <param name="historyExamples">Passages of the user's past writing, dropped for the endpoint.</param>
     public static SuggestionRequest Build(
-        FocusedField field, string requestId, SuggestionSettings settings, string? clipboardContext = null)
+        FocusedField field, string requestId, SuggestionSettings settings, string? clipboardContext = null,
+        IReadOnlyList<string>? historyExamples = null)
     {
         string trailing = field.TrailingText;
         bool singleLine = field.IsSingleLine || !settings.AllowMultiLine;
@@ -40,6 +42,10 @@ public static class SuggestionRequestFactory
             ClipboardContext = ActiveClipboardContext(clipboardContext, settings, prefix),
             SurfaceLines = settings.SurfaceContext ? SurfaceLines(field) : [],
             WordRange = settings.WordRange,
+            // Typing history stays on this PC. The provider already returns nothing for the
+            // endpoint, and dropping it here keeps that guarantee in the one pure place every
+            // request passes through.
+            HistoryExamples = settings.UsesEndpoint ? [] : historyExamples ?? [],
         };
     }
 
