@@ -359,4 +359,18 @@ public sealed class SuggestionCoordinatorTests : CoordinatorHarness
         await StaysHidden();
         Assert.Empty(Engine.Requests);
     }
+
+    [Fact]
+    public async Task ASpaceTheHostPublishesAsNonBreaking_StillTypesThroughTheSuggestion()
+    {
+        Type("hello");
+        await Shown(" world again");
+
+        Hook.Press(Keys.Char(' '));
+        Focus.Append("\u00A0");
+        await Shown("world again");
+
+        Assert.True(Hook.Press(Keys.Tab()));
+        await Eventually(() => Focus.Insertions.Contains("world"), "the word is inserted after the non-breaking space");
+    }
 }

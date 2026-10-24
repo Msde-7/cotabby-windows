@@ -343,7 +343,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
             // Generation took a while. Show the suggestion only if the text it continues is still there.
             var live = _focus.Refresh();
-            if (live is null || live.ProcessId != field.ProcessId || live.PrecedingText != preceding)
+            if (live is null || live.ProcessId != field.ProcessId
+                || SuggestionSessionReconciler.SpaceNormalized(live.PrecedingText)
+                    != SuggestionSessionReconciler.SpaceNormalized(preceding))
             {
                 _logger.LogInformation("Request {ReqId} dropped because the field changed during generation.", requestId);
                 return;
@@ -437,7 +439,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         {
             // With nothing to count against, the typed character itself is the evidence. A dead key
             // can make the host insert an accented form of it, which then waits out the ceiling.
-            return typed is { } c ? preceding.EndsWith(c) : waited > 0;
+            return typed is { } c
+                ? preceding.EndsWith(c) || (c == ' ' && preceding.EndsWith(' '))
+                : waited > 0;
         }
 
         int expected = baseline.PrecedingText.Length + delta;
@@ -540,20 +544,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         && live.ProcessId == offeredIn.ProcessId && live.FieldId == offeredIn.FieldId
         && FollowsExpected(_expectedPreceding, live.PrecedingText, PublishLagChars + _pendingInsertChars);
 
-    /// <summary>
-    /// True when <paramref name="live"/> is the expected text, or the expected text less a few
-    /// trailing characters the host has not published yet.
-    /// </summary>
-    private static bool FollowsExpected(string expected, string live, int allowedLag)
-    {
-        // A short text is the whole of what precedes the caret, so it has to match from the start.
-        if (live.Length < ComparedTailChars)
-        {
-            return expected.Length - live.Length <= allowedLag && expected.StartsWith(live, StringComparison.Ordinal);
-        }
-        int at = expected.LastIndexOf(live[^ComparedTailChars..], StringComparison.Ordinal);
-        return at >= 0 && expected.Length - (at + ComparedTailChars) <= allowedLag;
-    }
+    private static bool FollowsExpected(string expected, string live, int allowedLag) =>
+        SuggestionSessionReconciler.FollowsExpected(expected, live, allowedLag, ComparedTailChars);
 
     private void Accept(bool all, bool isRepeat)
     {

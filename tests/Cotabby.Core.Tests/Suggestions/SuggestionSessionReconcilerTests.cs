@@ -65,4 +65,27 @@ public sealed class SuggestionSessionReconcilerTests
 
         Assert.Equal(new(Outcome.Ignore, Session), SuggestionSessionReconciler.Apply(Session, release));
     }
+
+    [Fact]
+    public void Apply_TypingASpace_AdvancesPastANonBreakingSpace()
+    {
+        var result = SuggestionSessionReconciler.Apply(Session with { VisibleText = "\u00A0world" }, Keys.Char(' '));
+
+        Assert.Equal(Outcome.Advance, result.Outcome);
+        Assert.Equal("world", result.Next?.VisibleText);
+    }
+
+    [Theory]
+    [InlineData("Hello there", "Hello there", 0, true)]
+    [InlineData("Hello there", "Hello\u00A0there", 0, true)]
+    [InlineData("Hello\u00A0", "Hello ", 0, true)]
+    [InlineData("Hello there", "Hello th", 3, true)]
+    [InlineData("Hello there", "Hello th", 2, false)]
+    [InlineData("Hello there", "Hello_th", 8, false)]
+    public void FollowsExpected_TreatsANonBreakingSpaceAsASpace(string expected, string live, int lag, bool follows) =>
+        Assert.Equal(follows, SuggestionSessionReconciler.FollowsExpected(expected, live, lag));
+
+    [Fact]
+    public void SpaceNormalized_KeepsOffsets() =>
+        Assert.Equal("a b c", SuggestionSessionReconciler.SpaceNormalized("a\u00A0b c"));
 }
