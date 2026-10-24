@@ -362,7 +362,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             string text = await GenerateAsync(request, ct).ConfigureAwait(false);
             int latencyMs = (int)stopwatch.ElapsedMilliseconds;
             UpdateDebounce(settings, latencyMs);
-            if (text.Length == 0 || ct.IsCancellationRequested) return;
+            ct.ThrowIfCancellationRequested();
+            if (text.Length == 0 && CaretWordContext.UnfinishedWord(preceding) is null) return;
 
             // Generation took a while. Show the suggestion only if the text it continues is still there.
             var live = _focus.Refresh();
@@ -373,6 +374,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 _logger.LogInformation("Request {ReqId} dropped because the field changed during generation.", requestId);
                 return;
             }
+            // An unusable result mid-word may still offer a local word ending.
             if (CompletionFinalizer.Finalize(text, live, settings, _engine.SpacingIsExact, _typos) is not { } visible)
             {
                 _logger.LogInformation("Request {ReqId} dropped by the final presentation checks.", requestId);

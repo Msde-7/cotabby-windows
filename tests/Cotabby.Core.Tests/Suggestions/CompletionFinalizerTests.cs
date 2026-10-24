@@ -12,9 +12,9 @@ public sealed class CompletionFinalizerTests
     private static readonly TypoCorrectionAdvisor Typos = new(
         TestCorrector.Loaded((SpellingDictionaryLanguage.English, Dictionary)), new SpellingLanguageResolver());
 
-    private static FinalCompletion? Finalize(string completion, string preceding) =>
+    private static FinalCompletion? Finalize(string completion, string preceding, string trailing = "") =>
         CompletionFinalizer.Finalize(
-            completion, Fields.Text(preceding),
+            completion, Fields.Text(preceding + trailing) with { CaretOffset = preceding.Length },
             SuggestionSettings.Default, spacingIsExact: true, Typos);
 
     [Fact]
@@ -33,4 +33,19 @@ public sealed class CompletionFinalizerTests
     [Fact]
     public void FollowingWordsThatStartWithATypoAreDropped() =>
         Assert.Equal(new FinalCompletion("bby"), Finalize("bby agian", "ask Cota"));
+
+    [Fact]
+    public void AnUnusableResultMidWordFallsBackToALocalWordEnding()
+    {
+        Assert.Equal(new FinalCompletion("le"), Finalize("", "please schedu"));
+        Assert.Equal(new FinalCompletion("le"), Finalize("....", "please schedu"));
+    }
+
+    [Fact]
+    public void TheLocalWordEndingStaysOutOfAWordThatContinuesAfterTheCaret() =>
+        Assert.Null(Finalize("", "please schedu", trailing: "ling"));
+
+    [Fact]
+    public void TheLocalWordEndingNeedsAnUnfinishedWord() =>
+        Assert.Null(Finalize("", "please "));
 }

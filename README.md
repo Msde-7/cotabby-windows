@@ -143,7 +143,7 @@ Settings live in `%APPDATA%\Cotabby\settings.json`, models in `%LOCALAPPDATA%\Co
 | Area | Status |
 | --- | --- |
 | Base-model prompt pipeline, token budgeting, token healing, decode stops | Ported |
-| Output cleanup, seam guard, live spacing, dismissal memory | Ported |
+| Output cleanup, seam guard, live spacing, dismissal memory, local word endings | Ported |
 | One word at a time with the following words kept ready | Ported |
 | Word and phrase acceptance, CJK chunking, trailing space, double tap | Ported |
 | Rebindable shortcuts, per-app overrides, global toggle | Ported |

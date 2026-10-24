@@ -42,4 +42,13 @@ public sealed class SuggestionCoordinatorWordEndingTests : CoordinatorHarness
 
         Assert.Equal(requests, Engine.Requests.Count);
     }
+
+    [Fact]
+    public async Task AnEmptyResultMidWord_OffersTheDictionaryEnding()
+    {
+        Engine.Completion = _ => "";
+        Type("please schedu");
+
+        await Shown("le");
+    }
 }
