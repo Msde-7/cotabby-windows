@@ -190,12 +190,21 @@ internal sealed class ModelList : StackPanel
 
         var progress = new Progress<ModelDownloader.Progress>(update =>
         {
+            if (!_downloading) return;
             _progress = update;
             ShowProgress();
         });
         try
         {
-            await _context.Host.EnsureModelReadyAsync(progress, _loading.Token);
+            if (_downloading)
+            {
+                await _context.Host.Downloader.DownloadAsync(model, progress, _loading.Token);
+                // Loading cannot be paused or cancelled, so those buttons go once the file is in place.
+                _downloading = false;
+                _progress = null;
+                Rebuild();
+            }
+            await _context.Host.EnsureModelReadyAsync(null, _loading.Token);
         }
         catch (OperationCanceledException)
         {
