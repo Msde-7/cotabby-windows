@@ -32,6 +32,18 @@ public sealed class SuggestionEngineRouterTests
     }
 
     [Fact]
+    public async Task GenerateAsync_EndpointNeverReceivesARequestCarryingTypingHistory()
+    {
+        _router.UseEndpoint = true;
+
+        string result = await _router.GenerateAsync(
+            Request with { HistoryExamples = ["My earlier sentence."] }, CancellationToken.None);
+
+        Assert.Empty(_endpoint.Requests);
+        Assert.Equal("", result);
+    }
+
+    [Fact]
     public void IsReady_FollowsTheSelectedEngineWithNoFallback()
     {
         _endpoint.IsReady = false;

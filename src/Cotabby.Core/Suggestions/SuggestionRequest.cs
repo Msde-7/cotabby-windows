@@ -40,4 +40,10 @@ public sealed record SuggestionRequest
 
     /// <summary>How many words the suggestion should run to.</summary>
     public SuggestionWordRange? WordRange { get; init; }
+
+    /// <summary>
+    /// Passages of the user's own past writing that resemble this field. Always empty for the
+    /// endpoint: history never leaves this PC, and the router refuses a request that carries any.
+    /// </summary>
+    public IReadOnlyList<string> HistoryExamples { get; init; } = [];
 }
