@@ -158,7 +158,7 @@ Settings live in `%APPDATA%\Cotabby\settings.json`, models in `%LOCALAPPDATA%\Co
 | Searchable settings, first-run setup, performance pane | Ported |
 | Apple Intelligence engine | Not applicable on Windows |
 | Screen context through OCR, host font matching | Not ported |
-| Streaming partial suggestions and predict-ahead while typing | Not ported |
+| Streaming partial suggestions, predict-ahead while typing, next-word prefetch behind a word ending | Not ported |
 | Typing history, per-domain disable in browsers, automatic updates | Not ported |
 
 ## Local Development
