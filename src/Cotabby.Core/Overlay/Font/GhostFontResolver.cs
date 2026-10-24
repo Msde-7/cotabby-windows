@@ -58,9 +58,6 @@ public sealed record GhostFontInput
 
     public HostRenderer Renderer { get; init; }
 
-    /// <summary>The user's Ghost Text Size setting. 1 means match the host.</summary>
-    public double SizeMultiplier { get; init; } = 1;
-
     /// <summary>The zoom ladder of a Chromium host, used to snap a measured size.</summary>
     public HostZoomLadder.Kind? ZoomLadder { get; init; }
 
@@ -123,14 +120,7 @@ public static class GhostFontResolver
     /// <summary>Caret box assumed when the host gives none.</summary>
     private const double DefaultCaretBoxHeight = 17;
 
-    public static GhostFontResolution Resolve(GhostFontInput input, IGlyphMeasurer measurer)
-    {
-        var resolution = ResolveHostFont(input, measurer);
-        if (!(input.SizeMultiplier > 0) || Math.Abs(input.SizeMultiplier - 1) <= 0.001) return resolution;
-        return resolution with { Size = ClampedSize(resolution.Size * input.SizeMultiplier) };
-    }
-
-    private static GhostFontResolution ResolveHostFont(GhostFontInput input, IGlyphMeasurer m)
+    public static GhostFontResolution Resolve(GhostFontInput input, IGlyphMeasurer m)
     {
         string? family = FontStack.FirstInstalled(input.FontName, m);
         double? reported = PlausibleReportedSize(input, family, m);

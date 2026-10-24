@@ -39,7 +39,7 @@ public sealed class HostAdvanceFit
     public const double MaximumDeviation = 0.06;
 
     private readonly List<Capture> _captures = [];
-    private (GhostFace Face, double Size)? _face;
+    private GhostFace? _face;
     private string? _lineKey;
 
     public IReadOnlyList<Capture> Captures => _captures;
@@ -48,16 +48,17 @@ public sealed class HostAdvanceFit
 
     /// <summary>
     /// Records a caret capture on the line named by <paramref name="lineKey"/> and returns the fit
-    /// when this capture adopted or refined it. A new face starts the field over; a new line starts
-    /// its captures over and keeps what was adopted.
+    /// when this capture adopted or refined it. <paramref name="size"/> is the host size the ghost
+    /// currently assumes. A new face starts the field over; a new line starts its captures over and
+    /// keeps what was adopted.
     /// </summary>
     public Fit? Record(
         string text, double caretX, string lineKey, GhostFace face, double size, IGlyphMeasurer measurer,
         double minimumSpan = MinimumSpan)
     {
-        if (_face != (face, size))
+        if (_face != face)
         {
-            _face = (face, size);
+            _face = face;
             Adopted = null;
             Refinements = 0;
             _captures.Clear();

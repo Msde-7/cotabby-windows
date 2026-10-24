@@ -9,7 +9,7 @@ public sealed class GhostFontResolverTests
 
     private GhostFontResolution Resolve(
         string? name = null, double? size = null, string? sample = null, double? width = null,
-        double caretBox = 16, HostRenderer renderer = HostRenderer.Native, double multiplier = 1,
+        double caretBox = 16, HostRenderer renderer = HostRenderer.Native,
         HostZoomLadder.Kind? ladder = null, int? weight = null) =>
         GhostFontResolver.Resolve(new GhostFontInput
         {
@@ -20,7 +20,6 @@ public sealed class GhostFontResolverTests
             SampleWidth = width,
             CaretBoxHeight = caretBox,
             Renderer = renderer,
-            SizeMultiplier = multiplier,
             ZoomLadder = ladder,
         }, _m);
 
@@ -147,15 +146,6 @@ public sealed class GhostFontResolverTests
         var r = Resolve(name: "Arial", caretBox: 21, renderer: HostRenderer.Web);
         Assert.Equal("Arial", r.Face.Family);
         Assert.InRange(_m.Metrics(r.Face).ContentHeightPerEm * r.Size, 21 - 1.2, 21 + 1.2);
-    }
-
-    [Fact]
-    public void SizeMultiplierScalesTheHostSizeOnlyWhenNotOne()
-    {
-        Assert.Equal(14, Resolve("Consolas", 14, multiplier: 1).Size);
-        var scaled = Resolve("Consolas", 14, multiplier: 1.5);
-        Assert.Equal(21, scaled.Size);
-        Assert.Equal("Consolas", scaled.Face.Family);
     }
 
     [Fact]
