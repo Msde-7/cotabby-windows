@@ -104,6 +104,17 @@ public sealed class CotypistExportImporterTests
     }
 
     [Fact]
+    public void AnExportResavedWithAByteOrderMarkStillImports()
+    {
+        var data = Export(new Dictionary<string, string>
+        {
+            ["appBundleIdentifier"] = "com.apple.mail", ["textUpToCursor"] = "Thanks for the quick reply, see you on Monday.",
+        });
+
+        Assert.Single(CotypistExportImporter.RecordsFromExport([.. Encoding.UTF8.GetPreamble(), .. data]));
+    }
+
+    [Fact]
     public void OtherJsonIsRejected()
     {
         Assert.Throws<CotypistImportException>(
