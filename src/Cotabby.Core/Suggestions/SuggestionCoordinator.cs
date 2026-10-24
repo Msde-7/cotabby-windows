@@ -342,7 +342,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             if (text.Length == 0 || ct.IsCancellationRequested) return;
 
             // Generation took a while. Show the suggestion only if the text it continues is still there.
-            var live = _focus.Refresh();
+            var live = _focus.Refresh(readHostText: true);
             if (live is null || live.ProcessId != field.ProcessId || live.PrecedingText != preceding)
             {
                 _logger.LogInformation("Request {ReqId} dropped because the field changed during generation.", requestId);
@@ -714,7 +714,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private async Task ReanchorAsync(string requestId, int settleMs)
     {
         await Task.Delay(settleMs).ConfigureAwait(false);
-        var after = _focus.Refresh();
+        var after = _focus.Refresh(readHostText: true);
         if (after is null || after.CaretRect.IsEmpty) return;
         Post(() =>
         {

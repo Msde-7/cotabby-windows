@@ -83,9 +83,6 @@ public sealed record FocusedField
 
     public bool? HostIsItalic { get; init; }
 
-    /// <summary>Text color as 0xAARRGGBB.</summary>
-    public uint? HostForegroundArgb { get; init; }
-
     /// <summary>Bounds of the visual line holding the caret, in physical pixels.</summary>
     public ScreenRect CaretLineRect { get; init; }
 

@@ -14,9 +14,11 @@ public interface IFocusTracker : IDisposable
 
     /// <summary>
     /// Reads the focused field again and returns the fresh snapshot. Used after a keystroke to
-    /// see the new text and caret without waiting for a focus event.
+    /// see the new text and caret without waiting for a focus event. With
+    /// <paramref name="readHostText"/> the snapshot also carries the host's font and caret line,
+    /// which cost extra reads and are only needed to draw a suggestion.
     /// </summary>
-    FocusedField? Refresh();
+    FocusedField? Refresh(bool readHostText = false);
 
     /// <summary>Start watching. Idempotent.</summary>
     void Start();

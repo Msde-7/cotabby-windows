@@ -131,7 +131,7 @@ sealed class FakeField : IFocusTracker, ITextInserter
         get { lock (_gate) return _lastInsertion; }
     }
 
-    public FocusedField? Refresh() => Current;
+    public FocusedField? Refresh(bool readHostText = false) => Current;
 
     public void Focus(string process, int pid)
     {

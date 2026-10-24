@@ -86,9 +86,9 @@ public sealed class UiaFocusTracker : IFocusTracker
         }
     }
 
-    public FocusedField? Refresh()
+    public FocusedField? Refresh(bool readHostText = false)
     {
-        var snap = Capture();
+        var snap = Capture(readHostText);
         _current = snap;
         return snap;
     }
@@ -129,9 +129,9 @@ public sealed class UiaFocusTracker : IFocusTracker
     /// Reads the focused field. A single failed read of the field that was just readable returns
     /// the last snapshot instead, since hosts drop their text or caret for a moment while redrawing.
     /// </summary>
-    private FocusedField? Capture()
+    private FocusedField? Capture(bool readHostText = false)
     {
-        TryCaptureFocused(out var snap, out var elementId);
+        TryCaptureFocused(readHostText, out var snap, out var elementId);
         lock (_readGate)
         {
             var held = _current;
@@ -145,7 +145,7 @@ public sealed class UiaFocusTracker : IFocusTracker
         return snap;
     }
 
-    private bool TryCaptureFocused(out FocusedField? snapshot, out string? elementId)
+    private bool TryCaptureFocused(bool readHostText, out FocusedField? snapshot, out string? elementId)
     {
         snapshot = null;
         elementId = null;
@@ -170,7 +170,7 @@ public sealed class UiaFocusTracker : IFocusTracker
                 PrimeIfDormantRenderer(info);
                 return false;
             }
-            snapshot = BuildSnapshot(element, info, elementId);
+            snapshot = BuildSnapshot(element, info, elementId, readHostText);
             return snapshot is not null;
         }
         catch (ElementNotAvailableException) { return false; }
@@ -230,7 +230,6 @@ public sealed class UiaFocusTracker : IFocusTracker
         {
             NativeMethods.SendMessageTimeout(hwnd, NativeMethods.WM_GETOBJECT, IntPtr.Zero,
                 new IntPtr(NativeMethods.UiaRootObjectId), NativeMethods.SMTO_ABORTIFHUNG, 200, out _);
-            _ = AutomationElement.FromHandle(hwnd);
         }
         catch (Exception ex)
         {
@@ -269,7 +268,8 @@ public sealed class UiaFocusTracker : IFocusTracker
     }
 
     private FocusedField? BuildSnapshot(
-        AutomationElement element, AutomationElement.AutomationElementInformation info, string fieldId)
+        AutomationElement element, AutomationElement.AutomationElementInformation info, string fieldId,
+        bool readHostText)
     {
         int pid = info.ProcessId;
         string procName = TryGetProcessName(pid);
@@ -281,14 +281,18 @@ public sealed class UiaFocusTracker : IFocusTracker
         var textPattern = element.TryGetCurrentPattern(TextPattern.Pattern, out var rawText)
             ? rawText as TextPattern
             : null;
-        var (text, caretOffset, hasSelection) = ReadTextAndCaret(element, textPattern);
-        var caretRect = ReadCaretRect(textPattern);
+        var caret = ReadCaretRange(textPattern);
+        var (text, caretOffset, hasSelection) = ReadTextAndCaret(element, textPattern, caret);
+        var caretRect = ReadCaretRect(caret);
         var fieldRect = ToScreenRect(info.BoundingRectangle);
         var ct = info.ControlType;
         bool editLike = ct == ControlType.Edit || ct == ControlType.ComboBox;
         bool singleLine = FieldShape.IsSingleLine(editLike, fieldRect, caretRect);
-        var sample = textPattern is null || hasSelection ? default : ReadLineSample(textPattern, caretRect);
-        var font = textPattern is null ? default : ReadHostFont(fieldId, textPattern, sample.Range);
+        // The font and line sample cost several more round trips, so only the snapshot a suggestion
+        // is drawn from reads them.
+        var styleCaret = readHostText && !hasSelection ? caret : null;
+        var sample = styleCaret is null ? default : ReadLineSample(styleCaret, caretRect);
+        var font = styleCaret is null ? default : ReadHostFont(fieldId, styleCaret, sample.Range);
 
         return new FocusedField
         {
@@ -313,7 +317,6 @@ public sealed class UiaFocusTracker : IFocusTracker
             HostFontSizePt = font.SizePt,
             HostFontWeight = font.Weight,
             HostIsItalic = font.Italic,
-            HostForegroundArgb = font.ForegroundArgb,
             CaretLineRect = sample.LineRect,
             SampleText = sample.Text,
             SampleWidthPx = sample.WidthPx,
@@ -345,21 +348,29 @@ public sealed class UiaFocusTracker : IFocusTracker
     /// <summary>A line sample longer than this is not read. Its width says no more than a shorter one.</summary>
     private const int MaxSampleChars = 400;
 
+    /// <summary>The first selection, which is the caret when nothing is selected.</summary>
+    private static TextPatternRange? ReadCaretRange(TextPattern? textPattern)
+    {
+        try
+        {
+            return textPattern?.GetSelection() is { Length: > 0 } selections ? selections[0] : null;
+        }
+        catch (Exception) { return null; }
+    }
+
     private static (string text, int caretOffset, bool hasSelection) ReadTextAndCaret(
-        AutomationElement element, TextPattern? textPattern)
+        AutomationElement element, TextPattern? textPattern, TextPatternRange? selection)
     {
         // TextPattern is preferred because it gives the caret as a selection.
         if (textPattern is not null)
         {
             try
             {
-                var selections = textPattern.GetSelection();
-                if (selections is not { Length: > 0 })
+                if (selection is null)
                 {
                     return (textPattern.DocumentRange.GetText(MaxDocumentChars), 0, false);
                 }
 
-                var selection = selections[0];
                 bool hasSelection = selection.GetText(1).Length > 0;
                 var (before, after) = ReadAroundSelection(textPattern.DocumentRange, selection);
                 return (before + after, before.Length, hasSelection);
@@ -411,14 +422,10 @@ public sealed class UiaFocusTracker : IFocusTracker
     /// The caret's visual line and the text on it before the caret, with the width the host
     /// painted that text at. The width is left out when the text spans more than one line box.
     /// </summary>
-    private static LineSample ReadLineSample(TextPattern textPattern, ScreenRect caretRect)
+    private static LineSample ReadLineSample(TextPatternRange caret, ScreenRect caretRect)
     {
         try
         {
-            var selections = textPattern.GetSelection();
-            if (selections is not { Length: > 0 }) return default;
-            var caret = selections[0];
-
             var line = caret.Clone();
             line.ExpandToEnclosingUnit(TextUnit.Line);
             var lineRect = Union(line.GetBoundingRectangles());
@@ -441,14 +448,15 @@ public sealed class UiaFocusTracker : IFocusTracker
         catch (Exception) { return default; }
     }
 
-    private readonly record struct HostFont(string? Name, double? SizePt, int? Weight, bool? Italic, uint? ForegroundArgb);
+    private readonly record struct HostFont(string? Name, double? SizePt, int? Weight, bool? Italic);
 
     /// <summary>
-    /// Font attributes of the text just before the caret. The line sample is read first since it is
-    /// already built; only when its attributes are mixed is a one-character range made. A field's
-    /// reading is reused for <see cref="StyleRefreshInterval"/>, so typing does not repeat it.
+    /// Font attributes at the caret, whose empty range carries the formatting new text will get.
+    /// Hosts that report nothing for an empty range are asked about the line sample instead. No
+    /// range is moved by character, which takes seconds in a WPF text box. A field's reading is
+    /// reused for <see cref="StyleRefreshInterval"/>.
     /// </summary>
-    private HostFont ReadHostFont(string fieldId, TextPattern textPattern, TextPatternRange? sample)
+    private HostFont ReadHostFont(string fieldId, TextPatternRange caret, TextPatternRange? sample)
     {
         long now = Stopwatch.GetTimestamp();
         lock (_readGate)
@@ -459,27 +467,14 @@ public sealed class UiaFocusTracker : IFocusTracker
             }
         }
 
-        HostFont font = default;
-        try
+        var font = ReadFont(caret);
+        if ((font.Name is null || font.SizePt is null) && sample is not null)
         {
-            // With no text before the caret on its line, the empty caret range carries the
-            // formatting new text will get.
-            var range = sample;
-            if (range is null && textPattern.GetSelection() is { Length: > 0 } selection) range = selection[0];
-            if (range is null) return default;
-            font = ReadFont(range);
-            if (font.Name is null || font.SizePt is null)
-            {
-                // The sample mixes faces or sizes; the character right before the caret decides.
-                var last = range.Clone();
-                last.MoveEndpointByRange(TextPatternRangeEndpoint.Start, range, TextPatternRangeEndpoint.End);
-                if (last.MoveEndpointByUnit(TextPatternRangeEndpoint.Start, TextUnit.Character, -1) != 0)
-                {
-                    font = ReadFont(last);
-                }
-            }
+            var fromSample = ReadFont(sample);
+            font = new HostFont(
+                font.Name ?? fromSample.Name, font.SizePt ?? fromSample.SizePt,
+                font.Weight ?? fromSample.Weight, font.Italic ?? fromSample.Italic);
         }
-        catch (Exception) { /* nothing reported */ }
 
         lock (_readGate)
         {
@@ -496,11 +491,7 @@ public sealed class UiaFocusTracker : IFocusTracker
         double? size = Attribute(range, TextPattern.FontSizeAttribute) is double d && d > 0 ? d : null;
         int? weight = Attribute(range, TextPattern.FontWeightAttribute) is int w && w > 0 ? w : null;
         bool? italic = Attribute(range, TextPattern.IsItalicAttribute) is bool b ? b : null;
-        // UIA reports a COLORREF, 0x00BBGGRR.
-        uint? argb = Attribute(range, TextPattern.ForegroundColorAttribute) is int bgr
-            ? 0xFF000000u | ((uint)bgr & 0xFF) << 16 | ((uint)bgr & 0xFF00) | ((uint)bgr >> 16 & 0xFF)
-            : null;
-        return new HostFont(string.IsNullOrWhiteSpace(name) ? null : name, size, weight, italic, argb);
+        return new HostFont(string.IsNullOrWhiteSpace(name) ? null : name, size, weight, italic);
     }
 
     /// <summary>An attribute value, or null when the host reports it as mixed or unsupported.</summary>
@@ -540,24 +531,13 @@ public sealed class UiaFocusTracker : IFocusTracker
             : $"{info.AutomationId}|{info.ControlType.ProgrammaticName}";
     }
 
-    private static ScreenRect ReadCaretRect(TextPattern? textPattern)
+    private static ScreenRect ReadCaretRect(TextPatternRange? caret)
     {
-        if (textPattern is not null)
+        try
         {
-            try
-            {
-                var sel = textPattern.GetSelection();
-                if (sel is { Length: > 0 })
-                {
-                    var rects = sel[0].GetBoundingRectangles();
-                    if (rects.Length > 0)
-                    {
-                        return ToScreenRect(rects[^1]);
-                    }
-                }
-            }
-            catch (Exception) { /* fall through */ }
+            if (caret?.GetBoundingRectangles() is { Length: > 0 } rects) return ToScreenRect(rects[^1]);
         }
+        catch (Exception) { /* fall through */ }
         return ScreenRect.Empty;
     }
 

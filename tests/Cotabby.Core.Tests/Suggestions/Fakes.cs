@@ -80,7 +80,7 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
         get { lock (_gate) return _field; }
     }
 
-    public FocusedField? Refresh() => Current;
+    public FocusedField? Refresh(bool readHostText = false) => Current;
 
     public void Focus(FocusedField? field)
     {
