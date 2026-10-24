@@ -422,7 +422,7 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
     {
         if (IsWorthKeeping(active.RawText))
         {
-            if (field.PrecedingText.Length < CaptureWindowChars) return !KeepsMostOf(active.RawText, text);
+            if (!MayBeTruncated(field)) return !KeepsMostOf(active.RawText, text);
             return active.WindowTitle != field.WindowTitle && !SharesContent(active.RawText, text);
         }
         // Nothing worth keeping is being recorded, such as just after a message was sent. If the
@@ -430,6 +430,9 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
         if (!_recent.TryGetValue(active.FieldKey, out var recent) || recent.RecordId == active.RecordId) return false;
         return text.StartsWith(recent.RawText, StringComparison.Ordinal);
     }
+
+    /// <summary>A window cut where it would split a surrogate pair keeps one unit less.</summary>
+    private static bool MayBeTruncated(FocusedField field) => field.PrecedingText.Length >= CaptureWindowChars - 1;
 
     /// <summary>Terminal text is shell commands and output, where secrets are common.</summary>
     private static bool IsTerminal(FocusedField field) =>

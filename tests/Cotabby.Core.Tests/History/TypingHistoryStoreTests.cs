@@ -661,6 +661,23 @@ public sealed class TypingHistoryStoreTests : IDisposable
     }
 
     [Fact]
+    public void AWindowCutShortOfASurrogatePairStillCountsAsALongDocument()
+    {
+        var store = MakeStore();
+        store.SetRecording(true);
+        string document = Words("word", 6_000);
+        string nearEnd = WindowOf(document);
+        // Focus reading drops the low half of a pair cut at the window start, so the window is one shorter.
+        string nearMiddle = WindowOf(document[..(document.Length / 2)])[1..];
+
+        store.Observe(Focus(nearEnd, element: "doc", windowTitle: "Notes.txt"), () => true);
+        store.Observe(Focus(nearMiddle, element: "doc", windowTitle: "Notes.txt"), () => true);
+        store.Observe(Focus("", element: "other"), () => true);
+
+        Assert.Equal(1, store.RecordCount);
+    }
+
+    [Fact]
     public void SharesContentFollowsASlidingWindowButNotAnotherDocument()
     {
         string current = WindowOf(Words("word", 3_000));
