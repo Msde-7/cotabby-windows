@@ -51,7 +51,7 @@ internal static class PerformancePane
         };
         context.Closed += () => metrics.Changed -= OnMetricsChanged;
 
-        return new SettingsPane("Performance", "", "Resource use, suggestion quality and latency",
+        return new SettingsPane("Performance", "\uE9D9", "Resource use, suggestion quality and latency",
             new SettingsCard("Live Resource Usage",
                 new SettingsRow("Resource Usage", "Live CPU, memory, and GPU graphs for the app.", LiveResources(context))
                     .Tagged("cpu processor memory ram gpu graphics usage resource graph chart live load monitor"),
