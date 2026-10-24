@@ -47,6 +47,15 @@ public sealed class SuggestionSessionTests
     }
 
     [Fact]
+    public void OneWordAtATimeLeavesTrailingPunctuationWhenTheUserAcceptsItSeparately()
+    {
+        var session = Session(" hello, world", following: false) with { AcceptPunctuationWithWord = false };
+
+        Assert.Equal(" hello", session.VisibleText);
+        Assert.Equal(",", session.Advancing(6).VisibleText);
+    }
+
+    [Fact]
     public void ACorrectionAlwaysShowsWhole()
     {
         var session = Session("the one", following: false) with { Correction = new TypoCorrection("teh", "the one") };

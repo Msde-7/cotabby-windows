@@ -25,6 +25,9 @@ public sealed record SuggestionSession
     /// <summary>False offers one acceptance chunk at a time from the prediction.</summary>
     public bool ShowFollowingWords { get; init; } = true;
 
+    /// <summary>Whether a word's trailing punctuation shows with it when one chunk shows at a time.</summary>
+    public bool AcceptPunctuationWithWord { get; init; } = true;
+
     /// <summary>Set when the session offers a spelling fix instead of a continuation.</summary>
     public TypoCorrection? Correction { get; init; }
 
@@ -37,7 +40,7 @@ public sealed record SuggestionSession
                 ? PredictedText[..limit]
                 : PredictedText;
             if (ShowFollowingWords || Correction is not null) return available;
-            string chunk = AcceptanceChunker.NextChunk(available);
+            string chunk = AcceptanceChunker.NextChunk(available, AcceptPunctuationWithWord);
             return chunk.Length > 0 ? chunk : available;
         }
     }

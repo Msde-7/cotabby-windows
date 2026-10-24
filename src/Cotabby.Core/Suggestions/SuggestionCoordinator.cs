@@ -540,6 +540,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             PredictedText = completion.Predicted,
             FirstOfferLength = completion.FirstOfferLength,
             ShowFollowingWords = _settings.ShowFollowingWords,
+            AcceptPunctuationWithWord = _settings.AcceptPunctuationWithWord,
             Correction = correction,
         };
         string text = session.VisibleText;
