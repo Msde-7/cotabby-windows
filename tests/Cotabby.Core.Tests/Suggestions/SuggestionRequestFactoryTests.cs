@@ -1,5 +1,6 @@
 using Cotabby.Core.Focus;
 using Cotabby.Core.Suggestions;
+using Cotabby.Core.Support;
 
 namespace Cotabby.Core.Tests.Suggestions;
 
@@ -10,7 +11,7 @@ public sealed class SuggestionRequestFactoryTests
 
     private static readonly SuggestionSettings MultiLine = new()
     {
-        WordRange = new Cotabby.Core.Support.SuggestionWordRange(7, 12),
+        WordRange = new SuggestionWordRange(7, 12),
         AllowMultiLine = true,
     };
 
@@ -98,7 +99,7 @@ public sealed class SuggestionRequestFactoryTests
             Fields.Text("Hello"), "request", WithClipboard, "  Copied project notes.  ");
 
         Assert.Equal("Copied project notes.", request.ClipboardContext);
-        Assert.Contains("On the clipboard: Copied project notes.", CompletionPipeline.Prompt(request, tokenBudget: null));
+        Assert.Contains("On the clipboard: Copied project notes.", CompletionPipeline.EndpointPrompt(request));
     }
 
     [Fact]
@@ -156,7 +157,7 @@ public sealed class SuggestionRequestFactoryTests
         var request = SuggestionRequestFactory.Build(Email, "request", SuggestionSettings.Default);
 
         Assert.Equal(["Format: email; App: thunderbird; Title: Re: Q3 budget."], request.SurfaceLines);
-        string prompt = CompletionPipeline.Prompt(request, tokenBudget: null);
+        string prompt = CompletionPipeline.EndpointPrompt(request);
         Assert.Contains("Format: email; App: thunderbird; Title: Re: Q3 budget.", prompt);
         Assert.EndsWith("Thanks again for", prompt);
     }
@@ -190,5 +191,66 @@ public sealed class SuggestionRequestFactoryTests
         {
             Assert.Empty(SuggestionRequestFactory.Build(field, "request", SuggestionSettings.Default).SurfaceLines);
         }
+    }
+
+    [Fact]
+    public void Prefix_KeepsSeparatorsWhenTheWordBudgetDropsOldText()
+    {
+        string retained = string.Concat(Enumerable.Repeat("w\n\t", 2399)) + "last  \n";
+
+        Assert.Equal(retained, SuggestionRequestFactory.Prefix("discard this " + retained));
+    }
+
+    [Fact]
+    public void Prefix_CharacterWindowKeepsUnicodeAndTrailingWhitespace()
+    {
+        string text = string.Concat(Enumerable.Repeat("👩🏽‍💻", 2600)) + "\n\tHello  ";
+
+        string prefix = SuggestionRequestFactory.Prefix(text, maxCharacters: 2000);
+
+        Assert.Equal(string.Concat(Enumerable.Repeat("👩🏽‍💻", 1991)) + "\n\tHello  ", prefix);
+    }
+
+    [Fact]
+    public void Prefix_NonPositiveBudgetsProduceAnEmptyPrefix()
+    {
+        Assert.Equal("", SuggestionRequestFactory.Prefix("Hello world", maxCharacters: 0));
+        Assert.Equal("", SuggestionRequestFactory.Prefix("Hello world", maxWords: 0));
+    }
+
+    [Theory]
+    [InlineData("\n  one two three", "\n  one two three")]
+    [InlineData("zero\n\none two three ", "one two three ")]
+    public void Prefix_WordBudgetBoundary(string text, string expected)
+    {
+        Assert.Equal(expected, SuggestionRequestFactory.Prefix(text, maxWords: 3));
+    }
+
+    [Fact]
+    public void Prefix_CharacterWindowMayStartMidWord()
+    {
+        Assert.Equal("ef ghi", SuggestionRequestFactory.Prefix("abcdef ghi", maxCharacters: 6));
+    }
+
+    [Fact]
+    public void TheWindowKeepsLineAndParagraphBreaks()
+    {
+        const string text = "Hi Sam,\n\nThanks for the update.\nBest";
+
+        Assert.Equal(text, SuggestionRequestFactory.Prefix(text));
+    }
+
+    [Fact]
+    public void EndpointPrompt_LeavesRoomForTheRequestsWholeOutput()
+    {
+        string longText = string.Concat(Enumerable.Repeat("The quarterly numbers look strong again. ", 600));
+        var settings = new SuggestionSettings { WordRange = new SuggestionWordRange(30, 50) };
+        var request = SuggestionRequestFactory.Build(Fields.Text(longText), "request", settings);
+
+        string prompt = CompletionPipeline.EndpointPrompt(request);
+
+        int budget = PromptTokenBudget.ForRequest(PromptTokenBudget.Configured(4096), request.MaxTokens);
+        Assert.True(TokenCountEstimator.Estimate(prompt) <= budget);
+        Assert.EndsWith("strong again. ", prompt);
     }
 }

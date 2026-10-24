@@ -51,7 +51,7 @@ public sealed class OpenAICompatibleSuggestionEngine : ISuggestionEngine
         var configuration = endpoint.Configuration
             ?? throw new OpenAICompatibleEndpointException(endpoint.Error!.Value);
 
-        var prompt = CompletionPipeline.Prompt(request, tokenBudget: null);
+        var prompt = CompletionPipeline.EndpointPrompt(request);
         if (prompt.Length == 0) return string.Empty;
 
         var started = Stopwatch.GetTimestamp();
