@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -12,15 +13,19 @@ namespace Cotabby.App.UI.Settings.Panes;
 /// <summary>
 /// The downloadable models with their download, load and active state. Clicking a model
 /// that is on disk switches to it. One that is not needs its Download button, so a stray
-/// click cannot start a download of several gigabytes.
+/// click cannot start a download of several gigabytes. A download can be paused, which keeps
+/// what has arrived, or cancelled, which deletes it.
 /// </summary>
 internal sealed class ModelList : StackPanel
 {
     private readonly SettingsContext _context;
     private CancellationTokenSource? _loading;
     private ModelDownloader.Progress? _progress;
+    private bool _downloading;
+    private bool _cancelRequested;
     private string? _error;
     private TextBlock? _progressLabel;
+    private TextBlock? _status;
     private ProgressBar? _progressBar;
 
     public ModelList(SettingsContext context)
@@ -36,6 +41,7 @@ internal sealed class ModelList : StackPanel
     {
         Children.Clear();
         _progressLabel = null;
+        _status = null;
         _progressBar = null;
 
         var selectedId = _context.Settings.ActiveModelId ?? ModelCatalog.All[0].Id;
@@ -58,16 +64,29 @@ internal sealed class ModelList : StackPanel
     {
         var runtime = _context.Host.Runtime;
         bool loadingThis = Busy && selected;
+        bool downloadingThis = loadingThis && _downloading;
+        // A partial left by an earlier download shows as paused, also after a restart.
+        var paused = loadingThis ? null : ModelDownloader.StateOnDisk(model) as ModelDownloadState.Paused;
 
         var names = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
         names.Children.Add(new TextBlock { Text = model.DisplayName, FontSize = 13, FontWeight = FontWeights.SemiBold });
         var subtitle = Ui.Text(model.Subtitle, "Caption");
         subtitle.Margin = new Thickness(0, 2, 0, 0);
+        if (downloadingThis) _status = subtitle;
+        if (paused is not null)
+        {
+            subtitle.Text = paused.StatusText;
+            subtitle.Themed(TextBlock.ForegroundProperty, "OrangeBrush");
+        }
         names.Children.Add(subtitle);
         Grid.SetColumn(names, 1);
 
         FrameworkElement trailing;
-        if (loadingThis)
+        if (downloadingThis)
+        {
+            trailing = Ui.Across(Ui.Button("Pause", Pause), Ui.Button("Cancel", CancelDownload));
+        }
+        else if (loadingThis)
         {
             trailing = _progressLabel = Ui.Text("", "Caption");
         }
@@ -78,6 +97,10 @@ internal sealed class ModelList : StackPanel
             check.Themed(TextBlock.ForegroundProperty, "GreenBrush");
             active.Themed(TextBlock.ForegroundProperty, "GreenBrush");
             trailing = Ui.Across(check, active);
+        }
+        else if (paused is not null)
+        {
+            trailing = Ui.Across(Ui.Button("Resume", () => Load(model)), Ui.Button("Cancel", () => Discard(model)));
         }
         else if (!ModelDownloader.IsCached(model))
         {
@@ -92,7 +115,7 @@ internal sealed class ModelList : StackPanel
             trailing = Ui.Text("Downloaded", "Caption");
         }
         trailing.VerticalAlignment = VerticalAlignment.Center;
-        trailing.IsEnabled = !Busy;
+        trailing.IsEnabled = !Busy || loadingThis;
         Grid.SetColumn(trailing, 2);
 
         var grid = new Grid { Margin = new Thickness(0, 10, 0, 10), Children = { SelectionMark(selected), names, trailing } };
@@ -101,13 +124,20 @@ internal sealed class ModelList : StackPanel
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.RowDefinitions.Add(new RowDefinition());
         grid.RowDefinitions.Add(new RowDefinition());
-        if (loadingThis)
+        if (loadingThis || paused is not null)
         {
-            _progressBar = new ProgressBar { Maximum = 1, Margin = new Thickness(0, 8, 0, 0) }.Styled("Bar");
-            Grid.SetRow(_progressBar, 1);
-            Grid.SetColumn(_progressBar, 1);
-            Grid.SetColumnSpan(_progressBar, 2);
-            grid.Children.Add(_progressBar);
+            var bar = new ProgressBar { Maximum = 1, Margin = new Thickness(0, 8, 0, 0) }.Styled("Bar");
+            Grid.SetRow(bar, 1);
+            Grid.SetColumn(bar, 1);
+            Grid.SetColumnSpan(bar, 2);
+            grid.Children.Add(bar);
+            if (loadingThis) _progressBar = bar;
+            else
+            {
+                // A grey bar reads as stopped rather than active.
+                bar.Value = paused!.ProgressFraction ?? 0;
+                bar.Themed(Control.ForegroundProperty, "TextSecondary");
+            }
         }
 
         var row = new Border { Background = Brushes.Transparent, Child = grid };
@@ -152,6 +182,8 @@ internal sealed class ModelList : StackPanel
         if (_context.Settings.ActiveModelId != model.Id) _context.Change(s => s.ActiveModelId = model.Id);
 
         _loading = new CancellationTokenSource();
+        _downloading = !ModelDownloader.IsCached(model);
+        _cancelRequested = false;
         _progress = null;
         _error = null;
         Rebuild();
@@ -167,6 +199,8 @@ internal sealed class ModelList : StackPanel
         }
         catch (OperationCanceledException)
         {
+            // Pause keeps the partial file. Cancel deletes it once the download has stopped.
+            if (_cancelRequested) Discard(model);
         }
         catch (Exception ex)
         {
@@ -180,8 +214,37 @@ internal sealed class ModelList : StackPanel
         }
     }
 
+    private void Pause() => _loading?.Cancel();
+
+    private void CancelDownload()
+    {
+        _cancelRequested = true;
+        _loading?.Cancel();
+    }
+
+    private void Discard(CotabbyModel model)
+    {
+        try
+        {
+            ModelDownloader.DiscardPartial(model);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _error = ex.Message;
+        }
+        if (!Busy) Rebuild();
+    }
+
     private void ShowProgress()
     {
+        if (_status is not null && _progressBar is not null)
+        {
+            var state = _progress is null ? null : ModelDownloadState.From(_progress);
+            _status.Text = state?.StatusText ?? "Preparing download…";
+            _progressBar.Visibility = state?.ProgressFraction is null ? Visibility.Collapsed : Visibility.Visible;
+            _progressBar.Value = state?.ProgressFraction ?? 0;
+            return;
+        }
         if (_progressLabel is null || _progressBar is null) return;
         // A model that is already on disk loads without reporting progress, so the bar stays hidden.
         bool hasTotal = _progress?.TotalBytes > 0;
