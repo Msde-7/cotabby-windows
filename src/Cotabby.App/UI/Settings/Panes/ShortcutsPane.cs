@@ -98,7 +98,10 @@ internal static class ShortcutsPane
         SettingsContext context, PerAppShortcutOverride entry, GlobalShortcut global, KeyBinding? key,
         Action<KeyBinding?> set)
     {
-        var recorder = new KeyRecorder();
+        var recorder = new KeyRecorder
+        {
+            Conflict = candidate => global.Conflict(context.Settings, entry.ProcessName, candidate),
+        };
         recorder.Recorded += binding => set(binding);
         recorder.Show(key switch
         {

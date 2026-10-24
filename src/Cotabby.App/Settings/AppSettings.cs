@@ -213,7 +213,9 @@ public sealed class SettingsStore
     {
         if (JsonNode.Parse(json) is not JsonObject root) return new AppSettings();
         MigrateLegacyKeys(root);
-        return root.Deserialize<AppSettings>(JsonOpts) ?? new AppSettings();
+        var settings = root.Deserialize<AppSettings>(JsonOpts) ?? new AppSettings();
+        settings.ShortcutOverrides = ShortcutConflicts.Normalize(settings.ShortcutOverrides);
+        return settings;
     }
 
     /// <summary>Files written before shortcuts were recordable stored the accept-all key by name.</summary>

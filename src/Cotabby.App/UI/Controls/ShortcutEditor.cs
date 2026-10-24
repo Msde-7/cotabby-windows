@@ -11,7 +11,7 @@ internal sealed class GlobalShortcut
 {
     // The double tap is a double press of the accept-word key, so it goes when that key is cleared.
     public static GlobalShortcut AcceptWord { get; } =
-        new("Accept Word", KeyBinding.Tab, s => s.AcceptWord, (s, key) =>
+        new(ShortcutAction.AcceptWord, KeyBinding.Tab, s => s.AcceptWord, (s, key) =>
         {
             s.AcceptWord = key;
             if (!key.IsBound) s.DoubleTapAcceptsAll = false;
@@ -19,29 +19,28 @@ internal sealed class GlobalShortcut
 
     // Accept-all holds either a key or the double tap, so setting a key or clearing ends the double tap.
     public static GlobalShortcut AcceptAll { get; } =
-        new("Accept Entire Suggestion", KeyBinding.Backtick, s => s.AcceptAll, (s, key) =>
+        new(ShortcutAction.AcceptAll, KeyBinding.Backtick, s => s.AcceptAll, (s, key) =>
         {
             s.AcceptAll = key;
             s.DoubleTapAcceptsAll = false;
         });
 
     public static GlobalShortcut Toggle { get; } =
-        new("Toggle Cotabby", KeyBinding.Unbound, s => s.GlobalToggle, (s, key) => s.GlobalToggle = key);
-
-    private static readonly GlobalShortcut[] All = [AcceptWord, AcceptAll, Toggle];
+        new(ShortcutAction.Toggle, KeyBinding.Unbound, s => s.GlobalToggle, (s, key) => s.GlobalToggle = key);
 
     private readonly Func<AppSettings, KeyBinding> _get;
 
     private GlobalShortcut(
-        string name, KeyBinding @default, Func<AppSettings, KeyBinding> get, Action<AppSettings, KeyBinding> set)
+        ShortcutAction action, KeyBinding @default, Func<AppSettings, KeyBinding> get, Action<AppSettings, KeyBinding> set)
     {
-        Name = name;
+        Action = action;
         Default = @default;
         _get = get;
         Set = set;
     }
 
-    public string Name { get; }
+    public ShortcutAction Action { get; }
+    public string Name => ShortcutConflicts.Name(Action);
     public KeyBinding Default { get; }
     public Action<AppSettings, KeyBinding> Set { get; }
 
@@ -68,12 +67,16 @@ internal sealed class GlobalShortcut
     private const string NotSet = "Not set";
 
     /// <summary>The name of another shortcut already on this key, or null when the key is free.</summary>
-    public string? Conflict(AppSettings settings, KeyBinding candidate) => All
-        .FirstOrDefault(other => other != this
-            && other.Binding(settings) is var taken
-            && taken.VirtualKey == candidate.VirtualKey
-            && taken.Modifiers == candidate.Modifiers)
-        ?.Name;
+    public string? Conflict(AppSettings settings, KeyBinding candidate) =>
+        ShortcutConflicts.Global(Bindings(settings), Action, candidate);
+
+    /// <summary>The name of the shortcut a per-app key would collide with in that app, or null.</summary>
+    public string? Conflict(AppSettings settings, string processName, KeyBinding candidate) =>
+        ShortcutConflicts.PerApp(Bindings(settings), processName, Action, candidate);
+
+    private static ShortcutBindings Bindings(AppSettings settings) => new(
+        AcceptWord.Binding(settings), AcceptAll.Binding(settings), Toggle.Binding(settings),
+        settings.ShortcutOverrides);
 }
 
 /// <summary>A key recorder for a global shortcut with its Reset and Clear buttons.</summary>
