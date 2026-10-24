@@ -134,7 +134,7 @@ public sealed class TypingHistoryPromptTests
         var local = SuggestionRequestFactory.Build(field, "request", SuggestionSettings.Default, historyExamples: examples);
 
         Assert.Empty(endpoint.HistoryExamples);
-        Assert.DoesNotContain("Imperum", CompletionPipeline.Prompt(endpoint, tokenBudget: null));
+        Assert.DoesNotContain("Imperum", CompletionPipeline.EndpointPrompt(endpoint));
         Assert.Equal(examples, local.HistoryExamples);
         Assert.Contains("Imperum", CompletionPipeline.Prompt(local, tokenBudget: 2048));
     }
@@ -145,6 +145,6 @@ public sealed class TypingHistoryPromptTests
         var request = SuggestionRequestFactory.Build(Fields.Text("The POC is"), "request", SuggestionSettings.Default)
             with { HistoryExamples = ["The Imperum POC starts Monday."] };
 
-        Assert.DoesNotContain("Imperum", CompletionPipeline.Prompt(request, tokenBudget: null));
+        Assert.DoesNotContain("Imperum", CompletionPipeline.EndpointPrompt(request));
     }
 }
