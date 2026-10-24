@@ -47,7 +47,9 @@ public static class SuggestionSessionReconciler
     /// back into a plain space once the next character arrives. Both are the same key to the
     /// user, so every comparison treats them alike. Each is one UTF-16 unit, so offsets hold.
     /// </summary>
-    public static string SpaceNormalized(string text) => text.Replace(' ', ' ');
+    public static string SpaceNormalized(string text) => text.Replace(NoBreakSpace, ' ');
+
+    private const char NoBreakSpace = '\u00A0';
 
     /// <summary>
     /// True when <paramref name="live"/> is the expected text, or the expected text less a few
@@ -68,5 +70,5 @@ public static class SuggestionSessionReconciler
     }
 
     private static bool SameKey(char shown, char typed) =>
-        shown == typed || (shown is ' ' or ' ' && typed is ' ' or ' ');
+        shown == typed || (shown is ' ' or NoBreakSpace && typed is ' ' or NoBreakSpace);
 }

@@ -471,7 +471,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             // With nothing to count against, the typed character itself is the evidence. A dead key
             // can make the host insert an accented form of it, which then waits out the ceiling.
             return typed is { } c
-                ? preceding.EndsWith(c) || (c == ' ' && preceding.EndsWith(' '))
+                ? preceding.EndsWith(c) || (c == ' ' && preceding.EndsWith('\u00A0'))
                 : waited > 0;
         }
 
