@@ -425,6 +425,21 @@ public sealed class SuggestionCoordinatorTests : CoordinatorHarness
     }
 
     [Fact]
+    public async Task BatterySaverFlipping_DoesNotPredictWhenItNeverPaused()
+    {
+        Coordinator.Settings = SuggestionSettings.Default with { PauseOnBatterySaver = false };
+        Focus.Focus(Fields.Text("hello"));
+
+        BatterySaver = true;
+        Coordinator.BatterySaverChanged();
+        BatterySaver = false;
+        Coordinator.BatterySaverChanged();
+
+        await StaysHidden();
+        Assert.Empty(Engine.Requests);
+    }
+
+    [Fact]
     public async Task BatterySaverTurningOnDuringGeneration_DropsTheResult()
     {
         Engine.Completion = _ =>

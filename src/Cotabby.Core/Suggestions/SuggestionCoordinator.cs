@@ -58,6 +58,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private readonly SuggestionDismissalMemory _dismissals = new();
 
     private volatile SuggestionSettings _settings = SuggestionSettings.Default;
+    private bool? _batterySaverWasOn;
     private volatile Offer? _offer;
     private volatile AcceptKeyOwnership? _ownership;
 
@@ -163,16 +164,19 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     /// <summary>
     /// Re-checks availability when battery saver turns on or off, instead of waiting for the next
     /// key. A visible suggestion goes away when suggestions pause, and a new one is asked for
-    /// when they resume.
+    /// when battery saver had paused them and they resume.
     /// </summary>
     public void BatterySaverChanged() => Post(() =>
     {
-        if (SuggestionAvailability.DisabledReason(_settings, _clock.GetUtcNow(), _batterySaverOn()) is { } reason)
+        bool on = _batterySaverOn();
+        bool wasOn = _batterySaverWasOn ?? !on;
+        _batterySaverWasOn = on;
+        if (SuggestionAvailability.DisabledReason(_settings, _clock.GetUtcNow(), on) is { } reason)
         {
             CancelSession(reason);
             return;
         }
-        if (_session is not null) return;
+        if (_session is not null || !wasOn || on || !_settings.PauseOnBatterySaver) return;
         _publishBaseline = null;
         _expectedDelta = 0;
         SchedulePrediction(typed: null);
