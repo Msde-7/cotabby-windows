@@ -19,6 +19,7 @@ internal static class Fields
         CaretRect = new ScreenRect(10, 10, 1, 20),
         FieldRect = new ScreenRect(0, 0, 400, 200),
         IsSingleLine = singleLine,
+        IsTextFieldRole = singleLine,
         IsSecure = false,
     };
 }

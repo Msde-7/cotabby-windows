@@ -109,4 +109,20 @@ public sealed class CredentialFieldDetectorTests
     [Fact]
     public void IsCredentialField_MultiLineField_IsNeverBlocked() =>
         Assert.False(CredentialFieldDetector.IsCredentialField(Field("Email body", "email", "a@b.co", singleLine: false)));
+
+    [Fact]
+    public void IsCredentialField_TallTextField_IsStillJudgedByRole()
+    {
+        // A text field drawn several lines tall is still a one-line input.
+        var field = Field("Email address") with { IsSingleLine = false, IsTextFieldRole = true };
+        Assert.True(CredentialFieldDetector.IsCredentialField(field));
+    }
+
+    [Fact]
+    public void IsCredentialField_ShortDocument_IsNotBlocked()
+    {
+        // A one-line-high document is still a document.
+        var field = Field("Email address") with { IsSingleLine = true, IsTextFieldRole = false };
+        Assert.False(CredentialFieldDetector.IsCredentialField(field));
+    }
 }

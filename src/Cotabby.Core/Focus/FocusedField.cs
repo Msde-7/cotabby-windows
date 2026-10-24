@@ -36,6 +36,12 @@ public sealed record FocusedField
     /// <summary>True if the field is single-line (input, search box, etc.).</summary>
     public required bool IsSingleLine { get; init; }
 
+    /// <summary>
+    /// True when the control type makes this a one-line input (an edit box or an editable combo
+    /// box) rather than a document. Unlike <see cref="IsSingleLine"/>, it does not depend on height.
+    /// </summary>
+    public bool IsTextFieldRole { get; init; }
+
     /// <summary>True if the field is a password field, where suggestions must be suppressed.</summary>
     public required bool IsSecure { get; init; }
 
@@ -62,6 +68,32 @@ public sealed record FocusedField
 
     /// <summary>Title of the window that holds the field.</summary>
     public string WindowTitle { get; init; } = "";
+
+    // What the host reports about the text just before the caret. Each value is null when the host
+    // reports nothing or reports a mix, and the overlay then falls back to the caret height.
+
+    /// <summary>Font family the host names. A web host may give a whole CSS font stack.</summary>
+    public string? HostFontName { get; init; }
+
+    /// <summary>Font size in typographic points, before any zoom the host applies.</summary>
+    public double? HostFontSizePt { get; init; }
+
+    /// <summary>Font weight, 100 to 900.</summary>
+    public int? HostFontWeight { get; init; }
+
+    public bool? HostIsItalic { get; init; }
+
+    /// <summary>Text color as 0xAARRGGBB.</summary>
+    public uint? HostForegroundArgb { get; init; }
+
+    /// <summary>Bounds of the visual line holding the caret, in physical pixels.</summary>
+    public ScreenRect CaretLineRect { get; init; }
+
+    /// <summary>Text from the start of the caret's line up to the caret.</summary>
+    public string? SampleText { get; init; }
+
+    /// <summary>Width the host painted <see cref="SampleText"/> at, in physical pixels.</summary>
+    public double? SampleWidthPx { get; init; }
 }
 
 /// <summary>Screen rectangle in physical pixels.</summary>
