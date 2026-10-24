@@ -29,9 +29,8 @@ public class SuggestionWorkControllerTests
             return Task.CompletedTask;
         });
 
-        // Submit a second within the debounce window — should kill the first
-        // before its debounce completes, so its body never runs.
-        await Task.Delay(20);
+        // Submit a second right away, inside the debounce window. It should
+        // cancel the first before its debounce ends, so its body never runs.
         var second = c.Submit(_ =>
         {
             secondBodyEntered = true;
