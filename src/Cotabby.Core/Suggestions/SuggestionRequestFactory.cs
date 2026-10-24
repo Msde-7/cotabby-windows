@@ -13,6 +13,19 @@ public static class SuggestionRequestFactory
     private const int MaxClipboardContextCharacters = 1200;
     private const string ClipMarker = "...";
 
+    /// <summary>
+    /// True when the text before the caret is worth continuing: some non-whitespace, and when
+    /// suggestions wait for a finished word, no word still being typed. Scripts without spaces
+    /// and code-like tokens never count as unfinished, so they are not starved.
+    /// </summary>
+    public static bool ShouldGenerate(string preceding, bool suggestWithinWords = true) =>
+        !string.IsNullOrWhiteSpace(preceding)
+        && (suggestWithinWords || Support.CaretWordContext.UnfinishedWord(preceding) is null);
+
+    /// <summary>The full gate before generating: <see cref="ShouldGenerate(string, bool)"/> and a caret outside a token.</summary>
+    public static bool ShouldGenerate(string preceding, string trailing, bool suggestWithinWords = true) =>
+        ShouldGenerate(preceding, suggestWithinWords) && !Support.CaretTokenPosition.IsInsideToken(preceding, trailing);
+
     /// <summary>The windowed text before the caret, as a request carries it.</summary>
     public static string Prefix(FocusedField field) => Prefix(field.PrecedingText);
 

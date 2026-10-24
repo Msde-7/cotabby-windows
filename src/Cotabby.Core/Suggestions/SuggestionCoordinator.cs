@@ -294,23 +294,25 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
     }
 
-    private void SchedulePrediction(char? typed)
+    /// <param name="requiresTextChange">Wait until the text differs from the baseline, as after a correction.</param>
+    private void SchedulePrediction(char? typed, bool requiresTextChange = false)
     {
         var requestId = "req_" + Guid.NewGuid().ToString("N")[..8];
         var settings = _settings;
         var baseline = _publishBaseline;
         int delta = _expectedDelta;
         long sequence = _keySequence;
-        _ = _work.Submit(ct => PredictAsync(requestId, settings, baseline, delta, typed, sequence, ct));
+        _ = _work.Submit(ct => PredictAsync(requestId, settings, baseline, delta, typed, requiresTextChange, sequence, ct));
     }
 
     private async Task PredictAsync(
         string requestId, SuggestionSettings settings, FocusedField? baseline, int delta, char? typed,
-        long sequence, CancellationToken ct)
+        bool requiresTextChange, long sequence, CancellationToken ct)
     {
         try
         {
-            var field = await WaitForHostPublishAsync(baseline, delta, typed, ct).ConfigureAwait(false);
+            var field = await WaitForHostPublishAsync(baseline, delta, typed, requiresTextChange, ct)
+                .ConfigureAwait(false);
             if (field is null) return;
             Post(() =>
             {
@@ -328,9 +330,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
             string preceding = field.PrecedingText;
             if (await HandleTypoAsync(requestId, settings, field, sequence, ct).ConfigureAwait(false)) return;
-            if (!settings.SuggestWithinWords && CaretWordContext.UnfinishedWord(preceding) is not null) return;
             // A completion inside a token would duplicate or splice what follows the caret.
-            if (CaretTokenPosition.IsInsideToken(preceding, field.TrailingText)) return;
+            if (!SuggestionRequestFactory.ShouldGenerate(preceding, field.TrailingText, settings.SuggestWithinWords)) return;
             if (!_engine.IsReady) return;
 
             var request = SuggestionRequestFactory.Build(
@@ -407,16 +408,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
     }
 
-    /// <summary>Predicts again after an edit whose size the key count cannot describe.</summary>
-    private void RestartPrediction()
-    {
-        _publishBaseline = null;
-        _expectedDelta = 0;
-        SchedulePrediction(typed: null);
-    }
-
     private async Task<FocusedField?> WaitForHostPublishAsync(
-        FocusedField? baseline, int delta, char? typed, CancellationToken ct)
+        FocusedField? baseline, int delta, char? typed, bool requiresTextChange, CancellationToken ct)
     {
         int waited = 0;
         int interval = HostPublishFirstPollMs;
@@ -425,16 +418,25 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             ct.ThrowIfCancellationRequested();
             var field = _focus.Refresh();
             if (field is null) return null;
-            if (waited >= HostPublishCeilingMs || HasPublished(field, baseline, delta, typed, waited)) return field;
+            if (waited >= HostPublishCeilingMs || HasPublished(field, baseline, delta, typed, requiresTextChange, waited))
+            {
+                return field;
+            }
             await Task.Delay(interval, ct).ConfigureAwait(false);
             waited += interval;
             interval = HostPublishPollMs;
         }
     }
 
-    private static bool HasPublished(FocusedField field, FocusedField? baseline, int delta, char? typed, int waited)
+    private static bool HasPublished(
+        FocusedField field, FocusedField? baseline, int delta, char? typed, bool requiresTextChange, int waited)
     {
         var preceding = field.PrecedingText;
+        if (requiresTextChange && baseline is not null)
+        {
+            return SuggestionSessionReconciler.SpaceNormalized(preceding)
+                != SuggestionSessionReconciler.SpaceNormalized(baseline.PrecedingText);
+        }
         if (baseline is null || baseline.ProcessId != field.ProcessId)
         {
             // With nothing to count against, the typed character itself is the evidence. A dead key
@@ -560,6 +562,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         if (session.Correction is { } correction)
         {
             ClearSession();
+            // Keep the key for a moment so a quick second press accepts the next suggestion
+            // instead of reaching the host as a Tab.
+            OwnAcceptKeyBriefly(field, settings);
             _insertChain = _insertChain
                 .ContinueWith(
                     _ => ApplyCorrectionAsync(correction, requiresTrailingSpace: false), TaskScheduler.Default)
@@ -604,10 +609,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         {
             ClearSession();
             // Keep owning the accept key so a fast follow-up press is queued for the
-            // continuation instead of leaking into the host.
-            _ownership = new AcceptKeyOwnership(
-                ShortcutResolver.AcceptWord(field.ProcessName, settings.ShortcutOverrides, settings.AcceptWord),
-                now + (long)(PostExhaustionWindow.TotalSeconds * _clock.TimestampFrequency));
+            // continuation instead of leaking into the host. Only when a continuation will be asked for.
+            if (SuggestionRequestFactory.ShouldGenerate(_expectedPreceding, settings.SuggestWithinWords))
+            {
+                OwnAcceptKeyBriefly(field, settings);
+            }
         }
         else
         {
@@ -621,6 +627,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             .ContinueWith(_ => InsertAcceptedAsync(accepted), TaskScheduler.Default)
             .Unwrap();
     }
+
+    private void OwnAcceptKeyBriefly(FocusedField field, SuggestionSettings settings) =>
+        _ownership = new AcceptKeyOwnership(
+            ShortcutResolver.AcceptWord(field.ProcessName, settings.ShortcutOverrides, settings.AcceptWord),
+            _clock.GetTimestamp() + (long)(PostExhaustionWindow.TotalSeconds * _clock.TimestampFrequency));
 
     /// <summary>One accept, decided on the UI context and carried out on the thread pool.</summary>
     private sealed record AcceptedChunk(
@@ -694,7 +705,13 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             if (plan is not { } fix) return;
             await _inserter.ReplaceAsync(field, fix.DeletingUtf16Count, fix.ReplacementText, CancellationToken.None)
                 .ConfigureAwait(false);
-            Post(RestartPrediction);
+            // The edit publishes asynchronously. Predicting before it lands could offer the same fix again.
+            Post(() =>
+            {
+                _publishBaseline = field;
+                _expectedDelta = 0;
+                SchedulePrediction(typed: null, requiresTextChange: true);
+            });
         }
         catch (Exception ex)
         {

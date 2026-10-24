@@ -373,4 +373,29 @@ public sealed class SuggestionCoordinatorTests : CoordinatorHarness
         Assert.True(Hook.Press(Keys.Tab()));
         await Eventually(() => Focus.Insertions.Contains("world"), "the word is inserted after the non-breaking space");
     }
+
+    [Fact]
+    public async Task AcceptingTheLastChunk_KeepsTheKeyOnlyWhenAContinuationWillFollow()
+    {
+        Coordinator.Settings = SuggestionSettings.Default with { SuggestWithinWords = false };
+        Engine.Completion = _ => "world again";
+        Type("hello ");
+        await Shown("world again");
+
+        Assert.True(Hook.Press(Backtick));
+        await Eventually(() => Focus.Current!.Text == "hello world again", "everything is inserted");
+
+        // The text ends inside a word and suggestions wait for it to finish, so Tab goes to the host.
+        Assert.False(Hook.Press(Keys.Tab()));
+    }
+
+    [Fact]
+    public async Task AcceptingTheLastChunk_OwnsTheKeyWhileTheContinuationLoads()
+    {
+        Type("hello");
+        await Shown(" world again");
+
+        Assert.True(Hook.Press(Backtick));
+        Assert.True(Hook.Press(Keys.Tab()));
+    }
 }

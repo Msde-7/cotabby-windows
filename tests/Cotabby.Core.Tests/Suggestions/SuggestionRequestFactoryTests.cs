@@ -253,4 +253,44 @@ public sealed class SuggestionRequestFactoryTests
         Assert.True(TokenCountEstimator.Estimate(prompt) <= budget);
         Assert.EndsWith("strong again. ", prompt);
     }
+
+    [Theory]
+    [InlineData("", false)]
+    [InlineData("   \t  ", false)]
+    [InlineData("\n\n", false)]
+    [InlineData(" \n\t \n  ", false)]
+    [InlineData("a", true)]
+    [InlineData("word", true)]
+    [InlineData("Hello, wor", true)]
+    [InlineData("  hello", true)]
+    [InlineData("hello  ", true)]
+    [InlineData("今日は", true)]
+    public void ShouldGenerate_NeedsNonWhitespaceButNotATrailingDelimiter(string text, bool expected) =>
+        Assert.Equal(expected, SuggestionRequestFactory.ShouldGenerate(text));
+
+    [Theory]
+    [InlineData("w", false)]
+    [InlineData("word", false)]
+    [InlineData("Please schedu", false)]
+    [InlineData("I don't", false)]
+    [InlineData("Try (wor", false)]
+    [InlineData("  ", false)]
+    [InlineData("word ", true)]
+    [InlineData("word,", true)]
+    [InlineData("word.", true)]
+    [InlineData("word\n", true)]
+    [InlineData("今日は", true)]
+    [InlineData("user_name", true)]
+    [InlineData("version v2", true)]
+    public void ShouldGenerate_WaitingForWordsStillServesUnspacedLanguages(string text, bool expected) =>
+        Assert.Equal(expected, SuggestionRequestFactory.ShouldGenerate(text, suggestWithinWords: false));
+
+    [Fact]
+    public void ShouldGenerate_DeclinesACaretInsideAToken()
+    {
+        Assert.False(SuggestionRequestFactory.ShouldGenerate("head", "phones"));
+        Assert.False(SuggestionRequestFactory.ShouldGenerate("jane", "@example.com"));
+        Assert.True(SuggestionRequestFactory.ShouldGenerate("Thanks", ". Bye"));
+        Assert.True(SuggestionRequestFactory.ShouldGenerate("Thanks for", ""));
+    }
 }
