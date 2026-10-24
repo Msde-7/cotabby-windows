@@ -400,6 +400,55 @@ public sealed class ModelDownloaderTests : IDisposable
     }
 
     [Fact]
+    public async Task Segmented_StartsOverWhenAResumingServerIgnoresRanges()
+    {
+        WriteSegments((0, Large[..8]), (1, Large[16..20]));
+        var handler = new Handler(_ => Body(HttpStatusCode.OK, Large));
+
+        await DownloadSegmented(handler, LargeModel);
+
+        Assert.Equal(Large, File.ReadAllBytes(FinalPath));
+        Assert.False(Directory.Exists(SegmentsPath));
+        Assert.Contains(handler.Ranges, r => r.From is null);
+    }
+
+    [Fact]
+    public async Task Download_RetriesAStalledTransferWhereItStopped()
+    {
+        int calls = 0;
+        var handler = new Handler(request => Interlocked.Increment(ref calls) == 1
+            ? Serve(Gguf, request, sendOnly: 6, stall: () => { })
+            : Serve(Gguf, request));
+        var downloader = new ModelDownloader(new HttpClient(handler), NullLogger<ModelDownloader>.Instance)
+        {
+            RetryDelay = TimeSpan.Zero,
+            StallTimeout = TimeSpan.FromMilliseconds(100),
+        };
+
+        await downloader.DownloadAsync(_model, progress: null, CancellationToken.None);
+
+        Assert.Equal([null, 6L], handler.RangeStarts);
+        Assert.Equal(Gguf, File.ReadAllBytes(FinalPath));
+    }
+
+    [Fact]
+    public async Task Download_RefusesAResumeAtTheWrongOffset()
+    {
+        WritePartial(Gguf[..5]);
+        var handler = new Handler(_ =>
+        {
+            var response = Body(HttpStatusCode.PartialContent, Gguf);
+            response.Content.Headers.ContentRange = new ContentRangeHeaderValue(0, Gguf.Length - 1, Gguf.Length);
+            return response;
+        });
+
+        await Assert.ThrowsAsync<IOException>(() => Download(handler));
+
+        Assert.False(ModelDownloader.IsCached(_model));
+        Assert.Equal(Gguf[..5], File.ReadAllBytes(FinalPath + ".part"));
+    }
+
+    [Fact]
     public async Task Segmented_RejectsAServerOfferingADifferentSize()
     {
         // The catalog expects 64 bytes but the server has 72, so the first range does not line up.

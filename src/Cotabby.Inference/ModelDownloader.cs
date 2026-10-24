@@ -35,6 +35,9 @@ public sealed class ModelDownloader
     /// <summary>Files smaller than this use one stream, where the extra requests would not pay off.</summary>
     public long SegmentedMinimumBytes { get; init; } = 64L << 20;
 
+    /// <summary>A connection that sends nothing for this long counts as dropped.</summary>
+    public TimeSpan StallTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
     /// <summary>Wait before the one automatic retry after a dropped connection.</summary>
     public TimeSpan RetryDelay { get; init; } = TimeSpan.FromSeconds(2);
 
@@ -129,15 +132,30 @@ public sealed class ModelDownloader
             // A joined download whose last step was interrupted only needs checking.
             if (Directory.Exists(segmentsPath)) Directory.Delete(segmentsPath, recursive: true);
         }
-        else if (ReadPlan(segmentsPath, expected) is { } plan)
-        {
-            await DownloadSegmentsAsync(model, plan, first: null, progress, ct).ConfigureAwait(false);
-        }
         else
         {
-            if (Directory.Exists(segmentsPath)) Directory.Delete(segmentsPath, recursive: true);
-            bool segmented = !File.Exists(partPath) && Connections > 1 && expected >= SegmentedMinimumBytes
-                && await TryStartSegmentsAsync(model, expected!.Value, progress, ct).ConfigureAwait(false);
+            bool segmented;
+            try
+            {
+                if (ReadPlan(segmentsPath, expected) is { } plan)
+                {
+                    await DownloadSegmentsAsync(model, plan, first: null, progress, ct).ConfigureAwait(false);
+                    segmented = true;
+                }
+                else
+                {
+                    if (Directory.Exists(segmentsPath)) Directory.Delete(segmentsPath, recursive: true);
+                    segmented = !File.Exists(partPath) && Connections > 1 && expected >= SegmentedMinimumBytes
+                        && await TryStartSegmentsAsync(model, expected!.Value, progress, ct).ConfigureAwait(false);
+                }
+            }
+            catch (RangesRefusedException)
+            {
+                // Parts kept from an earlier session cannot be finished without ranges, so start over.
+                _logger.LogWarning("The server for {Model} stopped answering range requests. Using one stream.", model.Id);
+                Directory.Delete(segmentsPath, recursive: true);
+                segmented = false;
+            }
             if (!segmented) await DownloadSingleAsync(model, expected, progress, ct).ConfigureAwait(false);
         }
 
@@ -181,6 +199,10 @@ public sealed class ModelDownloader
         // A server that ignores the range sends the whole file again, so the partial is discarded.
         bool resumed = response.StatusCode == HttpStatusCode.PartialContent;
         if (!resumed) resumeFrom = 0;
+        else if (response.Content.Headers.ContentRange?.From is { } from && from != resumeFrom)
+        {
+            throw new IOException($"The server resumed at byte {from} instead of {resumeFrom}.");
+        }
         long? total = response.Content.Headers.ContentLength + resumeFrom;
         if (total is { } offered && expected is { } size && offered != size)
         {
@@ -315,7 +337,7 @@ public sealed class ModelDownloader
                 if (!IsRange(response, from, segment.End, plan.Total))
                 {
                     response.EnsureSuccessStatusCode();
-                    throw new IOException("The server stopped answering range requests.");
+                    throw new RangesRefusedException();
                 }
 
                 long copied;
@@ -396,6 +418,8 @@ public sealed class ModelDownloader
         Directory.Delete(SegmentsPath(model), recursive: true);
     }
 
+    private sealed class RangesRefusedException() : IOException("The server stopped answering range requests.");
+
     private static bool IsRange(HttpResponseMessage response, long from, long to, long total) =>
         response.StatusCode == HttpStatusCode.PartialContent
         && response.Content.Headers.ContentRange is { From: var f, To: var t, Length: var length }
@@ -414,13 +438,25 @@ public sealed class ModelDownloader
         path, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None,
         bufferSize: 1 << 16, useAsync: true);
 
-    private static async Task<long> CopyAsync(Stream source, Stream target, DownloadProgressTracker tracker, CancellationToken ct)
+    private async Task<long> CopyAsync(Stream source, Stream target, DownloadProgressTracker tracker, CancellationToken ct)
     {
         var buffer = new byte[1 << 16];
         long copied = 0;
-        int read;
-        while ((read = await source.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+        // The client timeout ends once the headers arrive, so a body that stops flowing needs its own.
+        using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        while (true)
         {
+            idle.CancelAfter(StallTimeout);
+            int read;
+            try
+            {
+                read = await source.ReadAsync(buffer, idle.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new IOException($"The download received nothing for {StallTimeout.TotalSeconds:0} seconds.");
+            }
+            if (read == 0) break;
             await target.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
             copied += read;
             tracker.Add(read);
