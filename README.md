@@ -154,11 +154,12 @@ Settings live in `%APPDATA%\Cotabby\settings.json`, models in `%LOCALAPPDATA%\Co
 | Clipboard, app and extended context | Ported |
 | Pause controls, per-app disable, battery saver pause, terminal and sign-in exclusions | Ported |
 | Power-based model switching, your own GGUF models | Ported |
-| Searchable settings, first-run setup, performance pane | Ported |
+| Searchable settings, first-run setup, performance pane with live CPU, memory and GPU graphs | Ported |
 | Apple Intelligence engine | Not applicable on Windows |
 | Screen context through OCR, host font matching | Not ported |
 | Streaming partial suggestions and predict-ahead while typing | Not ported |
 | Typing history, per-domain disable in browsers, automatic updates | Not ported |
+| Performance tracking toggle and per-request log | Not ported |
 
 ## Local Development
 

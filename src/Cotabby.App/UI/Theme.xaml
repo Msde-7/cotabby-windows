@@ -17,6 +17,7 @@
     <SolidColorBrush x:Key="AccentTint" Color="#26007AFF" />
     <SolidColorBrush x:Key="GreenBrush" Color="#22C55E" />
     <SolidColorBrush x:Key="OrangeBrush" Color="#F97316" />
+    <SolidColorBrush x:Key="PurpleBrush" Color="#A855F7" />
 
     <Style x:Key="CardHeader" TargetType="TextBlock">
         <Setter Property="FontSize" Value="13" />
