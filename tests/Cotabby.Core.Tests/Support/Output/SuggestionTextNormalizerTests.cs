@@ -8,11 +8,9 @@ namespace Cotabby.Core.Tests;
 /// </summary>
 public class SuggestionTextNormalizerTests
 {
-    /// <summary>The prefix defaults to the preceding text, as the request factory builds it.</summary>
     private static SuggestionNormalizationRequest Request(
-        string precedingText = "Hello", string? prefixText = null, string prompt = "PROMPT",
-        string trailingText = "", bool isMultiLineEnabled = false) =>
-        new(prompt, prefixText ?? precedingText, precedingText, trailingText, isMultiLineEnabled);
+        string precedingText = "Hello", string prompt = "PROMPT", string trailingText = "", bool isMultiLineEnabled = false) =>
+        new(prompt, precedingText, trailingText, isMultiLineEnabled);
 
     private static string Normalize(string raw, SuggestionNormalizationRequest request) =>
         SuggestionTextNormalizer.NormalizeDetailed(raw, request).Text;
@@ -64,19 +62,17 @@ public class SuggestionTextNormalizerTests
     }
 
     [Theory]
-    [InlineData("Hello ", null, " world", "world")]
-    [InlineData("Hello\t", null, " world", "world")]
-    [InlineData("Hello", null, " world", " world")]
-    [InlineData("hello world", null, "world is great", " is great")]
-    [InlineData("hello world ", null, "world is great", "is great")]
+    [InlineData("Hello ", " world", "world")]
+    [InlineData("Hello\t", " world", "world")]
+    [InlineData("Hello", " world", " world")]
+    [InlineData("hello world", "world is great", " is great")]
+    [InlineData("hello world ", "world is great", "is great")]
     // "i like" overlaps two words back, and the comparison ignores case.
-    [InlineData("hi i like", null, "I like matcha in the morning", " matcha in the morning")]
-    // Both a two-word and a four-word alignment match. The longest wins. The prefix is set apart so
-    // the verbatim prefix-echo stage cannot handle this first.
-    [InlineData("the cat the cat", "Hello", "the cat the cat sat", " sat")]
-    public void SeamWhitespaceAndEchoSuppression(string precedingText, string? prefixText, string raw, string expected)
+    [InlineData("hi i like", "I like matcha in the morning", " matcha in the morning")]
+    [InlineData("the cat the cat", "the cat the cat sat", " sat")]
+    public void SeamWhitespaceAndEchoSuppression(string precedingText, string raw, string expected)
     {
-        Assert.Equal(expected, Normalize(raw, Request(precedingText, prefixText)));
+        Assert.Equal(expected, Normalize(raw, Request(precedingText)));
     }
 
     [Theory]

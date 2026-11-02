@@ -32,15 +32,6 @@ public class TokenHealingPlanTests
     }
 
     [Fact]
-    public void UnhealedPlanKeepsTheExactPromptSoMidWordMaskingApplies()
-    {
-        int[] tokens = [0, 1, 2, 3];
-        var plan = TokenHealingPlan.Unhealed(tokens);
-        Assert.Equal(tokens, plan.PromptTokens);
-        Assert.Empty(plan.ReplayBytes);
-    }
-
-    [Fact]
     public void TrailingSpaceDoesNotReconsiderThePreviousWord()
     {
         var plan = Plan("apple ", ["", "apple", " "]);

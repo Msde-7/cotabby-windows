@@ -40,8 +40,6 @@ public sealed class TypingHistoryPhrasePredictor
     private readonly Dictionary<(int, int, int), Dictionary<int, int>> _continuations;
     private readonly Dictionary<(int, int), Dictionary<int, int>> _shortContinuations;
 
-    public int ContextCount => _continuations.Count;
-
     public TypingHistoryPhrasePredictor(IEnumerable<TypingHistoryRecord> records)
     {
         var sequences = new List<int[]>();

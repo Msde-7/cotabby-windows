@@ -3,16 +3,6 @@ using Cotabby.Core.Text;
 
 namespace Cotabby.Core.Support;
 
-/// <summary>Why <see cref="CompletionContentPolicy"/> rejected a completion.</summary>
-public enum CompletionContentRejection
-{
-    NoWordContent,
-    PunctuationAfterSpace,
-    Scaffolding,
-    RepetitiveContent,
-    CopiesPrecedingText,
-}
-
 /// <summary>
 /// Content rules for a normalized completion that no font, geometry or model setting can fix.
 /// Each shape was wrong essentially every time it appeared in the upstream eval.
@@ -53,21 +43,21 @@ public static partial class CompletionContentPolicy
     [GeneratedRegex(@"</?[a-zA-Z][a-zA-Z0-9]*(\s[^<>]*)?>")]
     private static partial Regex HtmlTag();
 
-    public static CompletionContentRejection? Rejection(string completion, string precedingText)
+    public static CompletionSuppressionReason? Rejection(string completion, string precedingText)
     {
-        if (!HasWordContent(completion)) return CompletionContentRejection.NoWordContent;
+        if (!HasWordContent(completion)) return CompletionSuppressionReason.NoWordContent;
         if (StartsWithClosingPunctuationAfterSpace(completion, precedingText))
         {
-            return CompletionContentRejection.PunctuationAfterSpace;
+            return CompletionSuppressionReason.PunctuationAfterSpace;
         }
-        if (LooksLikeScaffolding(completion, precedingText)) return CompletionContentRejection.Scaffolding;
-        if (IsRepetitive(completion)) return CompletionContentRejection.RepetitiveContent;
-        if (CopiesPrecedingText(completion, precedingText)) return CompletionContentRejection.CopiesPrecedingText;
+        if (LooksLikeScaffolding(completion, precedingText)) return CompletionSuppressionReason.Scaffolding;
+        if (IsRepetitive(completion)) return CompletionSuppressionReason.RepetitiveContent;
+        if (CopiesPrecedingText(completion, precedingText)) return CompletionSuppressionReason.CopiesPrecedingText;
         return null;
     }
 
     /// <summary>True when a sequence of one to three words repeats three or more times in a row.</summary>
-    public static bool IsRepetitive(string completion)
+    private static bool IsRepetitive(string completion)
     {
         var words = GraphemeString.Words(completion.ToLowerInvariant());
         for (int period = 1; period <= 3; period++)
@@ -88,7 +78,7 @@ public static partial class CompletionContentPolicy
     /// in order. Punctuation and case are ignored so "s." matches "s". Four words are enough that
     /// ordinary shared phrasing ("thanks for the") never trips it.
     /// </summary>
-    public static bool CopiesPrecedingText(string completion, string precedingText)
+    private static bool CopiesPrecedingText(string completion, string precedingText)
     {
         var words = ContentWords(completion);
         var recent = ContentWords(new GraphemeString(precedingText).Suffix(CopySearchWindow));
@@ -113,19 +103,19 @@ public static partial class CompletionContentPolicy
         return words;
     }
 
-    public static bool HasWordContent(string text)
+    private static bool HasWordContent(string text)
     {
         var graphemes = new GraphemeString(text);
         return graphemes.PrefixLength(g => !g.IsLetterOrNumber) < graphemes.Count;
     }
 
-    public static bool StartsWithClosingPunctuationAfterSpace(string completion, string precedingText)
+    private static bool StartsWithClosingPunctuationAfterSpace(string completion, string precedingText)
     {
         if (GraphemeString.LastOf(precedingText) is not { } last || !last.IsAnyOf(" \t")) return false;
         return GraphemeString.FirstOf(completion) is { } first && first.IsAnyOf(ClosingPunctuation);
     }
 
-    public static bool LooksLikeScaffolding(string completion, string precedingText)
+    private static bool LooksLikeScaffolding(string completion, string precedingText)
     {
         string trimmed = ScalarSets.TrimWhitespaceAndNewlines(completion);
         string lowered = trimmed.ToLowerInvariant();

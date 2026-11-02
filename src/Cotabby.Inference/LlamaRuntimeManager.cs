@@ -83,11 +83,8 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
 
             // The first generation on a fresh Vulkan context compiles shaders and reserves buffers,
             // which takes two to four seconds. Paying that here keeps the first real suggestion fast.
-            var warmupTokens = core.TokenizeText("Hello", addBos: core.Vocab.ShouldAddBOS);
             _ = await core.GenerateAsync(
-                warmupTokens,
-                new LlamaGenerationOptions { MaxTokens = 4, SingleLine = true },
-                ct).ConfigureAwait(false);
+                "Hello", new LlamaGenerationOptions { MaxTokens = 4, SingleLine = true }, ct).ConfigureAwait(false);
 
             _weights = weights;
             _core = core;
@@ -95,21 +92,12 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
 
             sw.Stop();
             _logger.LogInformation(
-                "Model {Model} loaded in {Ms} ms (fim={Fim}).",
-                model.Id, sw.ElapsedMilliseconds, core.SupportsFillInMiddle);
+                "Model {Model} loaded in {Ms} ms.", model.Id, sw.ElapsedMilliseconds);
         }
         finally
         {
             _gate.Release();
         }
-    }
-
-    /// <summary>Unload the resident model and free its weights.</summary>
-    public async Task UnloadAsync()
-    {
-        await _gate.WaitAsync().ConfigureAwait(false);
-        try { UnloadInternal(); }
-        finally { _gate.Release(); }
     }
 
     private void UnloadInternal()
@@ -128,7 +116,9 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        await UnloadAsync().ConfigureAwait(false);
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try { UnloadInternal(); }
+        finally { _gate.Release(); }
         _gate.Dispose();
     }
 }

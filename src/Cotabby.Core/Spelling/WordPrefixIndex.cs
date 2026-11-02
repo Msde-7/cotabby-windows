@@ -18,16 +18,10 @@ public sealed class WordPrefixIndex
     /// <param name="contents">Dictionary lines of a word and its count.</param>
     public WordPrefixIndex(string contents)
     {
-        var words = new List<Candidate>();
-        foreach (var line in contents.Split('\n'))
-        {
-            var fields = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-            if (fields.Length < 2 || !long.TryParse(fields[1], out long count) || count <= 0) continue;
-            if (!new GraphemeString(fields[0]).All(g => g.IsLetter)) continue;
-            words.Add(new Candidate(fields[0], count));
-        }
-        words.Sort((a, b) => string.CompareOrdinal(a.Word, b.Word));
-        _words = [.. words];
+        _words = [.. FrequencyDictionaryFormat.Entries(contents)
+            .Where(e => e.Count > 0 && e.Word.Length > 0 && new GraphemeString(e.Word).All(g => g.IsLetter))
+            .Select(e => new Candidate(e.Word, e.Count))
+            .OrderBy(c => c.Word, StringComparer.Ordinal)];
     }
 
     /// <summary>The two most frequent longer words starting with <paramref name="prefix"/>, ignoring its case.</summary>

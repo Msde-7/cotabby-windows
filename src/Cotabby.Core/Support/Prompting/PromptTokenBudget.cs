@@ -10,10 +10,10 @@ public static class PromptTokenBudget
     /// Output reserve built into the configured prompt budget. It covers the default single-line
     /// request with room to spare.
     /// </summary>
-    public const int OutputCeilingTokens = 50;
+    private const int OutputCeilingTokens = 50;
 
     /// <summary>Margin for the beginning-of-sequence token plus token-estimator error.</summary>
-    public const int SafetyMarginTokens = 64;
+    private const int SafetyMarginTokens = 64;
 
     /// <summary>The context window minus the output ceiling and the safety margin.</summary>
     public static int Configured(int contextWindowTokens) =>

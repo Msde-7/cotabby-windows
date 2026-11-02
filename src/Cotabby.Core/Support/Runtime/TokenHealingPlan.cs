@@ -22,12 +22,6 @@ public sealed class TokenHealingPlan
         ReplayBytes = replayBytes;
     }
 
-    /// <summary>
-    /// The prompt exactly as tokenized, replaying nothing. Mid-word insertions use this so the
-    /// new-word mask still constrains their first sampled token.
-    /// </summary>
-    public static TokenHealingPlan Unhealed(IReadOnlyList<int> tokens) => new(tokens, []);
-
     /// <param name="prompt">The prompt text the tokens encode.</param>
     /// <param name="tokens">The prompt's tokens.</param>
     /// <param name="singleLine">When true, a line break is never moved into the replay.</param>

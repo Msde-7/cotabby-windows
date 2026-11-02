@@ -30,7 +30,7 @@ public static class SpellingDictionaryLanguageExtensions
         _ => throw new ArgumentOutOfRangeException(nameof(language)),
     };
 
-    /// <summary>English name used in logs.</summary>
+    /// <summary>English name shown in settings.</summary>
     public static string DisplayName(this SpellingDictionaryLanguage language) => language.ToString();
 
     /// <summary>Resource basename from the SymSpell frequency-dictionary folder.</summary>

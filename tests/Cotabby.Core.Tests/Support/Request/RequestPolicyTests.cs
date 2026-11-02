@@ -66,29 +66,6 @@ public class DebouncePolicyTests
     }
 }
 
-public class MidWordContinuationPolicyTests
-{
-    [Theory]
-    [InlineData("I am wri", "ting", true)]
-    // Nothing after the caret is a normal word boundary, where next-word predictions belong.
-    [InlineData("The quick brown fox", "", false)]
-    [InlineData("hello ", "world", false)]
-    [InlineData("done", ". Next", false)]
-    // Digits count as word characters, so identifiers and numbers heal like words.
-    [InlineData("build 12", "34", true)]
-    [InlineData("v", "2", true)]
-    [InlineData("caf", "é au lait", true)]
-    [InlineData("今日", "は", true)]
-    [InlineData("", "word", false)]
-    // A connector is not a word character, so the trigger stays narrow at "don|'t".
-    [InlineData("don", "'t", false)]
-    [InlineData("word", "\nnext", false)]
-    public void ForcesContinuationOnlyInsideAWord(string precedingText, string trailingText, bool expected)
-    {
-        Assert.Equal(expected, MidWordContinuationPolicy.ShouldForceContinuation(precedingText, trailingText));
-    }
-}
-
 public class SentenceBoundaryClassifierTests
 {
     [Theory]

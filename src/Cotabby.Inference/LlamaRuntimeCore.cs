@@ -13,15 +13,6 @@ public sealed record LlamaGenerationOptions
     public required int MaxTokens { get; init; }
     public bool SingleLine { get; init; }
 
-    /// <summary>Mask tokens that start a new word for the first sampled token (caret is mid-word).</summary>
-    public bool ForceWordContinuation { get; init; }
-
-    /// <summary>Argmax candidate pool size.</summary>
-    public int TopK { get; init; } = 20;
-
-    /// <summary>Minimum tokens generated before a sentence end may stop decoding.</summary>
-    public int SentenceStopMinimumTokens { get; init; } = 2;
-
     /// <summary>
     /// Minimum whitespace-separated words before a sentence end may stop decoding. The word-count
     /// preset's lower bound, so a short sentence end does not cut a suggestion to one word.
@@ -44,6 +35,12 @@ public sealed record LlamaGenerationOptions
 public sealed class LlamaRuntimeCore : IDisposable
 {
     private const int NoRepeatNgramSize = 3;
+
+    /// <summary>Argmax candidate pool size.</summary>
+    private const int TopK = 20;
+
+    /// <summary>Minimum tokens generated before a sentence end may stop decoding.</summary>
+    private const int SentenceStopMinimumTokens = 2;
 
     private readonly LLamaWeights _weights;
     private readonly LLamaContext _context;
@@ -70,37 +67,6 @@ public sealed class LlamaRuntimeCore : IDisposable
     /// <summary>Size of the context window in tokens.</summary>
     public int ContextWindowTokens => (int)_context.NativeHandle.ContextSize;
 
-    /// <summary>True if the loaded model exposes all three fill-in-the-middle markers.</summary>
-    public bool SupportsFillInMiddle =>
-        Vocab.InfillPrefix.HasValue && Vocab.InfillSuffix.HasValue && Vocab.InfillMiddle.HasValue;
-
-    /// <summary>Tokenize plain user text. Special tokens are not parsed.</summary>
-    public LLamaToken[] TokenizeText(string text, bool addBos) =>
-        _context.NativeHandle.Tokenize(text, add_bos: addBos, special: false, Encoding.UTF8);
-
-    /// <summary>
-    /// Assemble a fill-in-the-middle token sequence of prefix marker, prefix, suffix marker, suffix
-    /// and middle marker. The suffix keeps its head and the prefix its tail, the text nearest the caret.
-    /// </summary>
-    public LLamaToken[] BuildFimTokens(string prefix, string suffix, int maxPromptTokens)
-    {
-        var prefixTokens = TokenizeText(prefix, addBos: false);
-        var suffixTokens = TokenizeText(suffix, addBos: false);
-        int budget = Math.Max(0, maxPromptTokens - 3);
-        int suffixKeep = Math.Min(suffixTokens.Length, budget / 2);
-        int prefixKeep = Math.Min(prefixTokens.Length, budget - suffixKeep);
-
-        var tokens = new List<LLamaToken>(prefixKeep + suffixKeep + 3)
-        {
-            Vocab.InfillPrefix!.Value,
-        };
-        tokens.AddRange(prefixTokens[^prefixKeep..]);
-        tokens.Add(Vocab.InfillSuffix!.Value);
-        tokens.AddRange(suffixTokens[..suffixKeep]);
-        tokens.Add(Vocab.InfillMiddle!.Value);
-        return tokens.ToArray();
-    }
-
     /// <summary>
     /// Run one constrained generation that continues <paramref name="prompt"/>. The prompt's final
     /// word is healed, so the model may re-spell the typed fragment with a token that also carries
@@ -109,22 +75,12 @@ public sealed class LlamaRuntimeCore : IDisposable
     public Task<string> GenerateAsync(string prompt, LlamaGenerationOptions options, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var tokens = Array.ConvertAll(TokenizeText(prompt, addBos: Vocab.ShouldAddBOS), token => (int)token);
-        // A caret inside a word keeps the unhealed prompt so the new-word mask stays in force.
-        var healing = options.ForceWordContinuation
-            ? TokenHealingPlan.Unhealed(tokens)
-            : new TokenHealingPlan(prompt, tokens, options.SingleLine, token => TokenPiece(token));
+        var tokens = _context.NativeHandle.Tokenize(prompt, add_bos: Vocab.ShouldAddBOS, special: false, Encoding.UTF8);
+        var healing = new TokenHealingPlan(
+            prompt, Array.ConvertAll(tokens, token => (int)token), options.SingleLine, token => TokenPiece(token));
         var promptTokens = healing.PromptTokens.Select(token => (LLamaToken)token).ToArray();
         return GenerateAsync(promptTokens, healing.ReplayBytes, options, ct);
     }
-
-    /// <summary>
-    /// Run one constrained generation over <paramref name="promptTokens"/> as given. Returns raw
-    /// text, empty when nothing admissible was produced or the caller cancelled before the first token.
-    /// </summary>
-    public Task<string> GenerateAsync(
-        LLamaToken[] promptTokens, LlamaGenerationOptions options, CancellationToken ct) =>
-        GenerateAsync(promptTokens, [], options, ct);
 
     private async Task<string> GenerateAsync(
         LLamaToken[] promptTokens, byte[] healingPrefix, LlamaGenerationOptions options, CancellationToken ct)
@@ -164,27 +120,15 @@ public sealed class LlamaRuntimeCore : IDisposable
         // The longest common token prefix with the previous prompt stays in memory and only the
         // divergent tail is evaluated. A model that cannot shift is cleared and evaluated fully.
         int evalFrom = 0;
-        if (_canReusePrefix && _lastPromptTokens.Length > 0)
+        if (_canReusePrefix)
         {
-            int common = 0;
             int limit = Math.Min(_lastPromptTokens.Length, promptTokens.Length);
-            while (common < limit && _lastPromptTokens[common] == promptTokens[common]) common++;
+            while (evalFrom < limit && _lastPromptTokens[evalFrom] == promptTokens[evalFrom]) evalFrom++;
             // At least the final token is evaluated again so the logits are fresh.
-            common = Math.Min(common, promptTokens.Length - 1);
-            if (common > 0)
-            {
-                handle.MemorySequenceRemove(seq, common, -1);
-                evalFrom = common;
-            }
-            else
-            {
-                handle.MemoryClear(true);
-            }
+            evalFrom = Math.Min(evalFrom, promptTokens.Length - 1);
         }
-        else
-        {
-            handle.MemoryClear(true);
-        }
+        if (evalFrom > 0) handle.MemorySequenceRemove(seq, evalFrom, -1);
+        else handle.MemoryClear(true);
 
         var batch = new LLamaBatch();
         int batchSize = (int)handle.BatchSize;
@@ -194,8 +138,7 @@ public sealed class LlamaRuntimeCore : IDisposable
             if (ct.IsCancellationRequested)
             {
                 // Memory now holds part of this prompt, which no longer matches the remembered one.
-                handle.MemoryClear(true);
-                _lastPromptTokens = [];
+                ForgetPrompt();
                 return string.Empty;
             }
             batch.Clear();
@@ -208,8 +151,7 @@ public sealed class LlamaRuntimeCore : IDisposable
             if (result != DecodeResult.Ok)
             {
                 _logger.LogWarning("Prompt decode failed with {Result}. Clearing memory.", result);
-                handle.MemoryClear(true);
-                _lastPromptTokens = [];
+                ForgetPrompt();
                 return string.Empty;
             }
             lastLogitsIndex = end - i - 1;
@@ -242,8 +184,7 @@ public sealed class LlamaRuntimeCore : IDisposable
             if (buffer.ReplayComplete)
             {
                 token = SelectToken(
-                    logits, options.TopK, RepetitionGuard.BlockedTokens(sampledIds, NoRepeatNgramSize),
-                    forceWordContinuation: options.ForceWordContinuation && step == 0, options.SingleLine, scratch);
+                    logits, RepetitionGuard.BlockedTokens(sampledIds, NoRepeatNgramSize), options.SingleLine, scratch);
             }
             else
             {
@@ -275,7 +216,7 @@ public sealed class LlamaRuntimeCore : IDisposable
 
             if (DecodeStopPolicy.Verdict(
                     generatedText, tokensGenerated,
-                    options.SentenceStopMinimumTokens, options.SentenceStopMinimumWords) is { } earlyStop)
+                    SentenceStopMinimumTokens, options.SentenceStopMinimumWords) is { } earlyStop)
             {
                 stopReason = earlyStop.LogValue();
                 break;
@@ -302,21 +243,17 @@ public sealed class LlamaRuntimeCore : IDisposable
 
     /// <summary>
     /// Deterministic constrained selection. The candidate pool is the top-K token ids by raw logit.
-    /// The walk skips control and blocked tokens and, on a forced mid-word first step, tokens that
-    /// start a new word. The highest-logit survivor wins. An end-of-generation token is admissible,
-    /// so the caller's stop check fires when the model's best choice is to stop.
+    /// The walk skips control and blocked tokens, and the highest-logit survivor wins. An
+    /// end-of-generation token is admissible, so the caller's stop check fires when the model's best
+    /// choice is to stop.
     /// </summary>
-    private LLamaToken? SelectToken(
-        ReadOnlySpan<float> logits, int topK, HashSet<int> blocked,
-        bool forceWordContinuation, bool singleLine, byte[] scratch)
+    private LLamaToken? SelectToken(ReadOnlySpan<float> logits, HashSet<int> blocked, bool singleLine, byte[] scratch)
     {
-        if (topK <= 0) return null;
-        int k = Math.Min(topK, logits.Length);
+        int k = Math.Min(TopK, logits.Length);
 
         // Partial top-K selection with fixed arrays and a single pass over the vocabulary.
-        Span<int> ids = stackalloc int[64];
-        Span<float> vals = stackalloc float[64];
-        k = Math.Min(k, 64);
+        Span<int> ids = stackalloc int[TopK];
+        Span<float> vals = stackalloc float[TopK];
         int count = 0;
         for (int i = 0; i < logits.Length; i++)
         {
@@ -350,7 +287,6 @@ public sealed class LlamaRuntimeCore : IDisposable
             var piece = scratch.AsSpan(0, byteLen);
             // A single-line field cannot take a line break, so the next best token continues the line.
             if (singleLine && piece.IndexOf((byte)'\n') >= 0) continue;
-            if (forceWordContinuation && !ContinuesWordMidStream(piece)) continue;
             return token;
         }
         return null;
@@ -413,16 +349,10 @@ public sealed class LlamaRuntimeCore : IDisposable
     private static bool IsScaffoldingMarker(string piece) =>
         ControlTokenMarkers.OpeningMarkers.Contains(piece) || ControlTokenMarkers.StopMarkers.Contains(piece);
 
-    /// <summary>
-    /// The first byte continues the current word. A letter, digit, apostrophe, hyphen or a
-    /// non-ASCII lead byte qualifies.
-    /// </summary>
-    private static bool ContinuesWordMidStream(ReadOnlySpan<byte> bytes)
+    private void ForgetPrompt()
     {
-        byte b = bytes[0];
-        return b is (>= (byte)'a' and <= (byte)'z') or (>= (byte)'A' and <= (byte)'Z')
-            or (>= (byte)'0' and <= (byte)'9') or (byte)'\'' or (byte)'-'
-            || b >= 0x80;
+        _context.NativeHandle.MemoryClear(true);
+        _lastPromptTokens = [];
     }
 
     public void Dispose()

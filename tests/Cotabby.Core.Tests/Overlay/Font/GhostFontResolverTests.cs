@@ -209,13 +209,4 @@ public sealed class GhostFontResolverTests
         Assert.Equal(P.HostSizeSystem, r.Provenance);
         Assert.Equal(GhostFontResolver.SystemFamily, r.Face.Family);
     }
-
-    [Fact]
-    public void FamilyFitsJudgesOneSample()
-    {
-        const string sample = "Thanks for sending the report";
-        Assert.True(GhostFontResolver.FamilyFits("Consolas", sample, Width(sample, "Consolas", 13), 13, _m));
-        Assert.False(GhostFontResolver.FamilyFits("Consolas", sample, Width(sample, "Arial", 13), 13, _m));
-        Assert.False(GhostFontResolver.FamilyFits("Missing Face", sample, 100, 13, _m));
-    }
 }

@@ -18,7 +18,7 @@ public sealed class HostAdvanceFit
 
     /// <param name="Size">The host's size for the face the fit was taken in.</param>
     /// <param name="Span">Host advance between the leftmost and rightmost capture.</param>
-    public readonly record struct Fit(double Size, double Span, int Captures);
+    public readonly record struct Fit(double Size, double Span);
 
     public const int MinimumCaptures = 5;
 
@@ -41,10 +41,10 @@ public sealed class HostAdvanceFit
     private readonly List<Capture> _captures = [];
     private GhostFace? _face;
     private string? _lineKey;
+    private int _refinements;
 
     public IReadOnlyList<Capture> Captures => _captures;
     public Fit? Adopted { get; private set; }
-    public int Refinements { get; private set; }
 
     /// <summary>
     /// Records a caret capture on the line named by <paramref name="lineKey"/> and returns the fit
@@ -60,7 +60,7 @@ public sealed class HostAdvanceFit
         {
             _face = face;
             Adopted = null;
-            Refinements = 0;
+            _refinements = 0;
             _captures.Clear();
         }
         if (lineKey != _lineKey)
@@ -78,8 +78,8 @@ public sealed class HostAdvanceFit
         }
         if (Adopted is { } adopted)
         {
-            if (Refinements >= MaximumRefinements || fit.Span < adopted.Span * RefinementFactor) return null;
-            Refinements++;
+            if (_refinements >= MaximumRefinements || fit.Span < adopted.Span * RefinementFactor) return null;
+            _refinements++;
         }
         Adopted = fit;
         return fit;
@@ -110,6 +110,6 @@ public sealed class HostAdvanceFit
         double slope = slopes[slopes.Count / 2];
         double span = (advances.Max() - advances.Min()) * slope;
         if (!(slope > 0) || span < minimumSpan) return null;
-        return new Fit(size * slope, span, captures.Count);
+        return new Fit(size * slope, span);
     }
 }

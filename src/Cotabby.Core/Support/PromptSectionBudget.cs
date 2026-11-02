@@ -41,24 +41,8 @@ public static class PromptSectionBudget
     /// length and the remaining budget. It is dropped if that is below its minimum or if it becomes
     /// empty. Survivors are returned in their original order.
     /// </summary>
-    public static IReadOnlyList<PromptSection> Allocate(IReadOnlyList<PromptSection> sections, int totalChars)
-    {
-        int remaining = Math.Max(0, totalChars);
-        var kept = new PromptSection?[sections.Count];
-        foreach (int index in FillOrder(sections))
-        {
-            if (remaining <= 0) break;
-            var section = sections[index];
-            var content = new GraphemeString(section.Content);
-            int cap = Math.Min(Math.Min(section.MaxChars, content.Count), remaining);
-            if (cap < section.MinChars) continue;
-            string truncated = AllocatedContent(section, content, cap);
-            if (truncated.Length == 0) continue;
-            kept[index] = section with { Content = truncated };
-            remaining -= GraphemeString.CountOf(truncated);
-        }
-        return kept.OfType<PromptSection>().ToList();
-    }
+    public static IReadOnlyList<PromptSection> Allocate(IReadOnlyList<PromptSection> sections, int totalChars) =>
+        Allocate(sections, totalChars, GraphemeString.CountOf);
 
     /// <summary>
     /// Token-aware variant. The budget is counted in estimated tokens, which respects a model's real

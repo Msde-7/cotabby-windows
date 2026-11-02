@@ -50,7 +50,7 @@ public static class ModelCatalog
         new CotabbyModel
         {
             Id = "tabby-2-mini",
-            DisplayName = "tabby-2-mini",
+            DisplayName = "Cotabby Mini",
             Subtitle = "A solid everyday balance · 1.3 GB",
             DownloadUrl = HfUrl("mradermacher/Qwen3.5-2B-Base-i1-GGUF", "Qwen3.5-2B-Base.i1-Q4_K_M.gguf"),
             ApproxSizeBytes = 1_274_397_056,
@@ -59,7 +59,7 @@ public static class ModelCatalog
         new CotabbyModel
         {
             Id = "tabby-2-nano",
-            DisplayName = "tabby-2-nano",
+            DisplayName = "Cotabby Nano",
             Subtitle = "Fastest, for older or low-memory PCs · 0.6 GB",
             DownloadUrl = HfUrl("mradermacher/Qwen3.5-0.8B-Base-i1-GGUF", "Qwen3.5-0.8B-Base.i1-Q6_K.gguf"),
             ApproxSizeBytes = 629_744_512,
@@ -68,7 +68,7 @@ public static class ModelCatalog
         new CotabbyModel
         {
             Id = "tabby-2-base",
-            DisplayName = "tabby-2-base",
+            DisplayName = "Cotabby Base",
             Subtitle = "Higher-quality suggestions · 3.9 GB",
             DownloadUrl = HfUrl("mradermacher/gemma-4-E2B-i1-GGUF", "gemma-4-E2B.i1-Q6_K.gguf"),
             ApproxSizeBytes = 3_845_328_608,
@@ -77,7 +77,7 @@ public static class ModelCatalog
         new CotabbyModel
         {
             Id = "tabby-2-pro",
-            DisplayName = "tabby-2-pro",
+            DisplayName = "Cotabby Pro",
             Subtitle = "Best quality, needs 16 GB of memory · 5.3 GB",
             DownloadUrl = HfUrl("mradermacher/gemma-4-E4B-i1-GGUF", "gemma-4-E4B.i1-Q4_K_M.gguf"),
             ApproxSizeBytes = 5_335_274_240,

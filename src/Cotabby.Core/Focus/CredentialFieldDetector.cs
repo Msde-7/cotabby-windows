@@ -52,7 +52,7 @@ public static partial class CredentialFieldDetector
             || LooksLikeAddressEntry(field.Text));
 
     /// <summary>True when the label holds a credential keyword and no word that makes it describe prose.</summary>
-    public static bool LabelNamesCredential(string? label)
+    private static bool LabelNamesCredential(string? label)
     {
         if (string.IsNullOrEmpty(label)) return false;
         var lower = label.ToLowerInvariant();

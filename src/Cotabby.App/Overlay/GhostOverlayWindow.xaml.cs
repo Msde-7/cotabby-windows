@@ -414,7 +414,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         double lineWidth = Math.Max(line.Width, field.FieldRect.Right - line.X);
         bool lags = CaretLagPolicy.CaretLagsTypedText(
             anchor.X / scale, line.X / scale, lineWidth / scale, sample, font.Face, font.Size, _measurer,
-            isRightToLeft: false);
+            _rightToLeft);
         return lags ? line.X + _measurer.Width(sample, font.Face, font.Size) * scale : anchor.Right;
     }
 

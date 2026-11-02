@@ -24,8 +24,6 @@ public static class CotypistExportImporter
         string? CreatedAt, string? UpdatedAt, string? AppBundleIdentifier,
         string? TextUpToCursor, string? TextAfterCursor, string? Domain);
 
-    /// <summary>Texts shorter than this after scrubbing are fragments with nothing to learn.</summary>
-    public const int MinimumCharacters = 20;
     private const int GroupingPrefixLength = 40;
 
     /// <summary>Share of a shorter text's words that must appear in a longer one for it to be an earlier snapshot.</summary>
@@ -53,7 +51,7 @@ public static class CotypistExportImporter
         foreach (var row in rows)
         {
             var (text, typedLength) = TypingHistoryScrubber.Scrub(row.TextUpToCursor ?? "", row.TextAfterCursor ?? "");
-            if (text.Trim().Length < MinimumCharacters) continue;
+            if (!TypingHistoryStore.IsWorthKeeping(text)) continue;
             string bundleIdentifier = NormalizedBundleIdentifier(row.AppBundleIdentifier);
             var createdAt = ParseDate(row.CreatedAt) ?? DateTimeOffset.UnixEpoch;
             var record = new TypingHistoryRecord

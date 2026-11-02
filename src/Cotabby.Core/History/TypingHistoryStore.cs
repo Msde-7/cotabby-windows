@@ -36,7 +36,7 @@ public enum TypingHistoryStatus
 public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHistoryObserver
 {
     /// <summary>Oldest records are dropped past this many, so rebuilds stay quick.</summary>
-    public const int MaximumRecords = 20_000;
+    private const int MaximumRecords = 20_000;
 
     /// <summary>Fields with less text than this are not worth keeping ("ok", a search term).</summary>
     public const int MinimumRecordedCharacters = 20;
@@ -104,7 +104,6 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
         public required string FieldKey { get; init; }
         public required Guid RecordId { get; init; }
         public required string BundleIdentifier { get; init; }
-        public string? Domain { get; init; }
         public required DateTimeOffset CreatedAt { get; init; }
         public required string RawText { get; set; }
 
@@ -187,7 +186,7 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
     {
         lock (_lock)
         {
-            var apps = _preferences.ExcludedApps.Where(a => !string.Equals(a, app, StringComparison.OrdinalIgnoreCase)).ToList();
+            var apps = _preferences.ExcludedApps.Where(a => !SameApp(a, app)).ToList();
             if (excluded) apps.Add(app);
             apps.Sort(StringComparer.OrdinalIgnoreCase);
             if (apps.SequenceEqual(_preferences.ExcludedApps)) return;
@@ -212,12 +211,19 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
         int index = _records.FindIndex(record => record.Id == active.RecordId);
         if (index < 0) return;
         _records.RemoveAt(index);
+        RecordsChanged();
+    }
+
+    private static bool SameApp(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    private static string FieldKey(FocusedField field) => $"{field.ProcessName}|{field.ProcessId}|{field.FieldId}";
+
+    private void RecordsChanged()
+    {
         _changeCount++;
         ScheduleSave();
         RebuildSearchStructures();
     }
-
-    private static bool SameApp(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
     // Loading, saving, rebuilding
 
@@ -371,7 +377,7 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
 
         // The focus session is left out on purpose: leaving a field and coming back is the same
         // document and should stay one record.
-        string fieldKey = $"{field.ProcessName}|{field.ProcessId}|{field.FieldId}";
+        string fieldKey = FieldKey(field);
         string text = field.PrecedingText + field.TrailingText;
         // Unchanged text in the same field is the common case. Answer it before the settings check.
         if (_active is { } same && same.FieldKey == fieldKey && same.RawText == text) return false;
@@ -398,7 +404,6 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
             FieldKey = fieldKey,
             RecordId = Guid.NewGuid(),
             BundleIdentifier = field.ProcessName,
-            Domain = null,
             CreatedAt = DateTimeOffset.UtcNow,
             RawText = text,
             RawTypedLength = typedLength,
@@ -482,7 +487,7 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
         }
     }
 
-    private static bool IsWorthKeeping(string text) => text.Trim().Length >= MinimumRecordedCharacters;
+    internal static bool IsWorthKeeping(string text) => text.Trim().Length >= MinimumRecordedCharacters;
 
     /// <summary>
     /// Whether <paramref name="updated"/> keeps at least half of <paramref name="old"/> in place:
@@ -544,7 +549,6 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
             {
                 Id = active.RecordId,
                 BundleIdentifier = active.BundleIdentifier,
-                Domain = active.Domain,
                 CreatedAt = active.CreatedAt,
                 UpdatedAt = DateTimeOffset.UtcNow,
                 Text = text,
@@ -601,9 +605,7 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
                 if (fresh.Count == 0) return;
                 _records.AddRange(fresh);
                 TrimToCapacity();
-                _changeCount++;
-                ScheduleSave();
-                RebuildSearchStructures();
+                RecordsChanged();
             }
         }
         catch (CotypistImportException ex)
@@ -680,7 +682,7 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
         // The window title, such as an email subject, is the most stable topical signal a field has,
         // so it joins the query even before the first full block of words is typed.
         string queryText = $"{stableText} {field.WindowTitle}";
-        string cacheKey = $"{field.ProcessName}|{field.ProcessId}|{field.FieldId}|{queryText}";
+        string cacheKey = $"{FieldKey(field)}|{queryText}";
         IReadOnlyList<TypingHistoryIndex.Candidate>? candidates = null;
         lock (_lock)
         {

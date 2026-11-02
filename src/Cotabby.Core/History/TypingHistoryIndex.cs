@@ -50,8 +50,6 @@ public sealed class TypingHistoryIndex
     private readonly Dictionary<string, List<int>> _postings = [];
     private readonly Dictionary<string, double> _inverseDocumentFrequency = [];
 
-    public int DocumentCount => _documents.Count;
-
     public TypingHistoryIndex(IEnumerable<TypingHistoryRecord> records)
     {
         // Only what the user typed becomes an example. The rest of a field is often someone else's.

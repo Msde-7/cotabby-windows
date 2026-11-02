@@ -50,6 +50,12 @@ public sealed class ModelDownloader
 
     private static string SegmentsPath(CotabbyModel model) => LocalPath(model) + ".segments";
 
+    private static void DeleteSegments(CotabbyModel model)
+    {
+        var path = SegmentsPath(model);
+        if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+    }
+
     /// <summary>
     /// True when the model file is in place. A download only reaches its final
     /// name once it is complete, so presence plus the GGUF signature is enough.
@@ -57,7 +63,7 @@ public sealed class ModelDownloader
     public static bool IsCached(CotabbyModel model) => IsGguf(LocalPath(model));
 
     /// <summary>Bytes kept from a stopped download, or 0 when there is none.</summary>
-    public static long PartialBytes(CotabbyModel model)
+    private static long PartialBytes(CotabbyModel model)
     {
         try
         {
@@ -74,7 +80,7 @@ public sealed class ModelDownloader
     }
 
     /// <summary>True while a download of the model runs, in this window or another.</summary>
-    public static bool IsDownloading(CotabbyModel model) => Running.ContainsKey(LocalPath(model));
+    private static bool IsDownloading(CotabbyModel model) => Running.ContainsKey(LocalPath(model));
 
     /// <summary>
     /// What the disk says about the model. A kept partial reads as paused, or as downloading
@@ -94,7 +100,7 @@ public sealed class ModelDownloader
     {
         if (IsDownloading(model)) return;
         File.Delete(PartPath(model));
-        if (Directory.Exists(SegmentsPath(model))) Directory.Delete(SegmentsPath(model), recursive: true);
+        DeleteSegments(model);
     }
 
     /// <summary>
@@ -150,7 +156,7 @@ public sealed class ModelDownloader
         if (expected is { } size && FileLength(partPath) == size)
         {
             // A joined download whose last step was interrupted only needs checking.
-            if (Directory.Exists(segmentsPath)) Directory.Delete(segmentsPath, recursive: true);
+            DeleteSegments(model);
         }
         else
         {
@@ -164,7 +170,7 @@ public sealed class ModelDownloader
                 }
                 else
                 {
-                    if (Directory.Exists(segmentsPath)) Directory.Delete(segmentsPath, recursive: true);
+                    DeleteSegments(model);
                     segmented = !File.Exists(partPath) && Connections > 1 && expected >= SegmentedMinimumBytes
                         && await TryStartSegmentsAsync(model, expected!.Value, progress, ct).ConfigureAwait(false);
                 }
@@ -533,11 +539,6 @@ public sealed class DownloadProgressTracker
     public long Bytes
     {
         get { lock (_gate) return _bytes; }
-    }
-
-    public double? BytesPerSecond
-    {
-        get { lock (_gate) return _speed; }
     }
 
     public void Add(long count)

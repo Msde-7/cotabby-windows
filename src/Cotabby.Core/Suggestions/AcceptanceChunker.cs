@@ -258,9 +258,8 @@ public static class AcceptanceChunker
 
     private static Rune LastRune(string text, int end)
     {
-        int start = end - 1;
-        if (start > 0 && char.IsLowSurrogate(text[start]) && char.IsHighSurrogate(text[start - 1])) start--;
-        return Rune.GetRuneAt(text, start);
+        Rune.DecodeLastFromUtf16(text.AsSpan(0, end), out var rune, out _);
+        return rune;
     }
 
     /// <summary>

@@ -45,14 +45,12 @@ public enum CompletionSuppressionReason
 
 /// <summary>The request fields the normalizer reads.</summary>
 /// <param name="Prompt">The rendered prompt, stripped when the model echoes it.</param>
-/// <param name="PrefixText">The windowed caret prefix inside the prompt.</param>
-/// <param name="PrecedingText">The field's text before the caret.</param>
+/// <param name="PrecedingText">The caret prefix the prompt ends with.</param>
 /// <param name="TrailingText">The field's text after the caret.</param>
 /// <param name="IsMultiLineEnabled">Whether a completion may span lines.</param>
 /// <param name="WordRange">The word-count preset the suggestion is held to, if any.</param>
 public sealed record SuggestionNormalizationRequest(
     string Prompt,
-    string PrefixText,
     string PrecedingText,
     string TrailingText = "",
     bool IsMultiLineEnabled = false,
@@ -172,7 +170,7 @@ public static partial class SuggestionTextNormalizer
 
         if (CompletionContentPolicy.Rejection(normalized, request.PrecedingText) is { } rejection)
         {
-            return new(string.Empty, Suppression(rejection));
+            return new(string.Empty, rejection);
         }
 
         if (request.WordRange is { } range && !request.IsMultiLineEnabled)
@@ -183,15 +181,6 @@ public static partial class SuggestionTextNormalizer
         return new(normalized, null);
     }
 
-    private static CompletionSuppressionReason Suppression(CompletionContentRejection rejection) => rejection switch
-    {
-        CompletionContentRejection.NoWordContent => CompletionSuppressionReason.NoWordContent,
-        CompletionContentRejection.PunctuationAfterSpace => CompletionSuppressionReason.PunctuationAfterSpace,
-        CompletionContentRejection.Scaffolding => CompletionSuppressionReason.Scaffolding,
-        CompletionContentRejection.RepetitiveContent => CompletionSuppressionReason.RepetitiveContent,
-        _ => CompletionSuppressionReason.CopiesPrecedingText,
-    };
-
     /// <summary>Removes an echoed prompt, then an echoed caret prefix, from the front of the output.</summary>
     private static string StripPromptEcho(string text, SuggestionNormalizationRequest request)
     {
@@ -200,9 +189,9 @@ public static partial class SuggestionTextNormalizer
         {
             normalized = ScalarSets.Trim(normalized[request.Prompt.Length..], IsControlOrNewline);
         }
-        if (request.PrefixText.Length > 0 && normalized.StartsWith(request.PrefixText, StringComparison.Ordinal))
+        if (request.PrecedingText.Length > 0 && normalized.StartsWith(request.PrecedingText, StringComparison.Ordinal))
         {
-            normalized = normalized[request.PrefixText.Length..];
+            normalized = normalized[request.PrecedingText.Length..];
         }
         return normalized;
     }

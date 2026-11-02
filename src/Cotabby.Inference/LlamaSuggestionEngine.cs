@@ -41,39 +41,19 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
         {
             MaxTokens = request.MaxTokens,
             SingleLine = request.SingleLine,
-            ForceWordContinuation =
-                MidWordContinuationPolicy.ShouldForceContinuation(request.Prefix, request.Suffix),
             SentenceStopMinimumWords = request.WordRange?.LowWords ?? 0,
         };
 
-        // Fill-in-the-middle is used only when real text follows on the same line and the model
-        // exposes infill markers. Everything else goes through the base continuation prompt.
-        bool useFim = core.SupportsFillInMiddle && HasMeaningfulSuffix(request.Suffix);
-
-        string prompt;
-        Task<string> generation;
-        if (useFim)
-        {
-            prompt = request.Prefix;
-            int maxPromptTokens = Math.Max(1, core.ContextWindowTokens - request.MaxTokens);
-            generation = core.GenerateAsync(
-                core.BuildFimTokens(request.Prefix, request.Suffix, maxPromptTokens), options, ct);
-        }
-        else
-        {
-            // The whole output allowance of the request has to fit beside the prompt.
-            prompt = CompletionPipeline.Prompt(
-                request,
-                PromptTokenBudget.ForRequest(
-                    PromptTokenBudget.Configured(core.ContextWindowTokens), request.MaxTokens));
-            if (prompt.Length == 0) return string.Empty;
-            generation = core.GenerateAsync(prompt, options, ct);
-        }
+        // The whole output allowance of the request has to fit beside the prompt.
+        string prompt = CompletionPipeline.Prompt(
+            request,
+            PromptTokenBudget.ForRequest(PromptTokenBudget.Configured(core.ContextWindowTokens), request.MaxTokens));
+        if (prompt.Length == 0) return string.Empty;
 
         string raw;
         try
         {
-            raw = await generation.ConfigureAwait(false);
+            raw = await core.GenerateAsync(prompt, options, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -84,24 +64,11 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
 
         var normalized = CompletionPipeline.Normalize(raw, prompt, request);
 
-        if (normalized.Suppression is { } suppression)
+        if (normalized.Suppression is { } suppression && suppression != CompletionSuppressionReason.EmptyGeneration)
         {
-            if (suppression != CompletionSuppressionReason.EmptyGeneration)
-            {
-                _logger.LogInformation("Req {ReqId}: suppressed ({Reason}).", request.RequestId, suppression);
-                _logger.LogDebug("Req {ReqId}: raw=\"{Raw}\".", request.RequestId, LogText.Escape(raw));
-            }
+            _logger.LogInformation("Req {ReqId}: suppressed ({Reason}).", request.RequestId, suppression);
+            _logger.LogDebug("Req {ReqId}: raw=\"{Raw}\".", request.RequestId, LogText.Escape(raw));
         }
         return normalized.Text;
-    }
-
-    private static bool HasMeaningfulSuffix(string suffix)
-    {
-        foreach (char c in suffix)
-        {
-            if (c is '\n' or '\r') return false;
-            if (!char.IsWhiteSpace(c)) return true;
-        }
-        return false;
     }
 }

@@ -156,7 +156,7 @@ public static class GhostFontResolver
     private static GhostFontResolution FittedToSample(GhostFace face, double size, GhostFontInput input, IGlyphMeasurer m)
     {
         double agreement = WidthAgreement(face, size, input, m);
-        if (Math.Abs(agreement - 1) <= NamedFaceScaleTolerance || !input.HasSample)
+        if (Math.Abs(agreement - 1) <= NamedFaceScaleTolerance)
         {
             return new(face, size, GhostFontProvenance.HostFace, agreement);
         }
@@ -179,9 +179,9 @@ public static class GhostFontResolver
     /// <summary>Size known, face unknown: match the sample against the candidates, else scale.</summary>
     private static GhostFontResolution ResolveBySize(double size, GhostFontInput input, IGlyphMeasurer m)
     {
-        var system = Face(SystemFamily, input);
-        if (!input.HasSample) return new(system, size, GhostFontProvenance.HostSizeSystem, 1);
+        if (!input.HasSample) return ScaledSystem(size, input, m);
 
+        var system = Face(SystemFamily, input);
         double systemError = RelativeError(system, size, input, m);
         var best = (Face: system, Error: systemError);
         foreach (var family in CandidateFamilies)
@@ -204,8 +204,7 @@ public static class GhostFontResolver
                 : GhostFontProvenance.HostSizeMatchedFamily;
             return new(best.Face, size, provenance, WidthAgreement(best.Face, size, input, m));
         }
-        double scaled = ScaledToSample(system, size, input, m);
-        return new(system, scaled, GhostFontProvenance.HostSizeScaledSystem, WidthAgreement(system, scaled, input, m));
+        return ScaledSystem(size, input, m);
     }
 
     /// <summary>No usable size: solve the size whose line metric equals the caret box.</summary>
@@ -219,7 +218,7 @@ public static class GhostFontResolver
         if (!input.HasSample) return new(face, solved, GhostFontProvenance.CaretDerived, 1);
 
         double calibrated = ScaledToSample(face, solved, input, m);
-        double scale = calibrated / Math.Max(solved, 0.01);
+        double scale = calibrated / solved;
         // A sample this far from the box's face is another face, not another size. The box's size
         // stands until something names the face.
         if (scale < 1 / MaximumCaretBoxScale || scale > MaximumCaretBoxScale)
@@ -227,14 +226,6 @@ public static class GhostFontResolver
             return new(face, solved, GhostFontProvenance.CaretDerived, WidthAgreement(face, solved, input, m));
         }
         return new(face, calibrated, GhostFontProvenance.CaretDerivedCalibrated, WidthAgreement(face, calibrated, input, m));
-    }
-
-    /// <summary>Whether a family reproduces one sample within the match tolerance.</summary>
-    public static bool FamilyFits(string family, string sample, double width, double size, IGlyphMeasurer m)
-    {
-        if (!(width > 0) || string.IsNullOrEmpty(sample) || !m.IsInstalled(family)) return false;
-        double measured = m.Width(sample, new GhostFace(family), size);
-        return measured > 0 && Math.Abs(measured - width) / width <= WidthMatchTolerance;
     }
 
     /// <summary>

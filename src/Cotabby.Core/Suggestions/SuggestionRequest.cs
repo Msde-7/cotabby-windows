@@ -14,7 +14,7 @@ public sealed record SuggestionRequest
     /// <summary>The windowed text before the caret, which the engine renders into the prompt.</summary>
     public required string Prefix { get; init; }
 
-    /// <summary>The windowed text after the caret. Drives fill-in-middle and the trailing-duplication filter.</summary>
+    /// <summary>The windowed text after the caret, quoted in the local prompt and checked against duplication.</summary>
     public required string Suffix { get; init; }
 
     /// <summary>True when the suggestion must stay on one line.</summary>

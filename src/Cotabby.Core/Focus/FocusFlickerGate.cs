@@ -38,7 +38,7 @@ public sealed class FocusFlickerGate
             return Decision.Apply;
         }
 
-        if (_lastFieldId is null || string.IsNullOrEmpty(elementId) || elementId != _lastFieldId)
+        if (_lastFieldId is null || elementId != _lastFieldId)
         {
             Reset();
             return Decision.Apply;

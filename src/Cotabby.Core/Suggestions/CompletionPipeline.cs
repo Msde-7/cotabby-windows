@@ -8,9 +8,6 @@ namespace Cotabby.Core.Suggestions;
 /// </summary>
 public static class CompletionPipeline
 {
-    /// <summary>Character budget for a prompt that leaves the PC.</summary>
-    private const int EndpointContextBudget = 2400;
-
     /// <summary>Context window the endpoint prompt is sized for. It shares the local model's prefix window.</summary>
     public const int EndpointContextWindowTokens = 4096;
 
@@ -27,7 +24,6 @@ public static class CompletionPipeline
             clipboardContext: request.ClipboardContext,
             surfaceLines: request.SurfaceLines,
             historyExamples: forEndpoint ? [] : request.HistoryExamples,
-            contextBudget: forEndpoint ? EndpointContextBudget : BaseCompletionPromptRenderer.DefaultContextBudget,
             tokenBudget: tokenBudget);
 
     /// <summary>The endpoint prompt, budgeted like the local one so the whole output fits beside it.</summary>
@@ -42,7 +38,6 @@ public static class CompletionPipeline
             raw,
             new SuggestionNormalizationRequest(
                 Prompt: prompt,
-                PrefixText: request.Prefix,
                 PrecedingText: request.Prefix,
                 TrailingText: request.Suffix,
                 IsMultiLineEnabled: !request.SingleLine,

@@ -8,15 +8,13 @@ namespace Cotabby.Core.Context;
 /// </remarks>
 public static class BrowserAppDetector
 {
-    private static readonly HashSet<string> BrowserProcessNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "arc",
-    };
-
     private static readonly HashSet<string> ChromiumProcessNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "chrome", "msedge", "brave", "opera", "vivaldi", "arc",
     };
+
+    private static readonly HashSet<string> BrowserProcessNames =
+        new([.. ChromiumProcessNames, "firefox"], StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Electron apps with editors worth covering. A named list on purpose: most Electron apps are

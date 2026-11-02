@@ -42,8 +42,7 @@ public static class KeyClassifier
         0x2E => KeyKind.Delete,
         // Page up, page down, end, home and the four arrows.
         >= 0x21 and <= 0x28 => KeyKind.Arrow,
-        // Shift, Ctrl, Alt and Win, with the left and right codes a low-level hook reports.
-        0x10 or 0x11 or 0x12 or 0x5B or 0x5C or (>= 0xA0 and <= 0xA5) => KeyKind.Other,
+        _ when IsModifier(virtualKey) => KeyKind.Other,
         _ => null,
     };
 }

@@ -72,12 +72,12 @@ Choose the engine in Settings, Engine & Model.
 - **Local model**. A small model you download once that runs on your PC through [llama.cpp](https://github.com/ggerganov/llama.cpp). It uses your GPU through Vulkan when one is available and falls back to the CPU.
 - **OpenAI-compatible**. A completion or chat endpoint you configure, such as a local Ollama server, another machine on your network, or a public HTTPS service. The API key is stored encrypted for your Windows account.
 
-| Model          | Size    | Good for                              |
-| -------------- | ------- | ------------------------------------- |
-| `tabby-2-nano` | ~0.6 GB | Older or low-memory PCs. Fastest.     |
-| `tabby-2-mini` | ~1.3 GB | A solid everyday balance. The default |
-| `tabby-2-base` | ~3.9 GB | Higher-quality suggestions            |
-| `tabby-2-pro`  | ~5.3 GB | Best quality                          |
+| Model        | Size    | Good for                              |
+| ------------ | ------- | ------------------------------------- |
+| Cotabby Nano | ~0.6 GB | Older or low-memory PCs. Fastest.     |
+| Cotabby Mini | ~1.3 GB | A solid everyday balance. The default |
+| Cotabby Base | ~3.9 GB | Higher-quality suggestions            |
+| Cotabby Pro  | ~5.3 GB | Best quality                          |
 
 Cotabby can also switch between two local models depending on whether the PC is plugged in.
 

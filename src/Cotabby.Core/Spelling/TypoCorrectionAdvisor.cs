@@ -33,14 +33,14 @@ public sealed class TypoCorrectionAdvisor(
     public TypoAdvice Advise(
         string precedingText, IEnumerable<string> enabledDictionaryCodes, TypoGateSettings settings)
     {
-        var languages = SpellingDictionaryCatalog.Languages(enabledDictionaryCodes);
-        SpellingDictionaryLanguage? LanguageOf(string word) => resolver.Resolve(precedingText, word, languages);
-
         var decision = TypoGate.Resolve(
             precedingText,
             settings,
-            isTypo: word => LanguageOf(word) is { } language && _spellChecker.IsTypo(word, language),
-            bestCorrection: word => LanguageOf(word) is { } language ? corrector.BestCorrection(word, language) : null);
+            isTypo: word => LanguageOf(word, precedingText, enabledDictionaryCodes) is { } language
+                && _spellChecker.IsTypo(word, language),
+            bestCorrection: word => LanguageOf(word, precedingText, enabledDictionaryCodes) is { } language
+                ? corrector.BestCorrection(word, language)
+                : null);
         if (decision.Word is null || decision.CorrectedWord is null) return new TypoAdvice(decision);
 
         // An automatic fix is reserved for a bare trailing space. An offer keeps any committed delimiter.
@@ -59,8 +59,7 @@ public sealed class TypoCorrectionAdvisor(
     public IReadOnlyList<WordPrefixIndex.Candidate> CompletionCandidates(
         string prefix, string precedingText, IEnumerable<string> enabledDictionaryCodes)
     {
-        var languages = SpellingDictionaryCatalog.Languages(enabledDictionaryCodes);
-        return resolver.Resolve(precedingText, prefix, languages) is { } language
+        return LanguageOf(prefix, precedingText, enabledDictionaryCodes) is { } language
             ? corrector.CompletionCandidates(prefix, language)
             : [];
     }
@@ -69,8 +68,7 @@ public sealed class TypoCorrectionAdvisor(
     public CompletionSeamGuard.SpellingAssessment Assess(
         string word, string precedingText, IEnumerable<string> enabledDictionaryCodes)
     {
-        var languages = SpellingDictionaryCatalog.Languages(enabledDictionaryCodes);
-        if (resolver.Resolve(precedingText, word, languages) is not { } language
+        if (LanguageOf(word, precedingText, enabledDictionaryCodes) is not { } language
             || !_spellChecker.IsTypo(word, language))
         {
             return CompletionSeamGuard.SpellingAssessment.Known;
@@ -79,4 +77,7 @@ public sealed class TypoCorrectionAdvisor(
             ? CompletionSeamGuard.SpellingAssessment.UncorrectableTypo
             : CompletionSeamGuard.SpellingAssessment.CorrectableTypo;
     }
+
+    private SpellingDictionaryLanguage? LanguageOf(string word, string precedingText, IEnumerable<string> enabledDictionaryCodes) =>
+        resolver.Resolve(precedingText, word, SpellingDictionaryCatalog.Languages(enabledDictionaryCodes));
 }
