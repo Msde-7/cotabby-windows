@@ -294,7 +294,7 @@ public sealed class UiaFocusTracker : IFocusTracker
         var sample = styleCaret is null ? default : ReadLineSample(styleCaret, caretRect, fieldRect);
         var font = styleCaret is null ? default : ReadHostFont(fieldId, styleCaret, sample.Range);
 
-        return new FocusedField
+        return SmartComposePolicy.Apply(new FocusedField
         {
             ProcessId = pid,
             ProcessName = procName,
@@ -320,7 +320,7 @@ public sealed class UiaFocusTracker : IFocusTracker
             CaretLineRect = sample.LineRect,
             SampleText = sample.Text,
             SampleWidthPx = sample.WidthPx,
-        };
+        });
     }
 
     /// <summary>

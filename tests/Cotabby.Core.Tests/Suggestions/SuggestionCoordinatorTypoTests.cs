@@ -1,3 +1,4 @@
+using Cotabby.Core.Input;
 using Cotabby.Core.Spelling;
 using Cotabby.Core.Suggestions;
 using Cotabby.Core.Tests.Spelling;
@@ -101,5 +102,33 @@ public sealed class SuggestionCoordinatorTypoTests : CoordinatorHarness
         Assert.True(Hook.Press(Keys.Tab()));
 
         await Eventually(() => Focus.Current!.Text == "hello the world", "the next word is accepted");
+    }
+
+    [Fact]
+    public async Task DismissedCorrection_IsNotOfferedAgainForTheSameText()
+    {
+        Type("hello teh ");
+        await Shown("the");
+        Hook.Press(Keys.Special(KeyKind.Escape, Keys.VkEscape));
+        await Shown("");
+
+        Hook.Press(Keys.Special(KeyKind.Backspace));
+        Focus.Replace(Fields.Text("hello teh"));
+        Type(" ");
+
+        await StaysHidden();
+    }
+
+    [Fact]
+    public async Task OfferedCorrection_IsNotAppliedInAnotherField()
+    {
+        Type("hello teh ");
+        await Shown("the");
+        Focus.Replace(Fields.Text("other teh ") with { FieldId = "other" });
+
+        Assert.True(Hook.Press(Keys.Tab()));
+
+        await Task.Delay(150);
+        Assert.Equal("other teh ", Focus.Current!.Text);
     }
 }

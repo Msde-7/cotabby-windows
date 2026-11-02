@@ -49,6 +49,9 @@ public sealed record FocusedField
     /// <summary>True when a non-empty range of text is selected.</summary>
     public bool HasSelection { get; init; }
 
+    /// <summary>True while the host shows a prediction of its own at the caret, which is left out of <see cref="Text"/>.</summary>
+    public bool HostIsPredicting { get; init; }
+
     /// <summary>
     /// Identity of the field within its process, stable while focus stays in it. Empty when the
     /// host gives none.

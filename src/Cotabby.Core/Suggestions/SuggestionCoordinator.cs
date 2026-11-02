@@ -35,8 +35,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     /// <summary>How many characters the host may still owe when the field is compared with what was typed.</summary>
     private const int PublishLagChars = 8;
 
-    /// <summary>How much of the text before the caret is compared. The field is read through a moving window.</summary>
-    private const int ComparedTailChars = 256;
+    /// <summary>A suggestion this close to typed through has its continuation generated ahead.</summary>
+    private const int ContinuationPrefetchChars = 9;
 
     private static readonly TimeSpan GenerationWatchdog = TimeSpan.FromSeconds(10);
 
@@ -65,6 +65,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private SuggestionSession? _session;
     private FocusedField? _sessionField;
     private bool _sessionAcceptedAny;
+    private bool _sessionPrefetched;
+    private CancellationTokenSource? _prefetch;
+    private PrefetchedContinuation? _prefetched;
 
     /// <summary>The text that should sit before the caret, counting what was typed or accepted since the offer.</summary>
     private string _expectedPreceding = "";
@@ -95,6 +98,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private sealed record AcceptKeyOwnership(KeyBinding AcceptWord, long ExpiresAt);
 
     private sealed record AcceptedTail(string Text, string PrecedingText);
+
+    /// <summary>A generation for the text a suggestion leaves once typed through, ready before it is.</summary>
+    private sealed record PrefetchedContinuation(string FocusIdentity, string PrecedingText, string Text);
 
     public SuggestionCoordinator(
         IKeyboardHook hook,
@@ -140,8 +146,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     /// rules as suggestions, so turning Cotabby off or excluding an app silences them too.
     /// </summary>
     public bool IsAvailableIn(FocusedField field) =>
-        SuggestionAvailability.DisabledReason(_settings, _clock.GetUtcNow(), _batterySaverOn()) is null
-        && SuggestionAvailability.DisabledReason(_settings, field) is null;
+        PausedReason() is null && SuggestionAvailability.DisabledReason(_settings, field) is null;
 
     /// <summary>The accept-word key in effect for an app, which is also the key inline features commit on.</summary>
     public KeyBinding AcceptWordKeyFor(string? processName)
@@ -149,6 +154,10 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         var settings = _settings;
         return ShortcutResolver.AcceptWord(processName, settings.ShortcutOverrides, settings.AcceptWord);
     }
+
+    /// <summary>Why suggestions are off everywhere right now, or null.</summary>
+    private string? PausedReason() =>
+        SuggestionAvailability.DisabledReason(_settings, _clock.GetUtcNow(), _batterySaverOn());
 
     public SuggestionSettings Settings
     {
@@ -177,8 +186,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             return;
         }
         if (_session is not null || !wasOn || on || !_settings.PauseOnBatterySaver) return;
-        _publishBaseline = null;
-        _expectedDelta = 0;
+        SetPublishBaseline(null);
         SchedulePrediction(typed: null);
     });
 
@@ -198,6 +206,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         _disposed = true;
         _hook.KeyEvent -= OnKeyEvent;
         _focus.FocusChanged -= OnFocusChanged;
+        _prefetch?.Cancel();
         _focus.Stop();
         _hook.Stop();
         await _work.DisposeAsync().ConfigureAwait(false);
@@ -213,9 +222,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             bool sameHost = pid != 0 && (_focusedPid == 0 || pid == _focusedPid);
             _focusedPid = pid;
             if (sameHost && (_sessionField is null || _sessionField.FieldId == field!.FieldId)) return;
-            _publishBaseline = null;
-            _expectedDelta = 0;
+            SetPublishBaseline(null);
             CancelSession("focus moved");
+            CancelPrefetch();
         });
     }
 
@@ -264,11 +273,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             return;
         }
 
-        _doubleTap.Reset();
-        _ownership = null;
-        _queuedAccept = false;
+        ResetAcceptKeyState();
 
-        if (SuggestionAvailability.DisabledReason(_settings, _clock.GetUtcNow(), _batterySaverOn()) is { } reason)
+        if (PausedReason() is { } reason)
         {
             CancelSession(reason);
             return;
@@ -279,10 +286,10 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
         if (_session is { } session)
         {
-            if (ev.Kind == KeyKind.Escape && session.Correction is null && _sessionField is { } dismissedIn)
+            if (ev.Kind == KeyKind.Escape && _sessionField is { } dismissedIn)
             {
                 _dismissals.Record(
-                    (ulong)dismissedIn.ProcessId, dismissedIn.PrecedingText, dismissedIn.TrailingText,
+                    DismissalScope(dismissedIn), dismissedIn.PrecedingText, dismissedIn.TrailingText,
                     session.VisibleText, Now());
             }
 
@@ -296,9 +303,16 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                     _expectedPreceding += ev.Character;
                     _overlay.Update(next.VisibleText);
                     _ = ReanchorAsync(next.RequestId, HostPublishPollMs);
+                    PrefetchContinuation(next);
                     return;
+                case SuggestionSessionReconciler.Outcome.Advance:
+                    // Typed through to the end, so a prefetched continuation may be about to answer.
+                    ClearSession();
+                    _work.Cancel();
+                    break;
                 default:
                     CancelSession("typing invalidated the suggestion");
+                    CancelPrefetch();
                     break;
             }
         }
@@ -319,8 +333,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         if (ev.HasNonShiftModifier || ev.Kind is not (KeyKind.Character or KeyKind.Backspace))
         {
             // Enter, navigation and shortcuts change the text in ways a count cannot predict.
-            _publishBaseline = null;
-            _expectedDelta = 0;
+            SetPublishBaseline(null);
         }
         else if (ev.Kind == KeyKind.Character)
         {
@@ -355,14 +368,17 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             if (field is null) return;
             Post(() =>
             {
-                if (_keySequence != sequence) return;
-                _publishBaseline = field;
-                _expectedDelta = 0;
+                if (_keySequence == sequence) SetPublishBaseline(field);
             });
 
             if (SuggestionAvailability.DisabledReason(settings, field) is { } reason)
             {
                 _logger.LogDebug("Request {ReqId} skipped: {Reason}", requestId, reason);
+                return;
+            }
+            if (field.HostIsPredicting)
+            {
+                _logger.LogDebug("Request {ReqId} skipped: the app shows its own suggestion.", requestId);
                 return;
             }
             if (!SuggestionAvailability.HasTextToContinue(field)) return;
@@ -373,13 +389,19 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             if (!SuggestionRequestFactory.ShouldGenerate(preceding, field.TrailingText, settings.SuggestWithinWords)) return;
             if (!_engine.IsReady) return;
 
-            var request = SuggestionRequestFactory.Build(
-                field, requestId, settings, settings.ClipboardContext ? _clipboard?.For(field) : null,
-                History?.HistoryExamples(field, settings.UsesEndpoint));
             var stopwatch = Stopwatch.StartNew();
-            string text = await GenerateAsync(request, ct).ConfigureAwait(false);
+            string text;
+            if (TakePrefetched(field) is { } prefetched)
+            {
+                text = prefetched;
+                _logger.LogDebug("Request {ReqId} answered by the prefetched continuation.", requestId);
+            }
+            else
+            {
+                text = await GenerateAsync(BuildRequest(field, requestId, settings), ct).ConfigureAwait(false);
+                UpdateDebounce(settings, (int)stopwatch.ElapsedMilliseconds);
+            }
             int latencyMs = (int)stopwatch.ElapsedMilliseconds;
-            UpdateDebounce(settings, latencyMs);
             ct.ThrowIfCancellationRequested();
             if (text.Length == 0 && CaretWordContext.UnfinishedWord(preceding) is null) return;
 
@@ -390,7 +412,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
             // Generation took a while. Show the suggestion only if the text it continues is still there.
             var live = _focus.Refresh(readHostText: true);
-            if (live is null || live.ProcessId != field.ProcessId
+            if (live is null || live.ProcessId != field.ProcessId || live.HostIsPredicting
                 || SuggestionSessionReconciler.SpaceNormalized(live.PrecedingText)
                     != SuggestionSessionReconciler.SpaceNormalized(preceding))
             {
@@ -405,7 +427,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             }
 
             // Suggestions may have been paused, or battery saver turned on, while this generated.
-            if (SuggestionAvailability.DisabledReason(_settings, _clock.GetUtcNow(), _batterySaverOn()) is { } paused)
+            if (PausedReason() is { } paused)
             {
                 _logger.LogInformation("Request {ReqId} dropped: {Reason}", requestId, paused);
                 return;
@@ -423,6 +445,82 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     }
 
     private static string FocusIdentity(FocusedField field) => $"{field.ProcessId}:{field.FieldId}";
+
+    /// <summary>Dismissals hold within one field, so the same words stay offered in another. The memory lives in this process only.</summary>
+    private static ulong DismissalScope(FocusedField field) =>
+        (uint)HashCode.Combine(field.ProcessId, field.FieldId, field.HelpText);
+
+    private static bool SameField(FocusedField a, FocusedField b) => a.ProcessId == b.ProcessId && a.FieldId == b.FieldId;
+
+    private void SetPublishBaseline(FocusedField? field, int delta = 0)
+    {
+        _publishBaseline = field;
+        _expectedDelta = delta;
+    }
+
+    private SuggestionRequest BuildRequest(FocusedField field, string requestId, SuggestionSettings settings) =>
+        SuggestionRequestFactory.Build(
+            field, requestId, settings, settings.ClipboardContext ? _clipboard?.For(field) : null,
+            History?.HistoryExamples(field, settings.UsesEndpoint));
+
+    /// <summary>
+    /// Generates what follows a suggestion that is nearly typed through, so the suggestion after it is
+    /// ready when the user reaches its end. It runs beside the current work, which it must not cancel,
+    /// and only fills <see cref="_prefetched"/>, which nothing shows until the live text matches it.
+    /// </summary>
+    private void PrefetchContinuation(SuggestionSession session)
+    {
+        if (_sessionPrefetched || session.Correction is not null || _sessionField is not { } offeredIn
+            || session.PredictedText.Length > ContinuationPrefetchChars || session.IsExhausted || !_engine.IsReady)
+        {
+            return;
+        }
+        var settings = _settings;
+        // The text once the suggestion is typed through, from the session rather than the field,
+        // which may not have published the last keys yet.
+        string preceding = _expectedPreceding + session.PredictedText;
+        if (!SuggestionRequestFactory.ShouldGenerate(preceding, offeredIn.TrailingText, settings.SuggestWithinWords)) return;
+        _sessionPrefetched = true;
+
+        var field = offeredIn with { Text = preceding + offeredIn.TrailingText, CaretOffset = preceding.Length };
+        string identity = FocusIdentity(field);
+        CancelPrefetch();
+        var cts = _prefetch = new CancellationTokenSource();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var request = BuildRequest(field, "pre_" + Guid.NewGuid().ToString("N")[..8], settings);
+                string text = await GenerateAsync(request, cts.Token).ConfigureAwait(false);
+                if (text.Length == 0 || cts.IsCancellationRequested) return;
+                Post(() => _prefetched = new PrefetchedContinuation(identity, preceding, text));
+                _logger.LogDebug("Prefetched the continuation of {ReqId}.", session.RequestId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Prefetching the continuation of {ReqId} failed.", session.RequestId);
+            }
+        });
+    }
+
+    /// <summary>The prefetched continuation when it was generated for this very text, used once.</summary>
+    private string? TakePrefetched(FocusedField field)
+    {
+        var prefetched = Interlocked.Exchange(ref _prefetched, null);
+        return prefetched is not null
+            && prefetched.FocusIdentity == FocusIdentity(field)
+            && SuggestionSessionReconciler.SpaceNormalized(prefetched.PrecedingText)
+                == SuggestionSessionReconciler.SpaceNormalized(field.PrecedingText)
+            ? prefetched.Text
+            : null;
+    }
+
+    private void CancelPrefetch()
+    {
+        _prefetch?.Cancel();
+        _prefetch = null;
+        _prefetched = null;
+    }
 
     /// <summary>Paces the next request by how long the engine just took.</summary>
     private void UpdateDebounce(SuggestionSettings settings, int? lastLatencyMs) =>
@@ -545,8 +643,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         };
         string text = session.VisibleText;
         var preceding = field.PrecedingText;
-        if (correction is null
-            && _dismissals.Suppresses((ulong)field.ProcessId, preceding, field.TrailingText, text, Now()))
+        if (_dismissals.Suppresses(DismissalScope(field), preceding, field.TrailingText, text, Now()))
         {
             _logger.LogInformation("Request {ReqId} dropped because the user dismissed it here.", requestId);
             return;
@@ -562,6 +659,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         _session = session;
         _sessionField = field;
         _sessionAcceptedAny = false;
+        _sessionPrefetched = false;
         _expectedPreceding = preceding;
         PublishOffer();
         _overlay.Show(text, field.CaretRect, StyleFor(field, correction), field);
@@ -592,7 +690,12 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             Post(() =>
             {
                 bool current = _session?.RequestId == requestId;
-                if (current && !IsStillAtOffer(live))
+                if (current && live?.HostIsPredicting == true)
+                {
+                    CancelSession("the app shows its own suggestion");
+                    current = false;
+                }
+                else if (current && !IsStillAtOffer(live))
                 {
                     CancelSession("the caret left the suggestion");
                     current = false;
@@ -604,12 +707,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     }
 
     private bool IsStillAtOffer(FocusedField? live) =>
-        live is not null && _sessionField is { } offeredIn
-        && live.ProcessId == offeredIn.ProcessId && live.FieldId == offeredIn.FieldId
-        && FollowsExpected(_expectedPreceding, live.PrecedingText, PublishLagChars + _pendingInsertChars);
-
-    private static bool FollowsExpected(string expected, string live, int allowedLag) =>
-        SuggestionSessionReconciler.FollowsExpected(expected, live, allowedLag, ComparedTailChars);
+        live is not null && _sessionField is { } offeredIn && SameField(live, offeredIn)
+        && SuggestionSessionReconciler.FollowsExpected(
+            _expectedPreceding, live.PrecedingText, PublishLagChars + _pendingInsertChars);
 
     private void Accept(bool all, bool isRepeat)
     {
@@ -627,10 +727,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             // Keep the key for a moment so a quick second press accepts the next suggestion
             // instead of reaching the host as a Tab.
             OwnAcceptKeyBriefly(field, settings);
-            _insertChain = _insertChain
-                .ContinueWith(
-                    _ => ApplyCorrectionAsync(correction, requiresTrailingSpace: false), TaskScheduler.Default)
-                .Unwrap();
+            string offeredFor = _expectedPreceding;
+            Chain(() => ApplyCorrectionAsync(correction, requiresTrailingSpace: false, (field, offeredFor)));
             return;
         }
 
@@ -683,14 +781,16 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             if (!all && doubleTapApplies) _doubleTap.RecordWordAccept(session.RequestId, now);
         }
 
-        _insertChain = _insertChain
-            .ContinueWith(_ => InsertAcceptedAsync(accepted), TaskScheduler.Default)
-            .Unwrap();
+        Chain(() => InsertAcceptedAsync(accepted));
     }
+
+    /// <summary>Runs edits of the field one after another on the thread pool.</summary>
+    private void Chain(Func<Task> edit) =>
+        _insertChain = _insertChain.ContinueWith(_ => edit(), TaskScheduler.Default).Unwrap();
 
     private void OwnAcceptKeyBriefly(FocusedField field, SuggestionSettings settings) =>
         _ownership = new AcceptKeyOwnership(
-            ShortcutResolver.AcceptWord(field.ProcessName, settings.ShortcutOverrides, settings.AcceptWord),
+            AcceptWordKeyFor(field.ProcessName),
             _clock.GetTimestamp() + (long)(PostExhaustionWindow.TotalSeconds * _clock.TimestampFrequency));
 
     /// <summary>One accept, decided on the UI context and carried out on the thread pool.</summary>
@@ -705,9 +805,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             // The text goes where the caret is, so it is only sent if the caret is still where the
             // suggestion was shown.
             var field = _focus.Refresh();
-            if (field is null
-                || field.ProcessId != accepted.OfferedIn.ProcessId || field.FieldId != accepted.OfferedIn.FieldId
-                || !FollowsExpected(accepted.ExpectedPreceding, field.PrecedingText, PublishLagChars))
+            if (field is null || !SameField(field, accepted.OfferedIn)
+                || !SuggestionSessionReconciler.FollowsExpected(accepted.ExpectedPreceding, field.PrecedingText, PublishLagChars))
             {
                 Post(() => CancelSession("the caret left the suggestion before the accept"));
                 return;
@@ -731,8 +830,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 Post(() =>
                 {
                     _lastAcceptedTail = new AcceptedTail(accepted.Chunk, field.PrecedingText);
-                    _publishBaseline = field;
-                    _expectedDelta = accepted.Insertion.Length;
+                    SetPublishBaseline(field, accepted.Insertion.Length);
                     SchedulePrediction(typed: null);
                 });
                 return;
@@ -753,13 +851,20 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
     /// <summary>
     /// Swaps the typo for its fix. The edit is planned against the live text, and once it starts
-    /// it is not cancelled, because a cancelled edit would leave the word deleted.
+    /// it is not cancelled, because a cancelled edit would leave the word deleted. An offered fix is
+    /// only applied in the field it was offered in, still holding the text it was offered for.
     /// </summary>
-    private async Task ApplyCorrectionAsync(TypoCorrection correction, bool requiresTrailingSpace)
+    private async Task ApplyCorrectionAsync(
+        TypoCorrection correction, bool requiresTrailingSpace, (FocusedField Field, string Preceding)? offered = null)
     {
         try
         {
-            if (_focus.Refresh() is not { } field) return;
+            if (_focus.Refresh() is not { } field || field.HasSelection) return;
+            if (offered is { } at && (!SameField(field, at.Field)
+                || !SuggestionSessionReconciler.FollowsExpected(at.Preceding, field.PrecedingText, PublishLagChars)))
+            {
+                return;
+            }
             var plan = TypoCorrectionReplacementPlanner.Plan(
                 field.PrecedingText, correction.Word, correction.CorrectedWord, requiresTrailingSpace);
             if (plan is not { } fix) return;
@@ -768,8 +873,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             // The edit publishes asynchronously. Predicting before it lands could offer the same fix again.
             Post(() =>
             {
-                _publishBaseline = field;
-                _expectedDelta = 0;
+                SetPublishBaseline(field);
                 SchedulePrediction(typed: null, requiresTextChange: true);
             });
         }
@@ -815,7 +919,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         var settings = _settings;
         var process = _sessionField?.ProcessName;
         _offer = new Offer(
-            ShortcutResolver.AcceptWord(process, settings.ShortcutOverrides, settings.AcceptWord),
+            AcceptWordKeyFor(process),
             ShortcutResolver.AcceptAll(process, settings.ShortcutOverrides, settings.AcceptAll));
     }
 
@@ -830,11 +934,16 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private void CancelSession(string reason)
     {
         if (_session is not null) _logger.LogInformation("Suggestion cleared ({Reason}).", reason);
+        ResetAcceptKeyState();
+        ClearSession();
+        _work.Cancel();
+    }
+
+    private void ResetAcceptKeyState()
+    {
         _doubleTap.Reset();
         _ownership = null;
         _queuedAccept = false;
-        ClearSession();
-        _work.Cancel();
     }
 
     private double Now() => _clock.GetTimestamp() / (double)_clock.TimestampFrequency;
