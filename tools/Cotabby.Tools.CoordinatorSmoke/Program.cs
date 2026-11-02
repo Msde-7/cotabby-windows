@@ -29,9 +29,10 @@ Console.WriteLine($"Model {model.DisplayName} loaded.");
 var hook = new FakeHook();
 var field = new FakeField();
 var overlay = new RecordingOverlay();
+var engine = new WatchedEngine(new LlamaSuggestionEngine(runtime, loggers.CreateLogger<LlamaSuggestionEngine>()));
 using var pump = new PumpContext();
 await using var coordinator = new SuggestionCoordinator(
-    hook, field, new LlamaSuggestionEngine(runtime, loggers.CreateLogger<LlamaSuggestionEngine>()),
+    hook, field, engine,
     overlay, field, new SuggestionWorkController(TimeSpan.FromMilliseconds(20)),
     loggers.CreateLogger<SuggestionCoordinator>(), pump);
 coordinator.Start();
@@ -70,6 +71,23 @@ field.Focus("word", 200);
 string afterSwitch = await WaitFor(() => overlay.Text, text => text.Length == 0, timeoutMs: 3000);
 Check("switching apps hides the suggestion", afterSwitch.Length == 0);
 
+// Step 5. Typing the words the model is producing keeps its request running, and the rest shows.
+const string prompt = "Please let me know if you have any questions about the";
+field.Focus("notepad", 300);
+await TypeAsync(prompt, 30);
+string full = await WaitFor(() => overlay.Text, text => text.Length > 4);
+string ahead = full[..Math.Min(4, full.Length)];
+int seen = engine.PartialsFor(prompt);
+field.Focus("notepad", 301);
+await TypeAsync(prompt, 30);
+await WaitFor(() => engine.PartialsFor(prompt) > seen ? "y" : "", text => text.Length > 0, timeoutMs: 10000);
+await TypeAsync(ahead, 30);
+string rest = await WaitFor(() => overlay.Text, text => text.Length > 0);
+Check("typing ahead sends no new request", !engine.Prefixes.Any(p => p.StartsWith(prompt) && p.Length > prompt.Length),
+    $"typed \"{ahead}\" of \"{full}\"");
+Check("the rest of the prediction shows", full.StartsWith(ahead + rest.TrimEnd()) || (ahead + rest).StartsWith(full.TrimEnd()),
+    $"\"{rest}\"");
+
 Console.WriteLine(failures == 0 ? "PASS" : $"FAIL ({failures})");
 return failures == 0 ? 0 : 1;
 
@@ -87,11 +105,45 @@ static KeyboardEvent Key(KeyKind kind, int virtualKey, char character = '\0') =>
     VirtualKey = virtualKey,
 };
 
+async Task TypeAsync(string text, int gapMs)
+{
+    foreach (char c in text)
+    {
+        hook.Press(Key(KeyKind.Character, char.ToUpperInvariant(c), c));
+        await Task.Delay(gapMs / 3);
+        field.Append(c.ToString());
+        await Task.Delay(gapMs - gapMs / 3);
+    }
+}
+
 static async Task<string> WaitFor(Func<string> read, Func<string, bool> done, int timeoutMs = 30000)
 {
     var clock = Stopwatch.StartNew();
     while (!done(read()) && clock.ElapsedMilliseconds < timeoutMs) await Task.Delay(20);
     return read();
+}
+
+/// <summary>The real engine, with the prefixes it was asked for and the partial results it reported.</summary>
+sealed class WatchedEngine(ISuggestionEngine inner) : ISuggestionEngine
+{
+    private readonly ConcurrentDictionary<string, int> _partials = new();
+
+    public ConcurrentQueue<string> Prefixes { get; } = new();
+
+    public bool IsReady => inner.IsReady;
+    public bool SpacingIsExact => inner.SpacingIsExact;
+
+    public int PartialsFor(string prefix) => _partials.GetValueOrDefault(prefix);
+
+    public Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct, Action<string>? onPartial = null)
+    {
+        Prefixes.Enqueue(request.Prefix);
+        return inner.GenerateAsync(request, ct, onPartial is null ? null : partial =>
+        {
+            _partials.AddOrUpdate(request.Prefix, 1, (_, n) => n + 1);
+            onPartial(partial);
+        });
+    }
 }
 
 sealed class FakeHook : IKeyboardHook

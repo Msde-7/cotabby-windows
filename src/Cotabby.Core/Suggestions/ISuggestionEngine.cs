@@ -17,7 +17,8 @@ public interface ISuggestionEngine
 
     /// <summary>
     /// The cleaned-up continuation for a request, or an empty string when there is nothing to
-    /// suggest or the request was cancelled.
+    /// suggest or the request was cancelled. An engine that decodes token by token may report the
+    /// cleaned-up text so far through <paramref name="onPartial"/>, on any thread.
     /// </summary>
-    Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct);
+    Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct, Action<string>? onPartial = null);
 }

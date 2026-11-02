@@ -11,7 +11,8 @@ namespace Cotabby.Inference;
 /// </summary>
 /// <remarks>
 /// The whole normalized suggestion is presented at once, because prompt echo, chat leaks and
-/// trailing duplicates are only detectable on the full string.
+/// trailing duplicates are only detectable on the full string. Partial results only let the
+/// coordinator keep a request alive while the user types the words it is producing.
 /// </remarks>
 public sealed class LlamaSuggestionEngine : ISuggestionEngine
 {
@@ -28,7 +29,8 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
 
     public bool SpacingIsExact => true;
 
-    public async Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct)
+    public async Task<string> GenerateAsync(
+        SuggestionRequest request, CancellationToken ct, Action<string>? onPartial = null)
     {
         var core = _runtime.Core;
         if (core is null)
@@ -49,6 +51,17 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
             request,
             PromptTokenBudget.ForRequest(PromptTokenBudget.Configured(core.ContextWindowTokens), request.MaxTokens));
         if (prompt.Length == 0) return string.Empty;
+        if (onPartial is not null)
+        {
+            options = options with
+            {
+                OnPartial = raw =>
+                {
+                    string text = CompletionPipeline.Normalize(raw, prompt, request).Text;
+                    if (text.Length > 0) onPartial(text);
+                },
+            };
+        }
 
         string raw;
         try

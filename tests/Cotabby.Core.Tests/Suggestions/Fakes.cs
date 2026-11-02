@@ -137,10 +137,18 @@ internal sealed class ScriptedEngine : ISuggestionEngine
     public bool IsReady { get; set; } = true;
     public bool SpacingIsExact => true;
 
-    public async Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct)
+    /// <summary>When set, a decode reports its whole text as a partial, then waits here before it finishes.</summary>
+    public TaskCompletionSource? Hold { get; set; }
+
+    public async Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct, Action<string>? onPartial = null)
     {
         Requests.Enqueue(request);
         await Task.Yield();
+        if (Hold is { } hold)
+        {
+            onPartial?.Invoke(Completion(request));
+            await hold.Task.WaitAsync(ct);
+        }
         return Completion(request);
     }
 }

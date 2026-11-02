@@ -22,9 +22,9 @@ public sealed class TypingHistoryPhraseEngine(
     /// </summary>
     public bool SpacingIsExact => inner.SpacingIsExact;
 
-    public Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct)
+    public Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct, Action<string>? onPartial = null)
     {
         if (history.PhraseContinuation(request, usesEndpoint()) is { } phrase) return Task.FromResult(phrase);
-        return inner.GenerateAsync(request, ct);
+        return inner.GenerateAsync(request, ct, onPartial);
     }
 }

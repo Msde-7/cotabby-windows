@@ -57,6 +57,7 @@ public sealed class AppSettings
     public int CustomHighWords { get; set; } = 15;
     public bool AllowMultiLine { get; set; }
     public bool SuggestWithinWords { get; set; } = true;
+    public bool PredictAheadWhileTyping { get; set; } = true;
     public bool ShowFollowingWords { get; set; } = true;
     public bool AcceptPunctuationWithWord { get; set; } = true;
     public bool AddSpaceAfterAccept { get; set; }
@@ -155,6 +156,7 @@ public sealed class AppSettings
         AddSpaceAfterAccept = AddSpaceAfterAccept,
         DisplayMode = DisplayMode,
         SuggestWithinWords = SuggestWithinWords,
+        PredictAheadWhileTyping = PredictAheadWhileTyping,
         ShowFollowingWords = ShowFollowingWords,
         // Offering a fix needs typo detection on, and fixing automatically needs offering on.
         Typos = new TypoGateSettings(

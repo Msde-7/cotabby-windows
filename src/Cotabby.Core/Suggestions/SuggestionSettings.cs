@@ -60,6 +60,9 @@ public sealed record SuggestionSettings
     /// <summary>When off, a new suggestion waits for the word being typed to be finished.</summary>
     public bool SuggestWithinWords { get; init; } = true;
 
+    /// <summary>Keeps a local generation running while the user types the words it is producing.</summary>
+    public bool PredictAheadWhileTyping { get; init; } = true;
+
     public TypoGateSettings Typos { get; init; } = new(
         SuppressCompletionsOnTypo: true, OfferTypoCorrections: true, AutomaticallyFixTypos: false);
     public IReadOnlyList<string> SpellingDictionaries { get; init; } = SpellingDictionaryCatalog.DefaultEnabledCodes;

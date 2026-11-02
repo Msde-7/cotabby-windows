@@ -56,6 +56,11 @@ internal static class WritingPane
                     "Offer a suggestion while a word is still being typed. Off waits until the word is finished.",
                     s => s.SuggestWithinWords, (s, v) => s.SuggestWithinWords = v)
                     .Tagged("mid word partial unfinished typing boundary"),
+                r.Toggle("Predict Ahead While Typing",
+                    "Keep the local model's prediction going as you type the words it predicted, then show "
+                    + "the rest when you pause. May use more power.",
+                    s => s.PredictAheadWhileTyping, (s, v) => s.PredictAheadWhileTyping = v)
+                    .Tagged("faster speed latency lookahead speculative background prefetch"),
                 r.Toggle("Show Following Words",
                     "Preview the phrase after the current word. Turn off to see one word at a time. "
                     + "The next words stay ready as you finish typing or accept each word.",

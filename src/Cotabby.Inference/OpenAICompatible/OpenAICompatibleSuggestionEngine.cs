@@ -45,7 +45,8 @@ public sealed class OpenAICompatibleSuggestionEngine : ISuggestionEngine
 
     public bool SpacingIsExact => false;
 
-    public async Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct)
+    public async Task<string> GenerateAsync(
+        SuggestionRequest request, CancellationToken ct, Action<string>? onPartial = null)
     {
         var endpoint = _endpoint;
         var configuration = endpoint.Configuration

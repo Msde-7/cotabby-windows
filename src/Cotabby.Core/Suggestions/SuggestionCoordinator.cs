@@ -38,6 +38,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     /// <summary>A suggestion this close to typed through has its continuation generated ahead.</summary>
     private const int ContinuationPrefetchChars = 9;
 
+    /// <summary>How often delivery checks whether the host shows the keys typed during generation.</summary>
+    private const int TypedAheadPollMs = 20;
+
     private static readonly TimeSpan GenerationWatchdog = TimeSpan.FromSeconds(10);
 
     /// <summary>How long the accept key stays owned after the last chunk while the continuation generates.</summary>
@@ -68,6 +71,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private bool _sessionPrefetched;
     private CancellationTokenSource? _prefetch;
     private PrefetchedContinuation? _prefetched;
+    private volatile TypingPrediction? _prediction;
 
     /// <summary>The text that should sit before the caret, counting what was typed or accepted since the offer.</summary>
     private string _expectedPreceding = "";
@@ -316,6 +320,10 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                     break;
             }
         }
+        else if (KeepsPrediction(ev))
+        {
+            return;
+        }
         else if (SuggestionAvailability.ClearsSuggestion(ev))
         {
             _work.Cancel();
@@ -345,9 +353,26 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// A typed letter the running generation agrees with keeps it going instead of starting over,
+    /// so the suggestion is ready when the user pauses.
+    /// </summary>
+    private bool KeepsPrediction(KeyboardEvent ev) =>
+        ev.Kind == KeyKind.Character && !ev.HasNonShiftModifier
+        && _prediction is { } prediction && prediction.Append(ev.Character.ToString(), Now(), _keySequence);
+
+    /// <summary>Gives up on a prediction typing moved past and asks again for the live text.</summary>
+    private void RestartPrediction(TypingPrediction prediction, string reason) => Post(() =>
+    {
+        if (_prediction != prediction) return;
+        _logger.LogDebug("Prediction restarted: {Reason}.", reason);
+        SchedulePrediction(typed: null);
+    });
+
     /// <param name="requiresTextChange">Wait until the text differs from the baseline, as after a correction.</param>
     private void SchedulePrediction(char? typed, bool requiresTextChange = false)
     {
+        _prediction = null;
         var requestId = "req_" + Guid.NewGuid().ToString("N")[..8];
         var settings = _settings;
         var baseline = _publishBaseline;
@@ -390,6 +415,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             if (!_engine.IsReady) return;
 
             var stopwatch = Stopwatch.StartNew();
+            TypingPrediction? prediction = null;
             string text;
             if (TakePrefetched(field) is { } prefetched)
             {
@@ -398,26 +424,41 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             }
             else
             {
-                text = await GenerateAsync(BuildRequest(field, requestId, settings), ct).ConfigureAwait(false);
+                // An endpoint is billed per request, so it gets no lookahead.
+                if (settings.PredictAheadWhileTyping && !settings.UsesEndpoint)
+                {
+                    prediction = _prediction = new TypingPrediction(field, sequence, ct);
+                }
+                text = await GenerateAsync(BuildRequest(field, requestId, settings), ct, prediction is null ? null : partial =>
+                {
+                    if (!prediction.Receive(partial, final: false)) RestartPrediction(prediction, "the model left what was typed");
+                }).ConfigureAwait(false);
                 UpdateDebounce(settings, (int)stopwatch.ElapsedMilliseconds);
             }
             int latencyMs = (int)stopwatch.ElapsedMilliseconds;
             ct.ThrowIfCancellationRequested();
+            if (prediction is not null && !prediction.Receive(text, final: true))
+            {
+                RestartPrediction(prediction, "the prediction does not cover what was typed");
+                return;
+            }
             if (text.Length == 0 && CaretWordContext.UnfinishedWord(preceding) is null) return;
 
-            // Mid-word, a result waits for a pause a little longer than the recent gap between
-            // letters, so it does not flash up between two keys. Cancellation still owns the wait.
-            double pause = _cadence.RemainingDelay(FocusIdentity(field), preceding, Now());
-            if (pause > 0) await Task.Delay(TimeSpan.FromSeconds(pause), ct).ConfigureAwait(false);
-
-            // Generation took a while. Show the suggestion only if the text it continues is still there.
-            var live = _focus.Refresh(readHostText: true);
-            if (live is null || live.ProcessId != field.ProcessId || live.HostIsPredicting
-                || SuggestionSessionReconciler.SpaceNormalized(live.PrecedingText)
-                    != SuggestionSessionReconciler.SpaceNormalized(preceding))
+            if (await AwaitDeliveryAsync(requestId, field, prediction, sequence, ct).ConfigureAwait(false) is not { } delivery)
             {
-                _logger.LogInformation("Request {ReqId} dropped because the field changed during generation.", requestId);
                 return;
+            }
+            var (live, typedAhead, shownAt) = delivery;
+            if (typedAhead.Length > 0)
+            {
+                text = text[typedAhead.Length..];
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    RestartPrediction(prediction!, "typing used up the prediction");
+                    return;
+                }
+                if (!SuggestionRequestFactory.ShouldGenerate(live.PrecedingText, live.TrailingText, settings.SuggestWithinWords)) return;
+                _logger.LogDebug("Request {ReqId} kept through {Count} typed characters.", requestId, typedAhead.Length);
             }
             // An unusable result mid-word may still offer a local word ending.
             if (CompletionFinalizer.Finalize(text, live, settings, _engine.SpacingIsExact, _typos) is not { } visible)
@@ -433,7 +474,13 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 return;
             }
 
-            Post(() => Present(requestId, visible, live, latencyMs, sequence, ct));
+            Post(() =>
+            {
+                if (prediction is not null && _prediction == prediction) _prediction = null;
+                Present(requestId, visible, live, latencyMs, shownAt, ct);
+                // A key kept after the field was read changed the text this answer was checked against.
+                if (_keySequence != shownAt && _session is null && !ct.IsCancellationRequested) SchedulePrediction(typed: null);
+            });
         }
         catch (OperationCanceledException)
         {
@@ -610,13 +657,63 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         };
     }
 
-    private async Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct)
+    /// <summary>
+    /// Waits for a pause in typing and for the host to show what was typed during generation, then
+    /// reads the field the answer is shown against. Null drops the answer, after asking again when
+    /// the typing it kept could not be confirmed.
+    /// </summary>
+    private async Task<(FocusedField Live, string TypedAhead, long Sequence)?> AwaitDeliveryAsync(
+        string requestId, FocusedField field, TypingPrediction? prediction, long requestSequence, CancellationToken ct)
+    {
+        string? pausedFor = null;
+        while (true)
+        {
+            var (typed, sequence) = prediction?.Progress ?? ("", requestSequence);
+            string expected = field.PrecedingText + typed;
+            // Mid-word, a result waits for a pause a little longer than the recent gap between
+            // letters, so it does not flash up between two keys. Cancellation still owns the wait.
+            if (pausedFor != expected)
+            {
+                pausedFor = expected;
+                double pause = _cadence.RemainingDelay(FocusIdentity(field), expected, Now());
+                if (pause > 0)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(pause), ct).ConfigureAwait(false);
+                    continue;
+                }
+            }
+
+            // Generation took a while. Show the suggestion only if the text it continues is still there.
+            var live = _focus.Refresh(readHostText: true);
+            ct.ThrowIfCancellationRequested();
+            if (live is not null && live.ProcessId == field.ProcessId && !live.HostIsPredicting
+                && SuggestionSessionReconciler.SpaceNormalized(live.PrecedingText)
+                    == SuggestionSessionReconciler.SpaceNormalized(expected))
+            {
+                if (prediction is null || prediction.Progress == (typed, sequence)) return (live, typed, sequence);
+                continue;
+            }
+            if (prediction is null || typed.Length == 0)
+            {
+                _logger.LogInformation("Request {ReqId} dropped because the field changed during generation.", requestId);
+                return null;
+            }
+            if (live is null || !prediction.Accepts(live) || prediction.Expiration(live) <= Now())
+            {
+                RestartPrediction(prediction, "the field did not show what was typed");
+                return null;
+            }
+            await Task.Delay(TypedAheadPollMs, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct, Action<string>? onPartial = null)
     {
         using var watchdog = new CancellationTokenSource(GenerationWatchdog);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, watchdog.Token);
         try
         {
-            return await _engine.GenerateAsync(request, linked.Token).ConfigureAwait(false);
+            return await _engine.GenerateAsync(request, linked.Token, onPartial).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -936,6 +1033,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         if (_session is not null) _logger.LogInformation("Suggestion cleared ({Reason}).", reason);
         ResetAcceptKeyState();
         ClearSession();
+        _prediction = null;
         _work.Cancel();
     }
 

@@ -13,6 +13,9 @@ public sealed record LlamaGenerationOptions
     public required int MaxTokens { get; init; }
     public bool SingleLine { get; init; }
 
+    /// <summary>Receives the text generated so far after each token, on the decode thread.</summary>
+    public Action<string>? OnPartial { get; init; }
+
     /// <summary>
     /// Minimum whitespace-separated words before a sentence end may stop decoding. The word-count
     /// preset's lower bound, so a short sentence end does not cut a suggestion to one word.
@@ -213,6 +216,7 @@ public sealed class LlamaRuntimeCore : IDisposable
             }
             generatedText = buffer.Text;
             tokensGenerated++;
+            options.OnPartial?.Invoke(generatedText);
 
             if (DecodeStopPolicy.Verdict(
                     generatedText, tokensGenerated,
