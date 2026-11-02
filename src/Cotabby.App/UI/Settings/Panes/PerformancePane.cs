@@ -72,7 +72,56 @@ internal static class PerformancePane
                     .Tagged("word count lifetime total")),
             new SettingsCard("Latency",
                 r.Stacked("Latency", "How long recent suggestions took to appear.", chart)
-                    .Tagged("speed timing duration recent requests chart graph milliseconds")));
+                    .Tagged("speed timing duration recent requests chart graph milliseconds")),
+            new SettingsCard("Tracking",
+                r.Toggle("Enable Performance Tracking",
+                    $"Record the time, model and duration of every model request. Only the most recent {RequestLog.Capacity} are kept.",
+                    s => s.PerformanceTracking, (s, v) => s.PerformanceTracking = v)
+                    .Tagged("stopwatch timing log record requests"),
+                r.Stacked("Recent Requests", "", RecentRequests(context))
+                    .Tagged("request log history timing latency model clear")));
+    }
+
+    /// <summary>The request log, newest first, with a button that empties it.</summary>
+    private static StackPanel RecentRequests(SettingsContext context)
+    {
+        var log = context.Host.RequestLog;
+        var rows = new StackPanel();
+        var clear = Ui.Button("Clear", log.Clear);
+        clear.HorizontalAlignment = HorizontalAlignment.Left;
+        clear.Margin = new Thickness(0, 8, 0, 0);
+
+        void Update()
+        {
+            var entries = log.Entries;
+            rows.Children.Clear();
+            clear.Visibility = Ui.Shown(entries.Count > 0);
+            if (entries.Count == 0)
+            {
+                rows.Children.Add(Ui.Text(context.Settings.PerformanceTracking
+                    ? "No requests recorded yet. Type somewhere to record one."
+                    : "Performance tracking is off. Turn it on above to record requests.", "Caption"));
+                return;
+            }
+            foreach (var entry in entries.Reverse())
+            {
+                var time = Ui.Text(entry.Timestamp.ToLocalTime().ToString("T", CultureInfo.CurrentCulture), "Mono");
+                time.Width = 90;
+                var latency = Ui.Text($"{entry.LatencyMs:N0} ms", "Mono");
+                DockPanel.SetDock(time, Dock.Left);
+                DockPanel.SetDock(latency, Dock.Right);
+                var model = Ui.Text(entry.ModelName);
+                model.TextTrimming = TextTrimming.CharacterEllipsis;
+                rows.Children.Add(new DockPanel { Margin = new Thickness(0, 3, 0, 3), Children = { time, latency, model } });
+            }
+        }
+
+        // Requests are recorded on the generating thread.
+        void OnChanged() => rows.Dispatcher.BeginInvoke(Update);
+        log.Changed += OnChanged;
+        context.Closed += () => log.Changed -= OnChanged;
+        context.OnRefresh(Update);
+        return new StackPanel { Children = { rows, clear } };
     }
 
     /// <summary>

@@ -44,6 +44,20 @@ public sealed class SuggestionEngineRouterTests
     }
 
     [Fact]
+    public async Task GenerateAsync_ReportsEachFinishedRequest()
+    {
+        var latencies = new List<int>();
+        _router.Completed = latencies.Add;
+
+        await Generate();
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        await _router.GenerateAsync(Request, cancelled.Token);
+
+        Assert.Single(latencies);
+    }
+
+    [Fact]
     public void IsReady_FollowsTheSelectedEngineWithNoFallback()
     {
         _endpoint.IsReady = false;

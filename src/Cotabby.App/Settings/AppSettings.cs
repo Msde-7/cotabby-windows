@@ -58,6 +58,7 @@ public sealed class AppSettings
     public bool AllowMultiLine { get; set; }
     public bool SuggestWithinWords { get; set; } = true;
     public bool PredictAheadWhileTyping { get; set; } = true;
+    public bool PerformanceTracking { get; set; }
     public bool ShowFollowingWords { get; set; } = true;
     public bool AcceptPunctuationWithWord { get; set; } = true;
     public bool AddSpaceAfterAccept { get; set; }

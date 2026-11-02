@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <sub>A native Windows port of <a href="https://github.com/FuJacob/cotabby">Cotabby</a>, the macOS app by FuJacob and contributors. This port tracks upstream v0.6.2.</sub>
+  <sub>A native Windows port of <a href="https://github.com/FuJacob/cotabby">Cotabby</a>, the macOS app by FuJacob and contributors. This port tracks upstream main as of October 2026 (8cdbea2).</sub>
 </p>
 
 ---
@@ -138,31 +138,35 @@ Settings live in `%APPDATA%\Cotabby\settings.json`, models in `%LOCALAPPDATA%\Co
 | Secret storage          | Keychain                   | DPAPI                                     |
 | Menu bar                | `NSStatusItem`             | System tray                               |
 
-### Parity with upstream v0.6.2
+### Parity with upstream
 
 | Area | Status |
 | --- | --- |
 | Base-model prompt pipeline, token budgeting, token healing, decode stops | Ported |
 | Output cleanup, seam guard, live spacing, dismissal memory, local word endings | Ported |
 | One word at a time with the following words kept ready, a pause matched to typing rhythm | Ported |
+| Predict-ahead while typing, the next suggestion prefetched as the current one runs out | Ported |
 | Word and phrase acceptance, CJK chunking, trailing space, double tap | Ported |
 | Rebindable shortcuts, per-app overrides, global toggle | Ported |
-| Inline ghost text, with a card under the caret when text follows it | Ported |
+| Inline ghost text over up to six rows, cut to one row when text follows, a card under the caret otherwise | Ported |
 | Ghost text in the host's font and size, wrapped inside the field, Electron editors woken | Ported |
 | Emoji picker with skin tone, gender, recents and popularity | Ported |
 | Slash macros | Ported |
 | Autocorrect with seven bundled dictionaries | Ported |
 | OpenAI-compatible endpoint engine | Ported |
 | Clipboard, app and extended context | Ported |
-| Pause controls, per-app disable, battery saver pause, terminal and sign-in exclusions | Ported |
+| Pause controls, per-app disable, battery saver and Energy Saver pause, terminal and sign-in exclusions | Ported |
+| Quiet while Gmail shows its own Smart Compose suggestion | Ported |
 | Power-based model switching, your own GGUF models | Ported |
 | Searchable settings, first-run setup, performance pane with live CPU, memory and GPU graphs | Ported |
+| Performance tracking toggle and recent request log | Ported |
 | Opt-in typing history with Cotypist import, encrypted with AES-GCM under a DPAPI key | Ported |
 | Apple Intelligence engine | Not applicable on Windows |
 | Screen context through OCR | Not ported |
-| Streaming partial suggestions, predict-ahead while typing, next-word prefetch behind a word ending | Not ported |
-| Per-domain disable in browsers, automatic updates | Not ported |
-| Performance tracking toggle and per-request log | Not ported |
+| Streaming partial suggestions on screen, next-word prefetch behind a word ending | Not ported |
+| Holding back while an input method composes text | Not ported |
+| Per-domain disable (a hidden option upstream), automatic updates (needs an installer) | Not ported |
+
 
 ## Local Development
 

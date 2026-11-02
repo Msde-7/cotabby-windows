@@ -7,6 +7,7 @@ using Cotabby.Core.Focus;
 using Cotabby.Core.History;
 using Cotabby.Core.Input;
 using Cotabby.Core.Insertion;
+using Cotabby.Core.Metrics;
 using Cotabby.Core.Models;
 using Cotabby.Core.Spelling;
 using Cotabby.Core.Suggestions;
@@ -59,6 +60,8 @@ public sealed class AppHost : IAsyncDisposable
     public OpenAICompatibleApiClient EndpointClient { get; }
     public IOpenAICompatibleCredentialStore EndpointCredentials { get; }
     public TypingHistoryStore TypingHistory { get; }
+    public RequestLog RequestLog { get; } = new(System.IO.Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Cotabby", "request-log.json"));
 
     /// <summary>Raised on the UI thread after settings were applied or a model was loaded, so open windows and the tray can refresh.</summary>
     public event Action? SettingsApplied;
@@ -115,7 +118,10 @@ public sealed class AppHost : IAsyncDisposable
         _endpoint = new OpenAICompatibleSuggestionEngine(
             EndpointClient, EndpointCredentials, Settings.EndpointSettings,
             loggers.CreateLogger<OpenAICompatibleSuggestionEngine>());
-        _router = new SuggestionEngineRouter(_services.GetRequiredService<LlamaSuggestionEngine>(), _endpoint);
+        _router = new SuggestionEngineRouter(_services.GetRequiredService<LlamaSuggestionEngine>(), _endpoint)
+        {
+            Completed = RecordRequest,
+        };
         // Typing history owns its own encrypted archive. Phrase shortcuts answer before the router
         // runs, and the live engine is read per request so the endpoint never gets one.
         TypingHistory = new TypingHistoryStore(
@@ -179,6 +185,13 @@ public sealed class AppHost : IAsyncDisposable
         return Runtime is { IsReady: true, ActiveModel: { } model }
             ? (true, $"Ready · {model.DisplayName}")
             : (false, "No model loaded");
+    }
+
+    private void RecordRequest(int latencyMs)
+    {
+        if (!Settings.PerformanceTracking) return;
+        string model = _router.UseEndpoint ? Settings.EndpointModel : Runtime.ActiveModel?.DisplayName ?? "Local model";
+        RequestLog.Record(model, latencyMs);
     }
 
     private void SaveSettings()

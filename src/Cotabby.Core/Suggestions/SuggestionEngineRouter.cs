@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace Cotabby.Core.Suggestions;
 
 /// <summary>
@@ -26,12 +28,18 @@ public sealed class SuggestionEngineRouter : ISuggestionEngine
 
     public bool SpacingIsExact => Active.SpacingIsExact;
 
-    public Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct, Action<string>? onPartial = null)
+    /// <summary>Receives how long each finished request took, in milliseconds, on the generating thread.</summary>
+    public Action<int>? Completed { get; set; }
+
+    public async Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct, Action<string>? onPartial = null)
     {
         // The request was built from a settings snapshot, and the engine can change in between.
         // Typing history must never leave this PC, so a request that carries it is dropped.
-        if (_useEndpoint && request.HistoryExamples.Count > 0) return Task.FromResult(string.Empty);
-        return Active.GenerateAsync(request, ct, onPartial);
+        if (_useEndpoint && request.HistoryExamples.Count > 0) return string.Empty;
+        var stopwatch = Stopwatch.StartNew();
+        string text = await Active.GenerateAsync(request, ct, onPartial).ConfigureAwait(false);
+        if (!ct.IsCancellationRequested) Completed?.Invoke((int)stopwatch.ElapsedMilliseconds);
+        return text;
     }
 
     private ISuggestionEngine Active => _useEndpoint ? _endpoint : _local;
