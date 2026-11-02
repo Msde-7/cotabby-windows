@@ -287,6 +287,8 @@ public sealed class SettingsStore
         settings.FadeInSeconds = SettingsValues.FadeSeconds(settings.FadeInSeconds);
         settings.GhostTextOpacity = SettingsValues.Opacity(settings.GhostTextOpacity);
         settings.GhostTextSizeMultiplier = SettingsValues.SizeMultiplier(settings.GhostTextSizeMultiplier);
+        (settings.GhostFontSizeFloor, settings.GhostFontSizeCeiling) =
+            GhostFontSizeLimits.Normalized(settings.GhostFontSizeFloor, settings.GhostFontSizeCeiling);
         settings.GhostTextColor = SettingsValues.GhostColor(settings.GhostTextColor);
         settings.ShortcutOverrides = ShortcutConflicts.Normalize(settings.ShortcutOverrides);
         settings.Languages ??= [.. LanguageCatalog.DefaultLanguages];

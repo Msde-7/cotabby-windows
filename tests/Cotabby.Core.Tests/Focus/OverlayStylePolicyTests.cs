@@ -32,6 +32,12 @@ public sealed class OverlayStylePolicyTests
     [Theory]
     [InlineData(SuggestionDisplayMode.Inline, OverlayStyle.Inline)]
     [InlineData(SuggestionDisplayMode.Popup, OverlayStyle.Popup)]
-    public void ExplicitChoice_Wins(SuggestionDisplayMode mode, OverlayStyle expected) =>
-        Assert.Equal(expected, OverlayStylePolicy.StyleFor(mode, Field("hello world", 5), isCorrection: false));
+    public void ExplicitChoice_WinsAtTheEndOfALine(SuggestionDisplayMode mode, OverlayStyle expected) =>
+        Assert.Equal(expected, OverlayStylePolicy.StyleFor(mode, Field("hello", 5, estimated: true), isCorrection: false));
+
+    [Fact]
+    public void Inline_StillUsesACardWhenTextFollowsTheCaretOnItsLine() =>
+        Assert.Equal(
+            OverlayStyle.Popup,
+            OverlayStylePolicy.StyleFor(SuggestionDisplayMode.Inline, Field("hello world", 5), isCorrection: false));
 }

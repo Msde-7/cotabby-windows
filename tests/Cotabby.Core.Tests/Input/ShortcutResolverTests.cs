@@ -127,4 +127,30 @@ public sealed class ShortcutResolverTests
         Assert.Equal("Ctrl+Enter", AllLabel(App, doubleTap: true, Override(acceptAll: CtrlEnter)));
         Assert.Null(AllLabel(App, doubleTap: true, Override(acceptAll: KeyBinding.Unbound)));
     }
+
+    private static string? Hint(string? process, params PerAppShortcutOverride[] overrides) =>
+        ShortcutResolver.HintLabel(process, overrides, GlobalWord, GlobalAll);
+
+    [Fact]
+    public void HintLabel_PrefersTheWordKeyThenTheAllKeyThenNothing()
+    {
+        Assert.Equal("Tab", Hint(App));
+        Assert.Equal("`", ShortcutResolver.HintLabel(App, [], KeyBinding.Unbound, GlobalAll));
+        Assert.Null(ShortcutResolver.HintLabel(App, [], KeyBinding.Unbound, KeyBinding.Unbound));
+    }
+
+    [Fact]
+    public void HintLabel_ResolvesPerAppOverrides()
+    {
+        Assert.Equal("Shift+Space", Hint(App, Override(acceptWord: ShiftSpace)));
+        Assert.Equal("Tab", Hint("chrome", Override(acceptWord: ShiftSpace)));
+    }
+
+    [Fact]
+    public void HintLabel_FallsBackToAcceptAllWhereTheAppDisablesAcceptWord()
+    {
+        Assert.Equal("`", Hint(App, Override(acceptWord: KeyBinding.Unbound)));
+        Assert.Equal("Ctrl+Enter", Hint(App, Override(acceptWord: KeyBinding.Unbound, acceptAll: CtrlEnter)));
+        Assert.Null(Hint(App, Override(acceptWord: KeyBinding.Unbound, acceptAll: KeyBinding.Unbound)));
+    }
 }

@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -9,6 +9,7 @@ using Cotabby.App.Settings;
 using Cotabby.App.UI;
 using Cotabby.Core.Context;
 using Cotabby.Core.Focus;
+using Cotabby.Core.Input;
 using Cotabby.Core.Overlay;
 using Cotabby.Core.Overlay.Font;
 using Microsoft.Win32;
@@ -18,11 +19,6 @@ namespace Cotabby.App.Overlay;
 /// <summary>
 /// Transparent, topmost, click-through window that renders ghost text at the caret.
 /// </summary>
-/// <remarks>
-/// WPF positions windows in DIPs at the primary monitor's scale, which is wrong on
-/// mixed-DPI setups. The window is therefore placed with <c>SetWindowPos</c> in the
-/// physical pixels UI Automation reports.
-/// </remarks>
 public partial class GhostOverlayWindow : Window, IOverlayPresenter
 {
     private const double FontSizePerCaretHeight = 0.78;
@@ -33,6 +29,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     /// <summary>A band narrower than this many DIPs is not worth wrapping into.</summary>
     private const double MinimumWrapWidthDip = 120;
 
+    private static readonly Thickness CardPadding = new(10, 6, 10, 6);
     private static readonly Color CorrectionColor = Color.FromRgb(0x22, 0xC5, 0x5E);
     private static readonly Color CardTextColor = Color.FromRgb(0xE8, 0xE8, 0xE8);
     private static readonly Brush CardFill = Frozen(Color.FromArgb(0xF2, 0x1E, 0x1E, 0x1E));
@@ -53,7 +50,6 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     private double _sizeMultiplier = 1.0;
     private double _sizeFloor = GhostFontSizeLimits.DefaultFloor;
     private double _sizeCeiling = GhostFontSizeLimits.DefaultCeiling;
-    private bool _showHint = true;
     private bool _fadeInEnabled;
     private Duration _fadeIn = Duration.Automatic;
     private OverlayStyle _style;
@@ -71,7 +67,9 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     private string? _fontKey;
     private double _heldFontSize;
     private HostAdvanceFit _advanceFit = new();
-    private Run? _wrappedRun;
+    private AppSettings? _settings;
+    private ScreenRect _anchor;
+    private bool _rightToLeft;
 
     public GhostOverlayWindow()
     {
@@ -85,12 +83,11 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
 
     public void ApplyAppearance(AppSettings settings)
     {
+        _settings = settings;
         _userColor = GhostTextPalette.Resolve(settings.GhostTextColor);
         _opacity = Math.Clamp(settings.GhostTextOpacity, 0.1, 1.0);
         _sizeMultiplier = Math.Clamp(settings.GhostTextSizeMultiplier, 0.5, 2.0);
         (_sizeFloor, _sizeCeiling) = GhostFontSizeLimits.Normalized(settings.GhostFontSizeFloor, settings.GhostFontSizeCeiling);
-        _showHint = settings.ShowAcceptanceHint;
-        TabKeycapLabel.Text = settings.AcceptWord.IsBound ? settings.AcceptWord.Label : "";
         _fadeInEnabled = settings.FadeInSuggestions && settings.FadeInSeconds > 0;
         _fadeIn = _fadeInEnabled
             ? new Duration(TimeSpan.FromSeconds(settings.FadeInSeconds))
@@ -102,9 +99,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
         _source = (HwndSource)PresentationSource.FromVisual(this)!;
-        int style = GetWindowLong(_source.Handle, GWL_EXSTYLE);
-        SetWindowLong(_source.Handle, GWL_EXSTYLE,
-            style | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
+        OverlayWindowInterop.MakeClickThrough(_source.Handle);
     }
 
     public void Show(
@@ -117,25 +112,21 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         }
 
         bool wasVisible = Visibility == Visibility.Visible;
-        bool rightToLeft = TextDirectionDetector.IsRightToLeft(field?.PrecedingText);
         _field = field;
-        if (_style != style)
-        {
-            _style = style;
-            ApplyPalette();
-        }
+        _anchor = anchor;
+        _rightToLeft = TextDirectionDetector.IsRightToLeft(field?.PrecedingText);
+        TabKeycapLabel.Text = HintLabel(field?.ProcessName);
+        UseStyle(style);
         ApplyFont(anchor);
-        EndWrap();
-        SetText(text);
         Visibility = Visibility.Visible;
-        UpdateLayout();
-        PositionAt(anchor, rightToLeft);
+        Render(text);
         if (SuggestionFadeInPolicy.ShouldFadeIn(_fadeInEnabled, wasVisible, !SystemParameters.ClientAreaAnimation))
         {
             GhostRow.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, _fadeIn));
         }
     }
 
+    /// <summary>Lays out the remaining text again at the last anchor until the next show moves it.</summary>
     public void Update(string text)
     {
         if (!Dispatcher.CheckAccess())
@@ -143,8 +134,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
             Dispatcher.BeginInvoke(() => Update(text));
             return;
         }
-        SetText(text);
-        UpdateLayout();
+        Render(text);
     }
 
     public new void Hide()
@@ -154,25 +144,22 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
             Dispatcher.BeginInvoke(Hide);
             return;
         }
-        SetText(string.Empty);
+        SetRows([""]);
         _stableCaretHeightPx = 0;
         Visibility = Visibility.Hidden;
     }
 
-    private void SetText(string text)
+    private string HintLabel(string? processName) =>
+        _settings is { ShowAcceptanceHint: true } s
+            ? ShortcutResolver.HintLabel(
+                processName, s.ShortcutOverrides, s.AcceptWord, s.DoubleTapAcceptsAll ? KeyBinding.Unbound : s.AcceptAll) ?? ""
+            : "";
+
+    private void UseStyle(OverlayStyle style)
     {
-        if (_wrappedRun is not null && text.Length > 0)
-        {
-            _wrappedRun.Text = text;
-        }
-        else
-        {
-            EndWrap();
-            GhostText.Text = text;
-        }
-        TabKeycap.Visibility = _showHint && _wrappedRun is null && text.Length > 0 && TabKeycapLabel.Text.Length > 0
-            ? Visibility.Visible
-            : Visibility.Collapsed;
+        if (_style == style) return;
+        _style = style;
+        ApplyPalette();
     }
 
     private void ApplyFont(ScreenRect anchor)
@@ -224,7 +211,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     {
         try
         {
-            double scale = DipScaleAt(anchor);
+            double scale = OverlayWindowInterop.DipScaleAt(anchor.X, anchor.Y);
             _measurer.UseOfficeCloudFonts = OfficeProcesses.Contains(field.ProcessName);
             var resolution = GhostFontResolver.Resolve(new GhostFontInput
             {
@@ -271,7 +258,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         bool card = _style != OverlayStyle.Inline;
         Card.Background = card ? CardFill : Brushes.Transparent;
         Card.BorderBrush = card ? CardStroke : Brushes.Transparent;
-        Card.Padding = card ? new Thickness(10, 6, 10, 6) : default;
+        Card.Padding = card ? CardPadding : default;
 
         var text = _style switch
         {
@@ -289,39 +276,127 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         static SolidColorBrush Brush(int gray) => new(Color.FromRgb((byte)gray, (byte)gray, (byte)gray));
     }
 
-    private void PositionAt(ScreenRect anchor, bool rightToLeft)
+    private void Render(string text)
     {
-        if (_source?.CompositionTarget is not { } target) return;
-
+        if (_source?.CompositionTarget is not { } target || text.Length == 0)
+        {
+            SetRows([text]);
+            TabKeycap.Visibility = Visibility.Collapsed;
+            return;
+        }
         double scaleX = target.TransformToDevice.M11;
         double scaleY = target.TransformToDevice.M22;
+        var area = OverlayWindowInterop.WorkAreaAt(_anchor.X, _anchor.Y);
+        if (_style == OverlayStyle.Inline && !TryRenderInline(text, area, scaleX, scaleY))
+        {
+            // No honest inline layout exists for this text here, so the card shows it.
+            UseStyle(OverlayStyle.Popup);
+            ApplyFont(_anchor);
+        }
+        if (_style != OverlayStyle.Inline) RenderCard(text, area, scaleX, scaleY);
+    }
+
+    private bool TryRenderInline(string text, ScreenRect area, double scaleX, double scaleY)
+    {
+        var anchor = _anchor;
+        double caretX = LaggedCaretX(anchor);
+        var (left, right) = BandFor(anchor, area, scaleX);
+        double firstRowDip = (right - caretX - 1) / scaleX;
+        double bandDip = (right - left) / scaleX;
+        double indentDip = (caretX + 1 - left) / scaleX;
+        // A second row would cover the host's following lines, and a single-line field scrolls instead.
+        bool canWrap = !_rightToLeft && _field is { IsSingleLine: false, FieldRect.IsEmpty: false } field
+            && string.IsNullOrWhiteSpace(field.TrailingText)
+            && bandDip >= MinimumWrapWidthDip && indentDip >= 0 && indentDip < bandDip;
+
+        var layout = GhostRowLayout.Make(
+            new GhostRowLayout.Input(text, firstRowDip, canWrap ? bandDip : null, KeycapWidthDip(), _rightToLeft),
+            MeasureDip);
+        if (layout is null) return false;
+
+        bool wrapped = layout.Rows.Count > 1;
+        double rowHeightDip = Math.Max(anchor.Height / scaleY, GhostText.FontSize);
+        SetRows(layout.Rows, wrapped ? indentDip : 0, rowHeightDip);
+        TabKeycap.Visibility = layout.ShowsKeycap && !wrapped ? Visibility.Visible : Visibility.Collapsed;
+        UpdateLayout();
+
         double width = ActualWidth * scaleX;
         double height = ActualHeight * scaleY;
-        var area = WorkAreaAt(anchor);
-        bool card = _style != OverlayStyle.Inline;
-
-        double caretX = card ? anchor.X : LaggedCaretX(anchor);
-        // Inline text continues the line at the caret, on its left for right-to-left text.
-        // A card sits just under the caret's line.
-        double x = card ? anchor.X : rightToLeft ? caretX - width - 1 : caretX + 1;
-        double y = card ? anchor.Bottom + CardGapPx : anchor.Y + Math.Max(0, (anchor.Height - height) / 2.0);
-
-        // Text that runs past the field wraps inside it instead of sliding back over the host's text.
-        if (!card && !rightToLeft && x + width > BandFor(anchor, area, scaleX).Right
-            && TryWrap(anchor, area, caretX, scaleX, scaleY, out var wrapped))
-        {
-            (x, y, width, height) = wrapped;
-        }
-
-        // Keep the whole overlay inside the work area of the monitor under the caret.
-        if (x + width > area.right) x = area.right - width - 2;
-        if (x < area.left) x = area.left + 2;
-        if (y + height > area.bottom) y = anchor.Y - height - 2;
-        if (y < area.top) y = area.top + 2;
-
-        SetWindowPos(_source.Handle, HWND_TOPMOST, (int)x, (int)y, (int)width, (int)height,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        // Inline text continues the line at the caret, on its left for right-to-left text. Wrapped
+        // rows start at the band's left edge with the first indented to the caret.
+        double x = wrapped ? left : _rightToLeft ? caretX - width - 1 : caretX + 1;
+        double y = anchor.Y + Math.Max(0, (anchor.Height - (wrapped ? rowHeightDip * scaleY : height)) / 2.0);
+        Place(x, y, width, height, area);
+        return true;
     }
+
+    private void RenderCard(string text, ScreenRect area, double scaleX, double scaleY)
+    {
+        SetRows([GhostCardPlacement.CardText(text)]);
+        TabKeycap.Visibility = TabKeycapLabel.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        UpdateLayout();
+
+        double width = ActualWidth * scaleX;
+        double height = ActualHeight * scaleY;
+        var fieldRect = _field?.FieldRect ?? ScreenRect.Empty;
+        double inset = (CardPadding.Left + Card.BorderThickness.Left) * scaleX;
+        Place(
+            GhostCardPlacement.Left(_anchor, fieldRect, width, inset, _rightToLeft),
+            GhostCardPlacement.Top(_anchor, fieldRect, CardGapPx),
+            width, height, area);
+    }
+
+    /// <summary>Places the overlay, kept inside the work area of the monitor under the caret.</summary>
+    private void Place(double x, double y, double width, double height, ScreenRect area)
+    {
+        if (x + width > area.Right) x = area.Right - width - 2;
+        if (x < area.X) x = area.X + 2;
+        if (y + height > area.Bottom) y = _anchor.Y - height - 2;
+        if (y < area.Y) y = area.Y + 2;
+        OverlayWindowInterop.PlaceTopmost(_source!.Handle, x, y, width, height);
+    }
+
+    /// <summary>
+    /// Shows the rows as the host would lay them out: the first indented to the caret and each next
+    /// one a host line further down. A break's hanging spaces are left off.
+    /// </summary>
+    private void SetRows(IReadOnlyList<string> rows, double indentDip = 0, double rowHeightDip = double.NaN)
+    {
+        if (rows.Count == 1)
+        {
+            GhostText.Text = rows[0];
+            GhostText.LineHeight = double.NaN;
+            GhostText.LineStackingStrategy = LineStackingStrategy.MaxHeight;
+            return;
+        }
+        GhostText.Inlines.Clear();
+        GhostText.Inlines.Add(new InlineUIContainer(new Border { Width = indentDip, Height = 1 })
+        {
+            BaselineAlignment = BaselineAlignment.Baseline,
+        });
+        for (int i = 0; i < rows.Count; i++)
+        {
+            if (i > 0) GhostText.Inlines.Add(new LineBreak());
+            GhostText.Inlines.Add(new Run(i < rows.Count - 1 ? rows[i].TrimEnd() : rows[i]));
+        }
+        GhostText.LineHeight = rowHeightDip;
+        GhostText.LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
+    }
+
+    private double KeycapWidthDip()
+    {
+        if (TabKeycapLabel.Text.Length == 0) return 0;
+        TabKeycap.Visibility = Visibility.Visible;
+        TabKeycap.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        return TabKeycap.DesiredSize.Width;
+    }
+
+    private double MeasureDip(string text) =>
+        new FormattedText(
+            text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+            new Typeface(GhostText.FontFamily, GhostText.FontStyle, GhostText.FontWeight, FontStretches.Normal),
+            GhostText.FontSize, Brushes.Black, null, TextOptions.GetTextFormattingMode(GhostText),
+            VisualTreeHelper.GetDpi(this).PixelsPerDip).WidthIncludingTrailingWhitespace;
 
     /// <summary>
     /// The caret's x, moved past the text before it when the host has published a keystroke's text
@@ -334,7 +409,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         {
             return anchor.Right;
         }
-        double scale = DipScaleAt(anchor);
+        double scale = OverlayWindowInterop.DipScaleAt(anchor.X, anchor.Y);
         var line = field.CaretLineRect;
         double lineWidth = Math.Max(line.Width, field.FieldRect.Right - line.X);
         bool lags = CaretLagPolicy.CaretLagsTypedText(
@@ -343,58 +418,12 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         return lags ? line.X + _measurer.Width(sample, font.Face, font.Size) * scale : anchor.Right;
     }
 
-    private (double Left, double Right) BandFor(ScreenRect anchor, RECT area, double scale)
+    private (double Left, double Right) BandFor(ScreenRect anchor, ScreenRect area, double scale)
     {
         var field = _field;
         double? lineLeft = field is { CaretLineRect.IsEmpty: false } ? field.CaretLineRect.X : null;
         return GhostWrapBandPolicy.Band(new GhostWrapBandPolicy.Input(
-            anchor, field?.FieldRect ?? ScreenRect.Empty, lineLeft, area.left, area.right, scale));
-    }
-
-    /// <summary>
-    /// Lays the ghost out over several rows inside the field's band: the first row continues at the
-    /// caret and later rows start at the band's left edge, as the host's own text would. Only for
-    /// multi-line fields with a known frame, since a single-line field scrolls instead.
-    /// </summary>
-    private bool TryWrap(
-        ScreenRect anchor, RECT area, double caretX, double scaleX, double scaleY,
-        out (double X, double Y, double Width, double Height) placement)
-    {
-        placement = default;
-        if (_field is not { IsSingleLine: false, FieldRect.IsEmpty: false }) return false;
-        var (left, right) = BandFor(anchor, area, scaleX);
-        double bandDip = (right - left) / scaleX;
-        double indentDip = (caretX + 1 - left) / scaleX;
-        if (bandDip < MinimumWrapWidthDip || indentDip < 0 || indentDip >= bandDip) return false;
-
-        string text = _wrappedRun?.Text ?? GhostText.Text;
-        _wrappedRun = new Run(text);
-        GhostText.Inlines.Clear();
-        GhostText.Inlines.Add(new InlineUIContainer(new Border { Width = indentDip, Height = 1 })
-        {
-            BaselineAlignment = BaselineAlignment.Baseline,
-        });
-        GhostText.Inlines.Add(_wrappedRun);
-        GhostText.TextWrapping = TextWrapping.Wrap;
-        GhostText.Width = bandDip;
-        TabKeycap.Visibility = Visibility.Collapsed;
-        UpdateLayout();
-
-        double lineHeight = GhostText.FontFamily.LineSpacing * GhostText.FontSize * scaleY;
-        placement = (
-            left,
-            anchor.Y + Math.Max(0, (anchor.Height - lineHeight) / 2.0),
-            ActualWidth * scaleX,
-            ActualHeight * scaleY);
-        return true;
-    }
-
-    private void EndWrap()
-    {
-        if (_wrappedRun is null) return;
-        _wrappedRun = null;
-        GhostText.TextWrapping = TextWrapping.NoWrap;
-        GhostText.Width = double.NaN;
+            anchor, field?.FieldRect ?? ScreenRect.Empty, lineLeft, area.X, area.Right, scale));
     }
 
     private static Brush Frozen(Color color)
@@ -403,67 +432,4 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         brush.Freeze();
         return brush;
     }
-
-    /// <summary>Physical pixels per DIP on the monitor under the caret.</summary>
-    private static double DipScaleAt(ScreenRect anchor)
-    {
-        var monitor = MonitorFromPoint(new POINT { x = (int)anchor.X, y = (int)anchor.Y }, MONITOR_DEFAULTTONEAREST);
-        return GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, out uint dpiX, out _) == 0 && dpiX > 0 ? dpiX / 96.0 : 1.0;
-    }
-
-    private static RECT WorkAreaAt(ScreenRect anchor)
-    {
-        var monitor = MonitorFromPoint(new POINT { x = (int)anchor.X, y = (int)anchor.Y }, MONITOR_DEFAULTTONEAREST);
-        var info = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
-        return GetMonitorInfo(monitor, ref info)
-            ? info.rcWork
-            : new RECT { right = (int)SystemParameters.PrimaryScreenWidth, bottom = (int)SystemParameters.PrimaryScreenHeight };
-    }
-
-    private const int GWL_EXSTYLE = -20;
-    private const int WS_EX_TRANSPARENT = 0x00000020;
-    private const int WS_EX_LAYERED = 0x00080000;
-    private const int WS_EX_NOACTIVATE = 0x08000000;
-    private const int WS_EX_TOOLWINDOW = 0x00000080;
-    private const uint SWP_NOACTIVATE = 0x0010;
-    private const uint SWP_SHOWWINDOW = 0x0040;
-    private const uint MONITOR_DEFAULTTONEAREST = 2;
-    private const int MDT_EFFECTIVE_DPI = 0;
-    private static readonly IntPtr HWND_TOPMOST = new(-1);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT { public int x; public int y; }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT { public int left; public int top; public int right; public int bottom; }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MONITORINFO
-    {
-        public uint cbSize;
-        public RECT rcMonitor;
-        public RECT rcWork;
-        public uint dwFlags;
-    }
-
-    [LibraryImport("user32.dll")]
-    private static partial IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
-
-    [LibraryImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
-
-    [LibraryImport("shcore.dll")]
-    private static partial int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
-
-    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongW")]
-    private static partial int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
-
-    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongW")]
-    private static partial int GetWindowLong(IntPtr hWnd, int nIndex);
-
-    [LibraryImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetWindowPos(
-        IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
 }

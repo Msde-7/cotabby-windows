@@ -291,7 +291,7 @@ public sealed class UiaFocusTracker : IFocusTracker
         // The font and line sample cost several more round trips, so only the snapshot a suggestion
         // is drawn from reads them.
         var styleCaret = readHostText && !hasSelection ? caret : null;
-        var sample = styleCaret is null ? default : ReadLineSample(styleCaret, caretRect);
+        var sample = styleCaret is null ? default : ReadLineSample(styleCaret, caretRect, fieldRect);
         var font = styleCaret is null ? default : ReadHostFont(fieldId, styleCaret, sample.Range);
 
         return new FocusedField
@@ -419,15 +419,17 @@ public sealed class UiaFocusTracker : IFocusTracker
 
     /// <summary>
     /// The caret's visual line and the text on it before the caret, with the width the host
-    /// painted that text at. The width is left out when the text spans more than one line box.
+    /// painted that text at. The width is left out when the text spans more than one line box, and
+    /// a line box outside the field is some other line's.
     /// </summary>
-    private static LineSample ReadLineSample(TextPatternRange caret, ScreenRect caretRect)
+    private static LineSample ReadLineSample(TextPatternRange caret, ScreenRect caretRect, ScreenRect fieldRect)
     {
         try
         {
             var line = caret.Clone();
             line.ExpandToEnclosingUnit(TextUnit.Line);
             var lineRect = Union(line.GetBoundingRectangles());
+            if (!fieldRect.IsEmpty && !Overlaps(lineRect, fieldRect)) lineRect = ScreenRect.Empty;
 
             var toCaret = line.Clone();
             toCaret.MoveEndpointByRange(TextPatternRangeEndpoint.End, caret, TextPatternRangeEndpoint.Start);
@@ -446,6 +448,9 @@ public sealed class UiaFocusTracker : IFocusTracker
         }
         catch (Exception) { return default; }
     }
+
+    private static bool Overlaps(ScreenRect a, ScreenRect b) =>
+        a.X < b.Right && b.X < a.Right && a.Y < b.Bottom && b.Y < a.Bottom;
 
     private readonly record struct HostFont(string? Name, double? SizePt, int? Weight, bool? Italic);
 

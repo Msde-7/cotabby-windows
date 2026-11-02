@@ -18,10 +18,8 @@
                 Orientation="Horizontal"
                 Background="Transparent">
         <TextBlock x:Name="GhostText"
-                   Foreground="#A6FFFFFF"
                    FontFamily="Segoe UI Variable, Segoe UI, Segoe UI Symbol, Cascadia Mono, Consolas"
                    FontSize="14"
-                   Text=""
                    TextOptions.TextRenderingMode="ClearType"
                    TextOptions.TextFormattingMode="Display"
                    TextWrapping="NoWrap"
@@ -30,16 +28,12 @@
                 Margin="6,0,0,0"
                 Padding="5,2"
                 CornerRadius="6"
-                Background="#2E2E2E"
-                BorderBrush="#4D4D4D"
                 BorderThickness="1"
                 VerticalAlignment="Center">
             <TextBlock x:Name="TabKeycapLabel"
-                       Text="Tab"
                        FontFamily="Segoe UI"
                        FontSize="10"
-                       FontWeight="Medium"
-                       Foreground="#CCFFFFFF" />
+                       FontWeight="Medium" />
         </Border>
     </StackPanel>
     </Border>

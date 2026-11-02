@@ -60,6 +60,19 @@ public static class ShortcutResolver
         return word.IsBound ? $"{word.Label} {word.Label}" : null;
     }
 
+    /// <summary>
+    /// The key the ghost's hint names in an app: its accept-word key, else its accept-all key so the
+    /// hint still teaches a working gesture, else nothing.
+    /// </summary>
+    public static string? HintLabel(
+        string? processName, IReadOnlyList<PerAppShortcutOverride> overrides, KeyBinding acceptWord, KeyBinding acceptAll)
+    {
+        var word = AcceptWord(processName, overrides, acceptWord);
+        if (word.IsBound) return word.Label;
+        var all = AcceptAll(processName, overrides, acceptAll);
+        return all.IsBound ? all.Label : null;
+    }
+
     private static PerAppShortcutOverride? Find(string? processName, IReadOnlyList<PerAppShortcutOverride> overrides)
     {
         if (string.IsNullOrEmpty(processName)) return null;

@@ -31,11 +31,13 @@ public static class OverlayStylePolicy
         if (isCorrection) return OverlayStyle.Correction;
         return mode switch
         {
-            SuggestionDisplayMode.Inline => OverlayStyle.Inline,
             SuggestionDisplayMode.Popup => OverlayStyle.Popup,
             // Text after the caret belongs to the host, and inline ghost text there could only sit
-            // on top of it. A caret whose position is only a guess cannot carry inline text either.
-            _ => field.CaretIsEstimated || !IsCaretAtEndOfLine(field) ? OverlayStyle.Popup : OverlayStyle.Inline,
+            // on top of it, even when the user asked for inline.
+            _ when !IsCaretAtEndOfLine(field) => OverlayStyle.Popup,
+            SuggestionDisplayMode.Inline => OverlayStyle.Inline,
+            // A caret whose position is only a guess cannot carry inline text.
+            _ => field.CaretIsEstimated ? OverlayStyle.Popup : OverlayStyle.Inline,
         };
     }
 
