@@ -46,16 +46,16 @@ public sealed class AppHost : IAsyncDisposable
     private readonly GhostOverlayWindow _macroPreview;
     private readonly SymSpellCorrector _spelling;
     private readonly BatterySaverMonitor _batterySaver = new();
+    private readonly GhostOverlayWindow _overlay;
+    private readonly MacroController _macros;
+    private readonly OpenAICompatibleSuggestionEngine _endpoint;
 
     public SuggestionCoordinator Coordinator { get; }
     public LlamaRuntimeManager Runtime { get; }
     public ModelDownloader Downloader { get; }
     public SettingsStore SettingsStore { get; }
     public AppSettings Settings { get; private set; }
-    public GhostOverlayWindow Overlay { get; }
     public EmojiPickerController EmojiPicker { get; }
-    public MacroController Macros { get; }
-    public OpenAICompatibleSuggestionEngine Endpoint { get; }
     public OpenAICompatibleApiClient EndpointClient { get; }
     public IOpenAICompatibleCredentialStore EndpointCredentials { get; }
     public TypingHistoryStore TypingHistory { get; }
@@ -68,7 +68,7 @@ public sealed class AppHost : IAsyncDisposable
         EmojiPopupWindow emojiPopup)
     {
         _ui = ui;
-        Overlay = overlay;
+        _overlay = overlay;
         _macroPreview = macroPreview;
 
         var sc = new ServiceCollection();
@@ -112,10 +112,10 @@ public sealed class AppHost : IAsyncDisposable
         var focus = _services.GetRequiredService<IFocusTracker>();
         var inserter = _services.GetRequiredService<ITextInserter>();
 
-        Endpoint = new OpenAICompatibleSuggestionEngine(
-            EndpointClient, EndpointCredentials, EndpointSettings,
+        _endpoint = new OpenAICompatibleSuggestionEngine(
+            EndpointClient, EndpointCredentials, Settings.EndpointSettings,
             loggers.CreateLogger<OpenAICompatibleSuggestionEngine>());
-        _router = new SuggestionEngineRouter(_services.GetRequiredService<LlamaSuggestionEngine>(), Endpoint);
+        _router = new SuggestionEngineRouter(_services.GetRequiredService<LlamaSuggestionEngine>(), _endpoint);
         // Typing history owns its own encrypted archive. Phrase shortcuts answer before the router
         // runs, and the live engine is read per request so the endpoint never gets one.
         TypingHistory = new TypingHistoryStore(
@@ -129,7 +129,7 @@ public sealed class AppHost : IAsyncDisposable
         EmojiPicker = new EmojiPickerController(
             _hook, focus, inserter, emojiPopup, overlay.Dispatcher,
             loggers.CreateLogger<EmojiPickerController>());
-        Macros = new MacroController(_hook, focus, inserter, macroPreview, loggers.CreateLogger<MacroController>());
+        _macros = new MacroController(_hook, focus, inserter, macroPreview, loggers.CreateLogger<MacroController>());
         _hook.KeyEvent += OnGlobalToggleKey;
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
 
@@ -141,25 +141,48 @@ public sealed class AppHost : IAsyncDisposable
                 _spelling, new SpellingLanguageResolver(), new WindowsSpellChecker(_spelling)),
             clipboard: _services.GetRequiredService<ClipboardTextReader>());
         _batterySaver.Changed += OnBatterySaverChanged;
-        Coordinator.InlineCaptureActive = () => EmojiPicker.IsCapturing || Macros.IsCapturing;
+        Coordinator.InlineCaptureActive = () => EmojiPicker.IsCapturing || _macros.IsCapturing;
         Coordinator.History = TypingHistory;
         Coordinator.HistoryRecorder = TypingHistory;
-        EmojiPicker.CanCapture = Macros.CanCapture = Coordinator.IsAvailableIn;
-        EmojiPicker.CommitKeyFor = Macros.CommitKeyFor = Coordinator.AcceptWordKeyFor;
+        EmojiPicker.CanCapture = _macros.CanCapture = Coordinator.IsAvailableIn;
+        EmojiPicker.CommitKeyFor = _macros.CommitKeyFor = Coordinator.AcceptWordKeyFor;
         Coordinator.Metrics.Restore(Settings.WordsAccepted);
 
         ApplySettings();
     }
 
-    private OpenAICompatibleEndpointSettings EndpointSettings => new(
-        Settings.EndpointBaseUrl,
-        Settings.EndpointModel,
-        Settings.EndpointUsesChatApi ? OpenAICompatibleApiMode.ChatCompletions : OpenAICompatibleApiMode.Completions);
-
     /// <summary>Pushes <see cref="Settings"/> into the running app and saves them.</summary>
     public void PersistSettings()
     {
         ApplySettings();
+        SaveSettings();
+    }
+
+    /// <summary>Changes the settings, then applies and saves them.</summary>
+    public void Update(Action<AppSettings> change)
+    {
+        change(Settings);
+        PersistSettings();
+    }
+
+    /// <summary>Whether suggestions can appear right now, and why not when they cannot.</summary>
+    public (bool Ready, string Text) Status()
+    {
+        if (!Settings.Enabled) return (false, "Cotabby is off");
+        if (Settings.Pause?.StatusText(DateTimeOffset.Now) is { } paused) return (false, paused);
+        if (Settings.Engine == EngineKind.Endpoint)
+        {
+            return Settings.EndpointModel.Length > 0
+                ? (true, $"Ready · {Settings.EndpointModel}")
+                : (false, "No endpoint model selected");
+        }
+        return Runtime is { IsReady: true, ActiveModel: { } model }
+            ? (true, $"Ready · {model.DisplayName}")
+            : (false, "No model loaded");
+    }
+
+    private void SaveSettings()
+    {
         Settings.WordsAccepted = Coordinator.Metrics.WordsAccepted;
         SettingsStore.Save(Settings);
     }
@@ -183,15 +206,15 @@ public sealed class AppHost : IAsyncDisposable
 
         Coordinator.Settings = Settings.ToSuggestionSettings();
         _router.UseEndpoint = Settings.Engine == EngineKind.Endpoint;
-        Endpoint.UpdateSettings(EndpointSettings);
+        _endpoint.UpdateSettings(Settings.EndpointSettings);
         TypingHistory.ApplyPreferences(Settings.TypingHistoryPreferences);
         // A cold local server would make the first suggestion wait for the model to load.
-        if (Settings.Engine == EngineKind.Endpoint) _ = Endpoint.PrewarmAsync();
+        if (Settings.Engine == EngineKind.Endpoint) _ = _endpoint.PrewarmAsync();
         EmojiPicker.Enabled = Settings.EmojiPickerEnabled;
         EmojiPicker.PreferredSkinTone = Settings.EmojiSkinTone;
         EmojiPicker.PreferredGender = Settings.EmojiGender;
-        Macros.Enabled = Settings.MacrosEnabled;
-        Overlay.ApplyAppearance(Settings);
+        _macros.Enabled = Settings.MacrosEnabled;
+        _overlay.ApplyAppearance(Settings);
         _macroPreview.ApplyAppearance(Settings);
         LaunchAtLogin.Set(Settings.LaunchAtLogin);
         LoadSelectedModelIfChanged();
@@ -202,12 +225,11 @@ public sealed class AppHost : IAsyncDisposable
     {
         if (!args.Event.IsKeyDown || args.Event.IsRepeat || !Settings.GlobalToggle.Matches(args.Event)) return;
         args.Suppress = true;
-        _ui.Post(_ =>
+        _ui.Post(_ => Update(s =>
         {
-            Settings.Enabled = !Settings.Enabled;
-            Settings.Pause = null;
-            PersistSettings();
-        }, null);
+            s.Enabled = !s.Enabled;
+            s.Pause = null;
+        }), null);
     }
 
     public void LogError(Exception ex, string message) => _logger.LogError(ex, "{Message}", message);
@@ -293,14 +315,13 @@ public sealed class AppHost : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        Settings.WordsAccepted = Coordinator.Metrics.WordsAccepted;
-        SettingsStore.Save(Settings);
+        SaveSettings();
         _hook.KeyEvent -= OnGlobalToggleKey;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         _batterySaver.Changed -= OnBatterySaverChanged;
         _batterySaver.Dispose();
         EmojiPicker.Dispose();
-        Macros.Dispose();
+        _macros.Dispose();
         _spelling.Dispose();
         await Coordinator.DisposeAsync().ConfigureAwait(false);
         // Write the field being typed in now. The debounced background save may not have run yet.

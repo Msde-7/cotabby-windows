@@ -82,6 +82,12 @@ public sealed class AppSettings
     /// <summary>Process names, without extension, whose fields are never recorded.</summary>
     public List<string> TypingHistoryExcludedApps { get; set; } = [];
 
+    [JsonIgnore]
+    public OpenAICompatibleEndpointSettings EndpointSettings => new(
+        EndpointBaseUrl,
+        EndpointModel,
+        EndpointUsesChatApi ? OpenAICompatibleApiMode.ChatCompletions : OpenAICompatibleApiMode.Completions);
+
     /// <summary>The preferences the typing history store follows.</summary>
     [JsonIgnore]
     public TypingHistoryPreferences TypingHistoryPreferences =>

@@ -10,9 +10,9 @@
 //   3. Wait for the model to emit (~3s).
 //   4. Enumerate visible windows owned by Cotabby PID and report which ones
 //      are visible (the overlay HWND should appear here).
-//   5. Tail the runtime log for "Overlay shown" lines.
+//   5. Tail the runtime log for "Suggestion shown" lines.
 //
-// Exit code 0 = overlay window found, non-zero = failure.
+// Exit code 0 = a suggestion was shown, non-zero = failure.
 
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -23,7 +23,7 @@ string logPath = args.Length > 0
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Cotabby", "logs", "cotabby.log");
 Console.WriteLine($"[smoke] Using runtime log: {logPath}");
 
-if (!Win32.IsCotabbyRunning())
+if (Win32.FindCotabbyPid() == 0)
 {
     Console.Error.WriteLine("[smoke] Cotabby.exe is not running. Launch it first.");
     return 2;
@@ -72,14 +72,7 @@ foreach (char c in text)
         Console.Error.WriteLine("[smoke] Focus left Notepad. Stopped typing.");
         return 4;
     }
-    if (c == '\n')
-    {
-        Win32.SendVk(0x0D); // Enter
-    }
-    else
-    {
-        Win32.SendUnicodeChar(c);
-    }
+    Win32.SendUnicodeChar(c);
     await Task.Delay(15);
 }
 
@@ -118,14 +111,7 @@ static partial class Win32
 {
     public const int SW_RESTORE = 9;
 
-    public static bool IsCotabbyRunning() =>
-        Process.GetProcessesByName("Cotabby").Length > 0;
-
-    public static int FindCotabbyPid()
-    {
-        var p = Process.GetProcessesByName("Cotabby").FirstOrDefault();
-        return p?.Id ?? 0;
-    }
+    public static int FindCotabbyPid() => Process.GetProcessesByName("Cotabby").FirstOrDefault()?.Id ?? 0;
 
     public static IntPtr FindNotepadWindow()
     {
@@ -184,16 +170,6 @@ static partial class Win32
         SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
     }
 
-    public static void SendVk(ushort vk)
-    {
-        var inputs = new INPUT[]
-        {
-            new() { type = 1, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = vk, wScan = 0, dwFlags = 0, time = 0, dwExtraInfo = IntPtr.Zero } } },
-            new() { type = 1, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = vk, wScan = 0, dwFlags = 0x2, time = 0, dwExtraInfo = IntPtr.Zero } } },
-        };
-        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
-    }
-
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
     [LibraryImport("user32.dll")]
@@ -238,8 +214,12 @@ static partial class Win32
     [StructLayout(LayoutKind.Sequential)]
     public struct INPUT { public uint type; public INPUTUNION U; }
 
+    // SendInput rejects any size but the full union's, and the mouse member is the largest.
     [StructLayout(LayoutKind.Explicit)]
-    public struct INPUTUNION { [FieldOffset(0)] public KEYBDINPUT ki; }
+    public struct INPUTUNION { [FieldOffset(0)] public KEYBDINPUT ki; [FieldOffset(0)] public MOUSEINPUT mi; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MOUSEINPUT { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
 
     [StructLayout(LayoutKind.Sequential)]
     public struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }

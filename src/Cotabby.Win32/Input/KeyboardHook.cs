@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Cotabby.Core.Input;
 using Microsoft.Extensions.Logging;
@@ -180,7 +179,6 @@ public sealed class KeyboardHook : IKeyboardHook
             catch (Exception ex)
             {
                 _logger.LogError(ex, "A KeyEvent subscriber threw. The hook stays installed.");
-                Debug.WriteLine($"KeyboardHook subscriber error: {ex}");
             }
 
             if (args.Suppress)

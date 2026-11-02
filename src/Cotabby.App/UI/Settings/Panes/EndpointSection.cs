@@ -82,7 +82,7 @@ internal sealed class EndpointSection
             var settings = _context.Settings;
             useDefault.IsEnabled = settings.EndpointBaseUrl != OpenAICompatibleEndpointConfiguration.DefaultBaseUrl;
             warning.Text = Validate(out var configuration) ?? configuration?.PrivacyWarning ?? "";
-            warning.Visibility = warning.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+            warning.Visibility = Ui.Shown(warning.Text.Length > 0);
         });
 
         DockPanel.SetDock(_test, Dock.Right);
@@ -130,10 +130,7 @@ internal sealed class EndpointSection
         var settings = _context.Settings;
         try
         {
-            configuration = new OpenAICompatibleEndpointConfiguration(
-                settings.EndpointBaseUrl,
-                settings.EndpointModel,
-                settings.EndpointUsesChatApi ? OpenAICompatibleApiMode.ChatCompletions : OpenAICompatibleApiMode.Completions);
+            configuration = new OpenAICompatibleEndpointConfiguration(settings.EndpointSettings);
             return null;
         }
         catch (OpenAICompatibleEndpointException ex)

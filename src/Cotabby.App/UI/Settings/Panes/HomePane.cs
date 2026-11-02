@@ -19,7 +19,7 @@ internal static class HomePane
         var words = Ui.Text("", "Mono");
         context.OnRefresh(() =>
         {
-            var (ready, text) = Status(context.Host);
+            var (ready, text) = context.Host.Status();
             status.Set(ready, text);
             words.Text = $"{context.Host.Coordinator.Metrics.WordsAccepted:N0}";
         });
@@ -31,23 +31,6 @@ internal static class HomePane
                 r.Labeled("Words Completed", "Words you have accepted from suggestions so far.", words)),
             new SettingsCard("Quick Settings", Rows.Custom(QuickLinks(context, otherPanes))),
             new SettingsCard("Macros", Rows.Custom(MacroReference())));
-    }
-
-    /// <summary>Whether suggestions can appear right now, and why not when they cannot.</summary>
-    private static (bool Ready, string Text) Status(AppHost host)
-    {
-        var settings = host.Settings;
-        if (!settings.Enabled) return (false, "Cotabby is off");
-        if (settings.Pause?.StatusText(DateTimeOffset.Now) is { } paused) return (false, paused);
-        if (settings.Engine == EngineKind.Endpoint)
-        {
-            return settings.EndpointModel.Length > 0
-                ? (true, $"Ready · {settings.EndpointModel}")
-                : (false, "No endpoint model selected");
-        }
-        return host.Runtime is { IsReady: true, ActiveModel: { } model }
-            ? (true, $"Ready · {model.DisplayName}")
-            : (false, "No model loaded");
     }
 
     private static UniformGrid QuickLinks(SettingsContext context, IReadOnlyList<SettingsPane> panes)
@@ -90,7 +73,7 @@ internal static class HomePane
         {
             bool open = body.Visibility != Visibility.Visible;
             if (open && body.Children.Count == 0) FillMacroReference(body);
-            body.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+            body.Visibility = Ui.Shown(open);
             chevron.Text = open ? "\uE70D" : "\uE76C";
         };
         return new StackPanel { Children = { header, body } };

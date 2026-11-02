@@ -38,9 +38,13 @@ internal sealed class SettingsContext(AppHost host, Action<SettingsPane> navigat
     /// <summary>Mutates the settings, applies them to the running app and saves them.</summary>
     public void Change(Action<AppSettings> mutate)
     {
-        if (_refreshing) return;
-        mutate(host.Settings);
-        host.PersistSettings();
+        if (!_refreshing) host.Update(mutate);
+    }
+
+    /// <summary>Adds a process name to a list unless it is already there in any case.</summary>
+    public void AddProcess(Func<AppSettings, List<string>> apps, string processName)
+    {
+        if (!apps(host.Settings).Contains(processName, StringComparer.OrdinalIgnoreCase)) Change(s => apps(s).Add(processName));
     }
 
     public void Close() => Closed?.Invoke();

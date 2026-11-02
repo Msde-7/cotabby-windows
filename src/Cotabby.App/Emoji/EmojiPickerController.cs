@@ -23,8 +23,6 @@ public sealed class EmojiPickerController : IDisposable
     // How long a capture may sit untouched before it cancels itself.
     private static readonly TimeSpan LongPause = TimeSpan.FromSeconds(8);
 
-    // Lets the host apply the backspaces before the glyph arrives.
-
     private readonly IKeyboardHook _hook;
     private readonly IFocusTracker _focus;
     private readonly ITextInserter _inserter;
@@ -43,15 +41,14 @@ public sealed class EmojiPickerController : IDisposable
         ITextInserter inserter,
         EmojiPopupWindow popup,
         Dispatcher dispatcher,
-        ILogger<EmojiPickerController> logger,
-        string? usageFilePath = null)
+        ILogger<EmojiPickerController> logger)
     {
         _hook = hook;
         _focus = focus;
         _inserter = inserter;
         _logger = logger;
         // Commits are recorded inside the keyboard hook, which must never wait on the disk.
-        _usage = new EmojiUsageStore(usageFilePath ?? DefaultUsageFilePath, write => Task.Run(write));
+        _usage = new EmojiUsageStore(UsageFilePath, write => Task.Run(write));
         _session = new EmojiPickerSession(
             () => new EmojiMatcher(EmojiCatalog.Bundled),
             new DispatchedPanel(popup, dispatcher),
@@ -67,8 +64,7 @@ public sealed class EmojiPickerController : IDisposable
         _focus.FocusChanged += OnFocusChanged;
     }
 
-    /// <summary><c>%APPDATA%\Cotabby\emoji-usage.json</c>.</summary>
-    public static string DefaultUsageFilePath => Path.Combine(
+    private static string UsageFilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Cotabby", "emoji-usage.json");
 
     public bool Enabled

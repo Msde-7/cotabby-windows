@@ -14,6 +14,8 @@ internal static class Ui
 
     private static readonly Uri LogoUri = new("pack://application:,,,/Cotabby;component/Assets/CotabbyLogo.png");
 
+    public static Visibility Shown(bool visible) => visible ? Visibility.Visible : Visibility.Collapsed;
+
     /// <summary>Points the style at a Theme.xaml key. It resolves once the element joins a window.</summary>
     public static T Styled<T>(this T element, string styleKey) where T : FrameworkElement
     {

@@ -19,8 +19,6 @@
 
   <ItemGroup>
     <Resource Include="Assets\CotabbyLogo.png" />
-    <Resource Include="Assets\MenuBarCatIcon.png" />
-    <Resource Include="Assets\MenuBarCatIcon@3x.png" />
     <Resource Include="Assets\Cotabby.ico" />
   </ItemGroup>
 

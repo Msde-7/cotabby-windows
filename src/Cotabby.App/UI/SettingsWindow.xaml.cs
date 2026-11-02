@@ -104,8 +104,8 @@ public partial class SettingsWindow : Window
         var query = SearchBox.Text.Trim();
         bool searching = query.Length > 0;
         if (searching) _results.Content = Results(query);
-        _results.Visibility = Shown(searching);
-        for (int i = 0; i < _panes.Count; i++) _panes[i].Visibility = Shown(!searching && i == NavList.SelectedIndex);
+        _results.Visibility = Ui.Shown(searching);
+        for (int i = 0; i < _panes.Count; i++) _panes[i].Visibility = Ui.Shown(!searching && i == NavList.SelectedIndex);
     }
 
     private StackPanel Results(string query)
@@ -147,6 +147,4 @@ public partial class SettingsWindow : Window
         };
         return result;
     }
-
-    private static Visibility Shown(bool visible) => visible ? Visibility.Visible : Visibility.Collapsed;
 }

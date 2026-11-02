@@ -12,27 +12,26 @@ public static class LaunchAtLogin
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string ValueName = "Cotabby";
 
-    /// <summary>Apply the desired state. Returns true on success.</summary>
-    public static bool Set(bool enabled)
+    /// <summary>Applies the desired state. A registry that refuses the change leaves it as it was.</summary>
+    public static void Set(bool enabled)
     {
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: true)
                             ?? Registry.CurrentUser.CreateSubKey(RunKey, writable: true);
-            if (key is null) return false;
+            if (key is null) return;
             if (enabled)
             {
                 var exe = ResolveLaunchTarget();
-                if (string.IsNullOrEmpty(exe)) return false;
+                if (string.IsNullOrEmpty(exe)) return;
                 key.SetValue(ValueName, "\"" + exe + "\"", RegistryValueKind.String);
             }
             else
             {
                 key.DeleteValue(ValueName, throwOnMissingValue: false);
             }
-            return true;
         }
-        catch { return false; }
+        catch (Exception) { }
     }
 
     private static string? ResolveLaunchTarget()

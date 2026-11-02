@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using Cotabby.App.Hosting;
 using Cotabby.App.Settings;
 using Cotabby.App.UI;
+using Cotabby.App.UI.Controls;
 using Cotabby.Core.Models;
 using Cotabby.Core.Suggestions;
 using Cotabby.Inference;
@@ -36,18 +37,18 @@ public sealed class TrayController : IDisposable
         // A tray-only app never joins a visual tree, so the icon has to be created explicitly.
         _tray.ForceCreate();
 
-        _enabledItem.Click += (_, _) => Update(s => s.Enabled = _enabledItem.IsChecked);
-        _resumeItem.Click += (_, _) => Update(s => s.Pause = null);
+        _enabledItem.Click += (_, _) => host.Update(s => s.Enabled = _enabledItem.IsChecked);
+        _resumeItem.Click += (_, _) => host.Update(s => s.Pause = null);
         foreach (var duration in Enum.GetValues<PauseDuration>())
         {
             var item = new MenuItem { Header = PauseState.MenuLabel(duration) };
-            item.Click += (_, _) => Update(s => s.Pause = PauseState.For(duration, DateTimeOffset.Now));
+            item.Click += (_, _) => host.Update(s => s.Pause = PauseState.For(duration, DateTimeOffset.Now));
             _pauseMenu.Items.Add(item);
         }
         foreach (var preset in WordCountPreset.All)
         {
             var item = new MenuItem { Header = preset.Label, Tag = preset.Id };
-            item.Click += (_, _) => Update(s =>
+            item.Click += (_, _) => host.Update(s =>
             {
                 s.CompletionLengthPreset = preset.Id;
                 s.UseCustomWordRange = false;
@@ -88,33 +89,21 @@ public sealed class TrayController : IDisposable
         Refresh();
     });
 
-    private void Update(Action<AppSettings> change)
-    {
-        change(_host.Settings);
-        _host.PersistSettings();
-    }
-
     private void Refresh()
     {
         var settings = _host.Settings;
-        var now = DateTimeOffset.Now;
-        bool paused = settings.Pause?.IsActive(now) == true;
+        bool paused = settings.Pause?.IsActive(DateTimeOffset.Now) == true;
 
-        _statusItem.Header = _statusOverride
-            ?? (!settings.Enabled ? "Cotabby is off"
-                : paused ? settings.Pause!.StatusText(now)
-                : settings.Engine == EngineKind.Endpoint ? $"Endpoint · {settings.EndpointModel}"
-                : _host.Runtime.ActiveModel is { } active ? $"Ready · {active.DisplayName}"
-                : "No model loaded");
+        _statusItem.Header = _statusOverride ?? _host.Status().Text;
         _tray.ToolTipText = $"Cotabby · {_statusItem.Header}";
 
         long words = _host.Coordinator.Metrics.WordsAccepted;
         _wordCountItem.Header = $"{words:N0} words completed";
-        _wordCountItem.Visibility = settings.ShowTrayWordCount && words > 0 ? Visibility.Visible : Visibility.Collapsed;
+        _wordCountItem.Visibility = Ui.Shown(settings.ShowTrayWordCount && words > 0);
 
         _enabledItem.IsChecked = settings.Enabled;
-        _pauseMenu.Visibility = settings.Enabled && !paused ? Visibility.Visible : Visibility.Collapsed;
-        _resumeItem.Visibility = settings.Enabled && paused ? Visibility.Visible : Visibility.Collapsed;
+        _pauseMenu.Visibility = Ui.Shown(settings.Enabled && !paused);
+        _resumeItem.Visibility = Ui.Shown(settings.Enabled && paused);
         // Rebuilt each time so a model dropped into the folder shows up without a restart.
         _modelMenu.Items.Clear();
         foreach (var model in ModelCatalog.Available())
@@ -134,7 +123,7 @@ public sealed class TrayController : IDisposable
 
     private async Task SwitchModelAsync(string id)
     {
-        Update(s => s.ActiveModelId = id);
+        _host.Update(s => s.ActiveModelId = id);
         if (ModelCatalog.FindById(id) is { } model && !ModelDownloader.IsCached(model))
         {
             // Downloads are several GB, so they start from Settings where progress is visible.

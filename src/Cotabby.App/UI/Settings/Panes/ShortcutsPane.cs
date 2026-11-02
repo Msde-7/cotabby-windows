@@ -27,7 +27,8 @@ internal static class ShortcutsPane
         new SettingsCard("Per-App Shortcuts",
             Rows.Note("Give a specific app its own accept key, disable an accept action there, "
                 + "or keep inheriting the global shortcut."),
-            Rows.Custom(Overrides(r.Context)),
+            Rows.Custom(r.List(s => s.ShortcutOverrides, entry => Override(r.Context, entry),
+                "No per-app shortcuts. Cotabby uses the global accept keys everywhere.")),
             r.Stacked("Add an App", "Enter the process name of the app, such as notepad.",
                 Ui.AddBox(AppsPane.ProcessNameHint, name => AddOverride(r.Context, name)))
                 .Tagged("per app override process accept key")));
@@ -41,27 +42,6 @@ internal static class ShortcutsPane
 
     private static int Find(AppSettings settings, string processName) => settings.ShortcutOverrides.FindIndex(
         o => string.Equals(o.ProcessName, processName, StringComparison.OrdinalIgnoreCase));
-
-    private static StackPanel Overrides(SettingsContext context)
-    {
-        var panel = new StackPanel();
-        context.OnRefresh(() =>
-        {
-            panel.Children.Clear();
-            foreach (var entry in context.Settings.ShortcutOverrides)
-            {
-                if (panel.Children.Count > 0) panel.Children.Add(Ui.Separator());
-                panel.Children.Add(Override(context, entry));
-            }
-            if (panel.Children.Count == 0)
-            {
-                var empty = Ui.Text("No per-app shortcuts. Cotabby uses the global accept keys everywhere.", "Caption");
-                empty.Margin = new Thickness(0, 12, 0, 12);
-                panel.Children.Add(empty);
-            }
-        });
-        return panel;
-    }
 
     private static StackPanel Override(SettingsContext context, PerAppShortcutOverride entry)
     {

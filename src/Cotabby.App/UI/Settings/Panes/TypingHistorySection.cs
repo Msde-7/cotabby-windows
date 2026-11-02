@@ -35,29 +35,10 @@ internal static class TypingHistorySection
                 s => s.TypingHistoryRecording, (s, v) => s.TypingHistoryRecording = v)
                 .EnabledWhen(_ => store.Status == TypingHistoryStatus.Ready)
                 .Tagged("history record privacy learn my writing"),
-            Rows.Custom(Exclusions(context))
+            Rows.Custom(r.ProcessList(s => s.TypingHistoryExcludedApps, app => $"Not recorded: {app}"))
                 .VisibleWhen(s => s.TypingHistoryExcludedApps.Count > 0),
             r.Stacked("Stored History", "", Manage(context, store))
                 .Tagged("history typing history cotypist import delete erase exclude app privacy"));
-    }
-
-    private static StackPanel Exclusions(SettingsContext context)
-    {
-        var panel = new StackPanel();
-        context.OnRefresh(() =>
-        {
-            panel.Children.Clear();
-            foreach (var app in context.Settings.TypingHistoryExcludedApps)
-            {
-                if (panel.Children.Count > 0) panel.Children.Add(Ui.Separator());
-                var remove = Ui.Button("Remove", () => context.Change(s => s.TypingHistoryExcludedApps.Remove(app)));
-                DockPanel.SetDock(remove, Dock.Right);
-                var name = Ui.Text($"Not recorded: {app}");
-                name.VerticalAlignment = VerticalAlignment.Center;
-                panel.Children.Add(new DockPanel { MinHeight = 40, Children = { remove, name } });
-            }
-        });
-        return panel;
     }
 
     private static StackPanel Manage(SettingsContext context, TypingHistoryStore store)
@@ -146,8 +127,6 @@ internal static class TypingHistorySection
             Multiselect = false,
         };
         if (dialog.ShowDialog() != true) return;
-        string processName = Path.GetFileNameWithoutExtension(dialog.FileName);
-        if (context.Settings.TypingHistoryExcludedApps.Contains(processName, StringComparer.OrdinalIgnoreCase)) return;
-        context.Change(s => s.TypingHistoryExcludedApps.Add(processName));
+        context.AddProcess(s => s.TypingHistoryExcludedApps, Path.GetFileNameWithoutExtension(dialog.FileName));
     }
 }

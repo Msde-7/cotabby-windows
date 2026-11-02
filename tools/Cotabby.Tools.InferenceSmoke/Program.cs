@@ -18,7 +18,7 @@ using var loggerFactory = LoggerFactory.Create(b =>
 using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(60) };
 http.DefaultRequestHeaders.UserAgent.ParseAdd("Cotabby-Smoke/0.1");
 
-var model = ModelCatalog.All[0]; // 0.5B
+var model = ModelCatalog.All[0];
 var path = ModelDownloader.LocalPath(model);
 Console.WriteLine($"Model:  {model.DisplayName}");
 Console.WriteLine($"Path:   {path}");

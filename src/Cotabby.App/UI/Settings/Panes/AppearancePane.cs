@@ -105,9 +105,7 @@ internal static class AppearancePane
                 ghost.Themed(TextBlock.ForegroundProperty, "TextSecondary");
             }
             hintLabel.Text = settings.AcceptWord.Label;
-            hint.Visibility = settings.ShowAcceptanceHint && settings.AcceptWord.IsBound
-                ? Visibility.Visible
-                : Visibility.Collapsed;
+            hint.Visibility = Ui.Shown(settings.ShowAcceptanceHint && settings.AcceptWord.IsBound);
         });
 
         return new Border

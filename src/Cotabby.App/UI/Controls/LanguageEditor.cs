@@ -53,8 +53,7 @@ internal sealed class LanguageEditor : StackPanel
 
     private void Save(IEnumerable<string> languages)
     {
-        _host.Settings.Languages = LanguageCatalog.Normalize(languages);
-        _host.PersistSettings();
+        _host.Update(s => s.Languages = LanguageCatalog.Normalize(languages));
         Refresh();
     }
 }

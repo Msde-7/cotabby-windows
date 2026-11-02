@@ -24,7 +24,6 @@ internal sealed class ModelList : StackPanel
     private bool _downloading;
     private bool _cancelRequested;
     private string? _error;
-    private TextBlock? _progressLabel;
     private TextBlock? _status;
     private ProgressBar? _progressBar;
 
@@ -40,7 +39,6 @@ internal sealed class ModelList : StackPanel
     private void Rebuild()
     {
         Children.Clear();
-        _progressLabel = null;
         _status = null;
         _progressBar = null;
 
@@ -92,7 +90,7 @@ internal sealed class ModelList : StackPanel
         }
         else if (loadingThis)
         {
-            trailing = _progressLabel = Ui.Text("", "Caption");
+            trailing = Ui.Text("Preparing…", "Caption");
         }
         else if (selected && runtime.IsReady && runtime.ActiveModel?.Id == model.Id)
         {
@@ -132,14 +130,14 @@ internal sealed class ModelList : StackPanel
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.RowDefinitions.Add(new RowDefinition());
         grid.RowDefinitions.Add(new RowDefinition());
-        if (loadingThis || paused is not null)
+        if (downloadingThis || paused is not null)
         {
             var bar = new ProgressBar { Maximum = 1, Margin = new Thickness(0, 8, 0, 0) }.Styled("Bar");
             Grid.SetRow(bar, 1);
             Grid.SetColumn(bar, 1);
             Grid.SetColumnSpan(bar, 2);
             grid.Children.Add(bar);
-            if (loadingThis) _progressBar = bar;
+            if (downloadingThis) _progressBar = bar;
             else
             {
                 // A grey bar reads as stopped rather than active.
@@ -254,31 +252,10 @@ internal sealed class ModelList : StackPanel
 
     private void ShowProgress()
     {
-        if (_status is not null && _progressBar is not null)
-        {
-            var state = _progress is null ? null : ModelDownloadState.From(_progress);
-            _status.Text = state?.StatusText ?? "Preparing download…";
-            _progressBar.Visibility = state?.ProgressFraction is null ? Visibility.Collapsed : Visibility.Visible;
-            _progressBar.Value = state?.ProgressFraction ?? 0;
-            return;
-        }
-        if (_progressLabel is null || _progressBar is null) return;
-        // A model that is already on disk loads without reporting progress, so the bar stays hidden.
-        bool hasTotal = _progress?.TotalBytes > 0;
-        _progressBar.Visibility = hasTotal ? Visibility.Visible : Visibility.Collapsed;
-        if (_progress is null)
-        {
-            _progressLabel.Text = "Preparing…";
-        }
-        else if (hasTotal)
-        {
-            long total = _progress.TotalBytes!.Value;
-            _progressBar.Value = (double)_progress.BytesDownloaded / total;
-            _progressLabel.Text = $"{_progress.BytesDownloaded * 100 / total}%";
-        }
-        else
-        {
-            _progressLabel.Text = $"{_progress.BytesDownloaded / 1024 / 1024:N0} MB";
-        }
+        if (_status is null || _progressBar is null) return;
+        var state = _progress is null ? null : ModelDownloadState.From(_progress);
+        _status.Text = state?.StatusText ?? "Preparing download…";
+        _progressBar.Visibility = Ui.Shown(state?.ProgressFraction is not null);
+        _progressBar.Value = state?.ProgressFraction ?? 0;
     }
 }

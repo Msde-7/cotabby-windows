@@ -19,6 +19,7 @@ internal static class PerformancePane
         TextBlock shown = Value(), accepted = Value(), rate = Value(), words = Value();
         var latency = Graph("Latency", "OrangeBrush");
         latency.Line.ScaleFormat = ms => $"{ms:N0} ms";
+        latency.Line.EmptyMessage = "No suggestions yet";
         var latencyCaption = Ui.Text("", "Caption");
         latencyCaption.Margin = new Thickness(0, 8, 0, 0);
         var chart = new StackPanel { Margin = new Thickness(0, 12, 0, 12), Children = { latency.View, latencyCaption } };
@@ -34,7 +35,6 @@ internal static class PerformancePane
             var samples = metrics.LatenciesMs;
             latency.Line.Show([.. samples.Select(ms => (double?)ms)], MetricSeries.UpperBound(samples.Select(ms => (double)ms), 100));
             latency.Value.Text = samples.Count == 0 ? Missing : $"{samples[^1]} ms";
-            latency.Line.EmptyMessage = "No suggestions yet";
             latencyCaption.Text = samples.Count == 0
                 ? "Type somewhere to see how long suggestions take."
                 : $"Median {samples.Order().ElementAt(samples.Count / 2)} ms · {samples.Count} most recent suggestions";

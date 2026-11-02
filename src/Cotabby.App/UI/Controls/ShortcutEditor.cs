@@ -117,9 +117,7 @@ internal sealed class ShortcutEditor : StackPanel
 
         // Recording a key over the double tap replaces it, as Reset and Clear do.
         _recorder.Show(_shortcut.Label(settings));
-        _reset.Visibility = Shown(_shortcut.Default.IsBound && (doubleTap || binding != _shortcut.Default));
-        _clear.Visibility = Shown(doubleTap || binding.IsBound);
+        _reset.Visibility = Ui.Shown(_shortcut.Default.IsBound && (doubleTap || binding != _shortcut.Default));
+        _clear.Visibility = Ui.Shown(doubleTap || binding.IsBound);
     }
-
-    private static Visibility Shown(bool visible) => visible ? Visibility.Visible : Visibility.Collapsed;
 }

@@ -1,5 +1,3 @@
-using System.Windows;
-using System.Windows.Controls;
 using Cotabby.App.UI.Controls;
 
 namespace Cotabby.App.UI.Settings.Panes;
@@ -11,9 +9,10 @@ internal static class AppsPane
     public static SettingsPane Build(Rows r) => new("Apps", "\uE71D", "Where Cotabby stays quiet",
         new SettingsCard("Disabled Apps",
             Rows.Note("Cotabby won't autocomplete in these apps."),
-            Rows.Custom(BlockedApps(r.Context)),
+            Rows.Custom(r.ProcessList(s => s.BlockedApps, app => app,
+                "No apps are disabled. Cotabby is active in every supported field.")),
             r.Stacked("Disable an App", "Enter the process name of the app, such as notepad.",
-                Ui.AddBox(ProcessNameHint, name => Block(r.Context, name)))
+                Ui.AddBox(ProcessNameHint, name => r.Context.AddProcess(s => s.BlockedApps, ProcessName(name))))
                 .Tagged("disabled apps exclude block ignore blacklist deny list exception skip off in")),
         new SettingsCard("Terminals",
             r.Toggle("Suggest in Integrated Terminals",
@@ -26,35 +25,4 @@ internal static class AppsPane
     /// <summary>The process name as Windows reports it, without the extension people tend to type.</summary>
     public static string ProcessName(string typed) =>
         typed.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? typed[..^4] : typed;
-
-    private static void Block(SettingsContext context, string name)
-    {
-        var processName = ProcessName(name);
-        if (context.Settings.BlockedApps.Contains(processName, StringComparer.OrdinalIgnoreCase)) return;
-        context.Change(s => s.BlockedApps.Add(processName));
-    }
-
-    private static StackPanel BlockedApps(SettingsContext context)
-    {
-        var panel = new StackPanel();
-        context.OnRefresh(() =>
-        {
-            panel.Children.Clear();
-            foreach (var app in context.Settings.BlockedApps)
-            {
-                if (panel.Children.Count > 0) panel.Children.Add(Ui.Separator());
-                var remove = Ui.Button("Remove", () => context.Change(s => s.BlockedApps.Remove(app)));
-                DockPanel.SetDock(remove, Dock.Right);
-                var name = Ui.Text(app);
-                panel.Children.Add(new DockPanel { MinHeight = 40, Children = { remove, name } });
-            }
-            if (panel.Children.Count == 0)
-            {
-                var empty = Ui.Text("No apps are disabled. Cotabby is active in every supported field.", "Caption");
-                empty.Margin = new Thickness(0, 12, 0, 12);
-                panel.Children.Add(empty);
-            }
-        });
-        return panel;
-    }
 }

@@ -65,8 +65,6 @@ public partial class WelcomeWindow : Window
 
     public static void ShowFor(AppHost host) => new WelcomeWindow(host).Show();
 
-    // ---------- Step navigation ----------
-
     private void BuildCapsules()
     {
         foreach (var _ in _steps)
@@ -82,7 +80,7 @@ public partial class WelcomeWindow : Window
         _step = Math.Clamp(index, 0, _steps.Length - 1);
         for (int i = 0; i < _steps.Length; i++)
         {
-            _steps[i].Visibility = i == _step ? Visibility.Visible : Visibility.Collapsed;
+            _steps[i].Visibility = Ui.Shown(i == _step);
             _capsules[i].Width = i == _step ? 28 : 18;
             _capsules[i].SetResourceReference(Border.BackgroundProperty, i <= _step ? "AccentBrush" : "TrackOff");
         }
@@ -119,16 +117,15 @@ public partial class WelcomeWindow : Window
     /// <summary>Saves what was entered so far and stops the wizard from showing on the next launch.</summary>
     private void Finish()
     {
-        var settings = _host.Settings;
-        settings.UserName = NameBox.Text.Trim();
-        if (settings.Languages.Count == 0) settings.Languages = [.. LanguageCatalog.DefaultLanguages];
-        settings.ShowFirstRunWelcome = false;
-        _host.PersistSettings();
+        _host.Update(s =>
+        {
+            s.UserName = NameBox.Text.Trim();
+            if (s.Languages.Count == 0) s.Languages = [.. LanguageCatalog.DefaultLanguages];
+            s.ShowFirstRunWelcome = false;
+        });
         // A model download that is still running continues on the host after this window closes.
         Close();
     }
-
-    // ---------- Starting point ----------
 
     private static string TemplateId(Border card) => (string)card.Tag;
 
@@ -167,12 +164,9 @@ public partial class WelcomeWindow : Window
 
     private void CommitTemplate()
     {
-        _host.Settings.ActiveModelId = _templateModelId;
-        _host.PersistSettings();
+        _host.Update(s => s.ActiveModelId = _templateModelId);
         StartModelEnsure(_templateModelId);
     }
-
-    // ---------- Background model preparation ----------
 
     private async void StartModelEnsure(string modelId)
     {
@@ -245,9 +239,9 @@ public partial class WelcomeWindow : Window
         var paused = !ready && !_ensureBusy && _lastEnsureFor is { } id && ModelCatalog.FindById(id) is { } model
             ? ModelDownloader.StateOnDisk(model) as ModelDownloadState.Paused
             : null;
-        DoneSpinner.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
-        DoneCheck.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
-        DoneResumeButton.Visibility = paused is not null ? Visibility.Visible : Visibility.Collapsed;
+        DoneSpinner.Visibility = Ui.Shown(busy);
+        DoneCheck.Visibility = Ui.Shown(ready);
+        DoneResumeButton.Visibility = Ui.Shown(paused is not null);
         DoneModelStatus.SetResourceReference(TextBlock.ForegroundProperty, ready ? "GreenBrush" : "TextSecondary");
         DoneModelStatus.Text =
             ready ? "Your model is ready"
@@ -272,8 +266,6 @@ public partial class WelcomeWindow : Window
         DoneSpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, spin);
     }
 
-    // ---------- Keybinds ----------
-
     private void BuildShortcutRows()
     {
         foreach (var shortcut in new[] { GlobalShortcut.AcceptWord, GlobalShortcut.AcceptAll, GlobalShortcut.Toggle })
@@ -292,8 +284,7 @@ public partial class WelcomeWindow : Window
 
     private void ChangeShortcut(Action<AppSettings> change)
     {
-        change(_host.Settings);
-        _host.PersistSettings();
+        _host.Update(change);
         RefreshShortcuts();
     }
 
@@ -305,10 +296,9 @@ public partial class WelcomeWindow : Window
 
     private void OnModeClicked(object sender, RoutedEventArgs e)
     {
-        _host.Settings.AcceptanceMode = ModePhrase.IsChecked == true
+        _host.Update(s => s.AcceptanceMode = ModePhrase.IsChecked == true
             ? AcceptanceGranularity.Phrase
-            : AcceptanceGranularity.Word;
-        _host.PersistSettings();
+            : AcceptanceGranularity.Word);
     }
 
     private string DoneKeysHint()

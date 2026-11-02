@@ -76,7 +76,6 @@
                     Click="OnSkip" />
         </Grid>
 
-        <!-- ========================= STEP BODIES ========================= -->
         <Grid Grid.Row="1" Margin="0,10,0,10">
 
             <!-- Step 1. Welcome -->
@@ -131,10 +130,8 @@
                                 <TextBlock Text="✨" FontFamily="Segoe UI Emoji" FontSize="18"
                                            HorizontalAlignment="Center" VerticalAlignment="Center" />
                             </Border>
-                            <StackPanel Orientation="Horizontal" Margin="0,10,0,2">
-                                <TextBlock Text="Everyday" FontSize="14" FontWeight="SemiBold"
-                                           VerticalAlignment="Center" />
-                            </StackPanel>
+                            <TextBlock Text="Everyday" FontSize="14" FontWeight="SemiBold"
+                                       Margin="0,10,0,2" />
                             <TextBlock Style="{StaticResource Caption}" Text="Balanced for daily writing" />
                             <Border CornerRadius="9" Background="{StaticResource AccentTintSoft}"
                                     Padding="7,2" HorizontalAlignment="Left" Margin="0,8,0,0">
@@ -246,7 +243,6 @@
             </StackPanel>
         </Grid>
 
-        <!-- ========================= FOOTER ========================= -->
         <StackPanel Grid.Row="2">
             <Button x:Name="ContinueButton" Style="{StaticResource AccentBtn}" Height="40" FontSize="14"
                     Margin="24,0" Content="Get Started" Click="OnContinue" />

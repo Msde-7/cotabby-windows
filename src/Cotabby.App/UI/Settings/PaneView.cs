@@ -42,20 +42,18 @@ internal sealed class PaneView : ScrollViewer
         context.OnRefresh(() =>
         {
             var settings = context.Settings;
-            view.Visibility = Shown(card.Visible?.Invoke(settings) != false);
+            view.Visibility = Ui.Shown(card.Visible?.Invoke(settings) != false);
             bool anyAbove = false;
             for (int i = 0; i < card.Rows.Length; i++)
             {
                 var row = card.Rows[i];
                 bool visible = row.Visible?.Invoke(settings) != false;
-                row.View.Visibility = Shown(visible);
+                row.View.Visibility = Ui.Shown(visible);
                 row.View.IsEnabled = row.Enabled?.Invoke(settings) != false;
-                separators[i].Visibility = Shown(visible && anyAbove);
+                separators[i].Visibility = Ui.Shown(visible && anyAbove);
                 anyAbove |= visible;
             }
         });
         return view;
     }
-
-    private static Visibility Shown(bool visible) => visible ? Visibility.Visible : Visibility.Collapsed;
 }

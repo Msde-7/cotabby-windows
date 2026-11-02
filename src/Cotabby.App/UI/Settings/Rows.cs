@@ -41,11 +41,41 @@ internal sealed class Rows(SettingsContext context)
     /// <summary>Free form content that search does not index.</summary>
     public static SettingsRow Custom(FrameworkElement content) => new("", "", content);
 
-    public static SettingsRow Note(string text)
+    public static SettingsRow Note(string text) => Custom(Caption(text));
+
+    /// <summary>Rows rebuilt on every refresh, with separators between them and a caption when there are none.</summary>
+    public StackPanel List<T>(Func<AppSettings, IEnumerable<T>> items, Func<T, UIElement> row, string? emptyText = null)
     {
-        var note = Ui.Text(text, "Caption");
-        note.Margin = new Thickness(0, 12, 0, 12);
-        return Custom(note);
+        var panel = new StackPanel();
+        context.OnRefresh(() =>
+        {
+            panel.Children.Clear();
+            foreach (var item in items(context.Settings))
+            {
+                if (panel.Children.Count > 0) panel.Children.Add(Ui.Separator());
+                panel.Children.Add(row(item));
+            }
+            if (panel.Children.Count == 0 && emptyText is not null) panel.Children.Add(Caption(emptyText));
+        });
+        return panel;
+    }
+
+    /// <summary>A list of process names, each with a Remove button.</summary>
+    public StackPanel ProcessList(Func<AppSettings, List<string>> apps, Func<string, string> label, string? emptyText = null) =>
+        List(apps, app =>
+        {
+            var remove = Ui.Button("Remove", () => context.Change(s => apps(s).Remove(app)));
+            DockPanel.SetDock(remove, Dock.Right);
+            var name = Ui.Text(label(app));
+            name.VerticalAlignment = VerticalAlignment.Center;
+            return new DockPanel { MinHeight = 40, Children = { remove, name } };
+        }, emptyText);
+
+    private static TextBlock Caption(string text)
+    {
+        var caption = Ui.Text(text, "Caption");
+        caption.Margin = new Thickness(0, 12, 0, 12);
+        return caption;
     }
 
     public SettingsRow Toggle(
