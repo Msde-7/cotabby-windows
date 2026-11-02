@@ -136,7 +136,7 @@ public sealed class AppHost : IAsyncDisposable
         Coordinator = new SuggestionCoordinator(
             _hook, focus, historyAwareEngine, overlay, inserter, new SuggestionWorkController(TimeSpan.Zero),
             loggers.CreateLogger<SuggestionCoordinator>(), ui,
-            batterySaverOn: () => PowerStatus.IsBatterySaverOn,
+            batterySaverOn: () => _batterySaver.IsOn,
             typos: new TypoCorrectionAdvisor(
                 _spelling, new SpellingLanguageResolver(), new WindowsSpellChecker(_spelling)),
             clipboard: _services.GetRequiredService<ClipboardTextReader>());

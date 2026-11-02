@@ -5,7 +5,7 @@ namespace Cotabby.Win32.Power;
 /// <summary>Reads the live power state. The call is cheap enough to make per request.</summary>
 public static partial class PowerStatus
 {
-    /// <summary>True while Windows battery saver (energy saver) is on.</summary>
+    /// <summary>True while battery saver is on. as the legacy status flag reports it.</summary>
     public static bool IsBatterySaverOn =>
         GetSystemPowerStatus(out var status) && (status.SystemStatusFlag & 1) != 0;
 
