@@ -304,7 +304,7 @@ public sealed class UiaFocusTracker : IFocusTracker
             CaretIsEstimated = caretRect.IsEmpty,
             FieldRect = fieldRect,
             IsSingleLine = singleLine,
-            IsTextFieldRole = editLike && !IsMultiLineEdit(info, procName, singleLine),
+            IsTextFieldRole = editLike && !IsMultiLineEdit(info, singleLine, text),
             IsSecure = isSecure,
             HasSelection = hasSelection,
             FieldId = fieldId,
@@ -324,18 +324,17 @@ public sealed class UiaFocusTracker : IFocusTracker
     }
 
     /// <summary>
-    /// True when an edit control is known to hold several lines: a Win32 edit with the multi-line
-    /// style, or a web text box drawn several lines tall. Managed UIA does not expose the ARIA
-    /// multi-line flag, so for web text areas the height is the only signal.
+    /// True when an edit control holds several lines. A Win32 edit says so in its style. Managed UIA
+    /// exposes no multi-line flag for web, WPF or WinUI text boxes, so those go by their text and height.
     /// </summary>
-    private static bool IsMultiLineEdit(AutomationElement.AutomationElementInformation info, string procName, bool singleLine)
+    private static bool IsMultiLineEdit(AutomationElement.AutomationElementInformation info, bool singleLine, string text)
     {
         var hwnd = new IntPtr(info.NativeWindowHandle);
         if (hwnd != IntPtr.Zero && (info.ClassName ?? "").Contains("Edit", StringComparison.OrdinalIgnoreCase))
         {
             return (NativeMethods.GetWindowLong(hwnd, NativeMethods.GWL_STYLE) & NativeMethods.ES_MULTILINE) != 0;
         }
-        return !singleLine && BrowserAppDetector.NeedsWebAccessibilityPriming(procName);
+        return FieldShape.HoldsSeveralLines(singleLine, text);
     }
 
     /// <summary>Text kept before the caret. The request factory sends at most this much prefix.</summary>

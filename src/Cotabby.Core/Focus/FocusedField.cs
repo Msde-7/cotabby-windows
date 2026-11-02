@@ -38,7 +38,8 @@ public sealed record FocusedField
 
     /// <summary>
     /// True when the control type makes this a one-line input (an edit box or an editable combo
-    /// box) rather than a document. Unlike <see cref="IsSingleLine"/>, it does not depend on height.
+    /// box) rather than a document. A Win32 edit is judged by its style, so a tall one-line box
+    /// still counts. Other edits hold several lines when their text breaks or they are several lines tall.
     /// </summary>
     public bool IsTextFieldRole { get; init; }
 

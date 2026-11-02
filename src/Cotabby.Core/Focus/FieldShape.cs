@@ -17,4 +17,11 @@ public static class FieldShape
         if (field.IsEmpty || caret.IsEmpty) return true;
         return field.Height <= caret.Height * SingleLineHeightInCarets;
     }
+
+    /// <summary>
+    /// True when an edit control whose kind is unknown holds several lines. Accessibility gives no
+    /// multi-line flag for most hosts, so a line break in the text or a height of several lines decides.
+    /// </summary>
+    public static bool HoldsSeveralLines(bool singleLine, string text) =>
+        !singleLine || text.AsSpan().IndexOfAny('\r', '\n') >= 0;
 }

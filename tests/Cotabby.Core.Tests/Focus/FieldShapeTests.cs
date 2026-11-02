@@ -21,4 +21,12 @@ public sealed class FieldShapeTests
     [Fact]
     public void EditControl_WithoutACaretRectFallsBackToItsType() =>
         Assert.True(FieldShape.IsSingleLine(isEditControl: true, new ScreenRect(0, 0, 300, 600), ScreenRect.Empty));
+
+    [Theory]
+    [InlineData(true, "someone@example.com", false)]
+    [InlineData(false, "", true)]
+    [InlineData(true, "first line\r\nsecond", true)]
+    [InlineData(true, "first line\nsecond", true)]
+    public void EditOfUnknownKind_HoldsSeveralLinesWhenTallOrBroken(bool singleLine, string text, bool expected) =>
+        Assert.Equal(expected, FieldShape.HoldsSeveralLines(singleLine, text));
 }
