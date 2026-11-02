@@ -25,6 +25,7 @@ public sealed class TypingPrediction(FocusedField field, long sequence, Cancella
     private double? _behindSince;
     private double? _lastInputAt;
     private long _sequence = sequence;
+    private bool _closed;
 
     /// <summary>The field the request was built from.</summary>
     public FocusedField Field { get; } = field;
@@ -49,7 +50,7 @@ public sealed class TypingPrediction(FocusedField field, long sequence, Cancella
         if (characters.Length == 0 || characters.Any(char.IsControl) || !double.IsFinite(time)) return false;
         lock (_gate)
         {
-            if (Token.IsCancellationRequested
+            if (_closed || Token.IsCancellationRequested
                 || _typed.Length + characters.Length > MaximumTypedCharacters
                 || _behindSince is { } since && time >= since + CatchUpWindow)
             {
@@ -83,6 +84,16 @@ public sealed class TypingPrediction(FocusedField field, long sequence, Cancella
             _final = final;
             if (covers) _behindSince = null;
             return true;
+        }
+    }
+
+    /// <summary>Stops keeping keys once its request is over, and returns what was kept.</summary>
+    public string Close()
+    {
+        lock (_gate)
+        {
+            _closed = true;
+            return _typed;
         }
     }
 

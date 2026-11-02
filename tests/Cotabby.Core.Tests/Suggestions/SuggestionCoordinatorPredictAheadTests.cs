@@ -62,6 +62,40 @@ public sealed class SuggestionCoordinatorPredictAheadTests : CoordinatorHarness
     }
 
     [Fact]
+    public async Task ADroppedAnswer_StopsKeepingKeys()
+    {
+        Coordinator.Settings = SuggestionSettings.Default with { SuggestWithinWords = false };
+        Engine.Completion = request => request.Prefix == "Hello " ? "world is big" : "again";
+        Type("Hello ");
+        await GeneratingFor("Hello ");
+
+        // Trimmed by the kept key, the answer would start mid-word, so it is dropped.
+        Type("w");
+        await Task.Delay(50);
+        _hold.SetResult();
+        await Task.Delay(100);
+        Type("orld ");
+
+        await GeneratingFor("Hello world ");
+        await Shown("again");
+    }
+
+    [Fact]
+    public async Task AppsOwnPrediction_EndsTheWaitForTypedKeys()
+    {
+        Type("hello");
+        await GeneratingFor("hello");
+        Hook.Press(Keys.Char(' '));
+        Focus.Replace(Focus.Current! with { HostIsPredicting = true });
+        _hold.SetResult();
+        await Task.Delay(100);
+
+        Focus.Replace(Fields.Text("hello "));
+        await Eventually(() => Engine.Requests.Any(r => r.Prefix == "hello "), "typing is asked about again");
+        await Shown("there");
+    }
+
+    [Fact]
     public async Task TurnedOff_EveryKeyStartsOver()
     {
         Coordinator.Settings = SuggestionSettings.Default with { PredictAheadWhileTyping = false };

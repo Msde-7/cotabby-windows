@@ -385,6 +385,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         string requestId, SuggestionSettings settings, FocusedField? baseline, int delta, char? typed,
         bool requiresTextChange, long sequence, CancellationToken ct)
     {
+        TypingPrediction? prediction = null;
+        bool presented = false;
         try
         {
             var field = await WaitForHostPublishAsync(baseline, delta, typed, requiresTextChange, ct)
@@ -415,7 +417,6 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             if (!_engine.IsReady) return;
 
             var stopwatch = Stopwatch.StartNew();
-            TypingPrediction? prediction = null;
             string text;
             if (TakePrefetched(field) is { } prefetched)
             {
@@ -474,9 +475,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 return;
             }
 
+            presented = true;
             Post(() =>
             {
-                if (prediction is not null && _prediction == prediction) _prediction = null;
                 Present(requestId, visible, live, latencyMs, shownAt, ct);
                 // A key kept after the field was read changed the text this answer was checked against.
                 if (_keySequence != shownAt && _session is null && !ct.IsCancellationRequested) SchedulePrediction(typed: null);
@@ -488,6 +489,22 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Request {ReqId} failed.", requestId);
+        }
+        finally
+        {
+            // A finished request keeps no keys. Keys it kept for an answer that was then dropped
+            // still need a request of their own.
+            if (prediction?.Close() is { Length: > 0 } && !presented && !ct.IsCancellationRequested)
+            {
+                RestartPrediction(prediction, "the answer was dropped after keys were kept");
+            }
+            else if (prediction is not null)
+            {
+                Post(() =>
+                {
+                    if (_prediction == prediction) _prediction = null;
+                });
+            }
         }
     }
 
@@ -693,7 +710,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 if (prediction is null || prediction.Progress == (typed, sequence)) return (live, typed, sequence);
                 continue;
             }
-            if (prediction is null || typed.Length == 0)
+            if (prediction is null || typed.Length == 0 || live?.HostIsPredicting == true)
             {
                 _logger.LogInformation("Request {ReqId} dropped because the field changed during generation.", requestId);
                 return null;

@@ -122,6 +122,17 @@ public sealed class TypingPredictionTests
     }
 
     [Fact]
+    public void AClosedPredictionKeepsNoKeys()
+    {
+        var candidate = Candidate();
+        Assert.True(candidate.Receive("you the report", final: true));
+        Assert.True(candidate.Append("y", 1, 1));
+
+        Assert.Equal("y", candidate.Close());
+        Assert.False(candidate.Append("o", 1.01, 2));
+    }
+
+    [Fact]
     public void ACancelledRequestKeepsNoKeys()
     {
         using var cts = new CancellationTokenSource();
