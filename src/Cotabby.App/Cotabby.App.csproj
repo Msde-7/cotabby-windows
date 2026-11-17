@@ -14,7 +14,7 @@
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
     <ApplicationIcon>Assets\Cotabby.ico</ApplicationIcon>
-    <Version>0.6.2</Version>
+    <Version>0.7.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

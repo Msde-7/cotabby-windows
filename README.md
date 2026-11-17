@@ -35,9 +35,10 @@ The default engine runs a small model on your own machine. No account and no tel
 - **Inline macros**. Type `/` for quick math, unit and currency conversion, dates and random values.
 - **One-key autocorrect**. A misspelled word shows its fix in green and one keypress applies it.
 - **Prediction controls**. Choose the suggestion length, whether to suggest inside a word, and whether suggestions may span lines.
-- **Optional context**. Your name, your languages, notes about you, the app you are in and text you just copied can all inform a suggestion. Each one has its own switch.
+- **Optional context**. Your name, your languages, notes about you, the app you are in, text you just copied and the text on screen around the field can all inform a suggestion. Each one has its own switch.
+- **Streaming and input methods**. Optionally watch a suggestion appear word by word as it generates. Cotabby holds back while a Japanese, Chinese or Korean input method is composing.
 - **Rebindable shortcuts** with per-app overrides, a double tap to accept everything, and a global on/off key.
-- **Pause when you want**. Pause for a while from the tray, turn Cotabby off in specific apps, or let battery saver pause it for you.
+- **Pause when you want**. Pause for a while from the tray, turn Cotabby off in specific apps, or let battery saver or Energy Saver pause it for you.
 
 <div align="center">
 
@@ -61,6 +62,7 @@ Privacy is the whole point, so the default engine keeps generation on your PC.
 - The local engine runs entirely on your machine.
 - The optional OpenAI-compatible engine sends a bounded request only to the endpoint you configure. That endpoint can be on this PC, on your local network, or a public HTTPS service. Text after your cursor is never sent to it.
 - No analytics, no telemetry, no crash reporting.
+- Screen context reads the window around the field with the Windows OCR engine on your PC. The pixels are dropped once read and nothing is saved. With an endpoint selected, only a short excerpt from just above the field is sent. Cotabby's own suggestion is left out of screen capture, so it is never read back, and it also stays out of screenshots and screen shares while screen context is on.
 - A normal install never writes what you type to disk. The log records timings and counts. Verbose logging that includes text is opt-in through the `COTABBY_DEBUG_LOG=1` environment variable.
 - Cotabby stays out of password fields, sign-in and verification fields, and terminals.
 - Apart from a configured endpoint, the network is only used to download models.
@@ -113,7 +115,7 @@ Every shortcut can be changed under Settings, Shortcuts. Cotabby lives in the sy
 
 ## Install
 
-There is no installer yet, so Cotabby runs from source. You need Windows 10 1903 or later on x64 and the [.NET 9 SDK](https://dotnet.microsoft.com/download).
+There is no installer yet, so Cotabby runs from source. You need Windows 10 version 2004 or later on x64 and the [.NET 9 SDK](https://dotnet.microsoft.com/download).
 
 ```powershell
 git clone https://github.com/Msde-7/cotabby-windows.git
@@ -162,9 +164,10 @@ Settings live in `%APPDATA%\Cotabby\settings.json`, models in `%LOCALAPPDATA%\Co
 | Performance tracking toggle and recent request log | Ported |
 | Opt-in typing history with Cotypist import, encrypted with AES-GCM under a DPAPI key | Ported |
 | Apple Intelligence engine | Not applicable on Windows |
-| Screen context through OCR | Not ported |
-| Streaming partial suggestions on screen, next-word prefetch behind a word ending | Not ported |
-| Holding back while an input method composes text | Not ported |
+| Screen context through OCR, with Windows.Media.Ocr in place of Vision | Ported |
+| Streaming partial suggestions on screen, next-word prefetch behind a word ending or a spelling fix | Ported |
+| Prompt prewarm when a field gains focus | Ported |
+| Holding back while an input method composes text | Ported. Windows keeps another app's composition private, so the hold follows the input method's mode and the keys each language commits with |
 | Per-domain disable (a hidden option upstream), automatic updates (needs an installer) | Not ported |
 
 

@@ -5,8 +5,8 @@
 //
 // Steps.
 //   1. Open Notepad, focus it.
-//   2. Synthesize typing via SendInput. Cotabby's hook drops LLKHF_INJECTED
-//      events unless COTABBY_ALLOW_INJECTED=1 was set before the app started.
+//   2. Synthesize typing via SendInput. Cotabby's hook ignores only the keys it sends
+//      itself, so injected typing reaches it like any other input.
 //   3. Wait for the model to emit (~3s).
 //   4. Enumerate visible windows owned by Cotabby PID and report which ones
 //      are visible (the overlay HWND should appear here).
