@@ -19,6 +19,8 @@ namespace Cotabby.App.UI;
 /// </summary>
 public partial class WelcomeWindow : Window
 {
+    private static WelcomeWindow? _instance;
+
     private readonly AppHost _host;
     private readonly FrameworkElement[] _steps;
     private readonly (Border Card, Border Badge, Border Recommended)[] _templates;
@@ -75,7 +77,21 @@ public partial class WelcomeWindow : Window
         ShowStep(0);
     }
 
-    public static void ShowFor(AppHost host) => new WelcomeWindow(host).Show();
+    /// <summary>
+    /// Shows the wizard, or brings back the one already open. A second one would fail to download
+    /// the model the first is fetching.
+    /// </summary>
+    public static void ShowFor(AppHost host)
+    {
+        if (_instance is null)
+        {
+            _instance = new WelcomeWindow(host);
+            _instance.Closed += (_, _) => _instance = null;
+            _instance.Show();
+        }
+        if (_instance.WindowState == WindowState.Minimized) _instance.WindowState = WindowState.Normal;
+        _instance.Activate();
+    }
 
     private void BuildCapsules()
     {
@@ -135,7 +151,8 @@ public partial class WelcomeWindow : Window
             if (s.Languages.Count == 0) s.Languages = [.. LanguageCatalog.DefaultLanguages];
             s.ShowFirstRunWelcome = false;
         });
-        // A model download that is still running continues on the host after this window closes.
+        // A model download that is still running continues on the host after this window closes,
+        // and the model list in Settings can pause or cancel it.
         Close();
     }
 
@@ -242,9 +259,12 @@ public partial class WelcomeWindow : Window
             UpdateModelStatusUi();
         });
 
+        var cts = _modelCts;
+        var ensure = _host.EnsureModelReadyAsync(progress, cts.Token);
+        _host.RunningSetupDownload = new AppHost.SetupDownload(modelId, cts, ensure);
         try
         {
-            await _host.EnsureModelReadyAsync(progress, _modelCts.Token);
+            await ensure;
             if (seq == _ensureSeq)
             {
                 _modelReadyFor = modelId;
@@ -263,6 +283,7 @@ public partial class WelcomeWindow : Window
                 _ensureBusy = false;
             }
         }
+        if (_host.RunningSetupDownload?.Cancellation == cts) _host.RunningSetupDownload = null;
         UpdateModelStatusUi();
     }
 

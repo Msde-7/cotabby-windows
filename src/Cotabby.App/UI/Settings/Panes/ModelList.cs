@@ -89,8 +89,10 @@ internal sealed class ModelList : StackPanel
         // A partial left by an earlier download shows as paused, also after a restart.
         var onDisk = loadingThis ? null : ModelDownloader.StateOnDisk(model);
         var paused = onDisk as ModelDownloadState.Paused;
-        // The first-run window may be downloading this model, which this list cannot pause or cancel.
+        // The first-run window may be downloading this model. That download outlives the window,
+        // so it is paused or cancelled here.
         bool downloadingElsewhere = onDisk is ModelDownloadState.Downloading;
+        var setupDownload = _context.Host.RunningSetupDownload is { } running && running.ModelId == model.Id ? running : null;
 
         var names = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
         names.Children.Add(new TextBlock { Text = model.DisplayName, FontSize = 13, FontWeight = FontWeights.SemiBold });
@@ -126,7 +128,11 @@ internal sealed class ModelList : StackPanel
         }
         else if (downloadingElsewhere)
         {
-            trailing = Ui.Text("In setup window", "Caption");
+            trailing = setupDownload is not null
+                ? Ui.Across(
+                    Ui.Button("Pause", () => StopSetupDownload(setupDownload, model, discard: false)),
+                    Ui.Button("Cancel", () => StopSetupDownload(setupDownload, model, discard: true)))
+                : Ui.Text("In setup window", "Caption");
         }
         else if (paused is not null)
         {
@@ -263,6 +269,22 @@ internal sealed class ModelList : StackPanel
     {
         _cancelRequested = true;
         _loading?.Cancel();
+    }
+
+    /// <summary>Stops the first-run window's download. Pause keeps what has arrived, cancel deletes it.</summary>
+    private async void StopSetupDownload(AppHost.SetupDownload download, CotabbyModel model, bool discard)
+    {
+        download.Cancellation.Cancel();
+        try
+        {
+            await download.Completion;
+        }
+        catch (Exception)
+        {
+            // The first-run window, if it is still open, shows how its download ended.
+        }
+        if (discard) Discard(model);
+        _context.Refresh();
     }
 
     private void Discard(CotabbyModel model)

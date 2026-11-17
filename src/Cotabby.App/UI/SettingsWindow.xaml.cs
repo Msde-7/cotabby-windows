@@ -54,6 +54,8 @@ public partial class SettingsWindow : Window
             _instance = new SettingsWindow(host);
             _instance.Show();
         }
+        // Activating a minimized window leaves it minimized.
+        if (_instance.WindowState == WindowState.Minimized) _instance.WindowState = WindowState.Normal;
         _instance.Activate();
     }
 

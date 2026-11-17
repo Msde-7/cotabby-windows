@@ -55,6 +55,11 @@ public sealed class AppHost : IAsyncDisposable
     private readonly ScreenContextSource? _screenContext;
     private bool? _launchAtLoginApplied;
 
+    /// <summary>How long settings must stay unchanged before they are written.</summary>
+    private static readonly TimeSpan SaveDelay = TimeSpan.FromMilliseconds(500);
+    private readonly Timer _saveTimer;
+    private bool _savePending;
+
     /// <summary>False when Windows has no OCR language for the user's languages, so screen context cannot run.</summary>
     public bool ScreenContextAvailable { get; }
 
@@ -69,6 +74,14 @@ public sealed class AppHost : IAsyncDisposable
     public TypingHistoryStore TypingHistory { get; }
     public RequestLog RequestLog { get; } = new(System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Cotabby", "request-log.json"));
+
+    /// <summary>
+    /// The model download the first-run window started, while it runs. Like upstream's, it carries
+    /// on after the window closes, so the model list in Settings offers its pause and cancel.
+    /// </summary>
+    public SetupDownload? RunningSetupDownload { get; set; }
+
+    public sealed record SetupDownload(string ModelId, CancellationTokenSource Cancellation, Task Completion);
 
     /// <summary>Raised on the UI thread after settings were applied or a model was loaded, so open windows and the tray can refresh.</summary>
     public event Action? SettingsApplied;
@@ -89,6 +102,7 @@ public sealed class AppHost : IAsyncDisposable
         _ui = ui;
         _overlay = overlay;
         _macroPreview = macroPreview;
+        _saveTimer = new Timer(_ => _ui.Post(_ => SavePending(), null));
 
         _services = BuildServices();
 
@@ -202,7 +216,31 @@ public sealed class AppHost : IAsyncDisposable
     public void PersistSettings()
     {
         ApplySettings();
-        SaveSettings();
+        ScheduleSave();
+    }
+
+    /// <summary>
+    /// A slider sends a change for every step, so the file is written once the changes have
+    /// stopped for a moment, and at exit, instead of on every step.
+    /// </summary>
+    private void ScheduleSave()
+    {
+        _savePending = true;
+        _saveTimer.Change(SaveDelay, Timeout.InfiniteTimeSpan);
+    }
+
+    private void SavePending()
+    {
+        if (!_savePending) return;
+        _savePending = false;
+        try
+        {
+            SaveSettings();
+        }
+        catch (Exception ex)
+        {
+            LogError(ex, "Saving the settings failed.");
+        }
     }
 
     /// <summary>Changes the settings, then applies and saves them.</summary>
@@ -385,6 +423,7 @@ public sealed class AppHost : IAsyncDisposable
     /// <summary>
     /// Downloads the selected model if needed, then loads it. Only the download can be cancelled.
     /// A cancelled load would leave no model in memory, because the old one is released first.
+    /// Called on the UI thread.
     /// </summary>
     public async Task<bool> EnsureModelReadyAsync(IProgress<ModelDownloader.Progress>? progress, CancellationToken ct)
     {
@@ -392,7 +431,8 @@ public sealed class AppHost : IAsyncDisposable
         var selected = ModelCatalog.FindById(SelectedModelId) ?? ResolveActiveModel();
         if (!ModelDownloader.IsCached(selected))
         {
-            await Downloader.DownloadAsync(selected, progress, ct).ConfigureAwait(false);
+            // Back on the caller's UI thread, because resolving the model below may write the settings.
+            await Downloader.DownloadAsync(selected, progress, ct);
         }
         // The selection may have changed during a long download.
         var model = ResolveActiveModel();
@@ -437,10 +477,15 @@ public sealed class AppHost : IAsyncDisposable
         return Runtime.IsReady;
     }
 
+    /// <summary>The model to load. A missing or unknown active model id is replaced and saved. Runs on the UI thread.</summary>
     private CotabbyModel ResolveActiveModel()
     {
         var model = ActiveModel();
-        Settings.ActiveModelId = model.Id;
+        if (Settings.ActiveModelId != model.Id)
+        {
+            Settings.ActiveModelId = model.Id;
+            ScheduleSave();
+        }
         return PowerSourceModel() ?? model;
     }
 
@@ -502,7 +547,11 @@ public sealed class AppHost : IAsyncDisposable
     {
         var stepTimeout = TimeSpan.FromSeconds(2);
 
-        Step("save settings", SaveSettings);
+        Step("save settings", () =>
+        {
+            _saveTimer.Dispose();
+            SaveSettings();
+        });
         Step("unsubscribe", () =>
         {
             _hook.KeyEvent -= OnGlobalToggleKey;
