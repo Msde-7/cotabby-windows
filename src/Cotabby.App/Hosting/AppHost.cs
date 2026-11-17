@@ -53,6 +53,7 @@ public sealed class AppHost : IAsyncDisposable
     private readonly MacroController _macros;
     private readonly OpenAICompatibleSuggestionEngine _endpoint;
     private readonly ScreenContextSource? _screenContext;
+    private bool? _launchAtLoginApplied;
 
     /// <summary>False when Windows has no OCR language for the user's languages, so screen context cannot run.</summary>
     public bool ScreenContextAvailable { get; }
@@ -270,7 +271,12 @@ public sealed class AppHost : IAsyncDisposable
         _macros.Enabled = Settings.MacrosEnabled;
         _overlay.ApplyAppearance(Settings);
         _macroPreview.ApplyAppearance(Settings);
-        LaunchAtLogin.Set(Settings.LaunchAtLogin);
+        // The Run key is written at startup and when the switch changes, not on every settings change.
+        if (_launchAtLoginApplied != Settings.LaunchAtLogin)
+        {
+            LaunchAtLogin.Set(Settings.LaunchAtLogin);
+            _launchAtLoginApplied = Settings.LaunchAtLogin;
+        }
         ApplyEngineResidency();
         SettingsApplied?.Invoke();
     }

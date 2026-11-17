@@ -256,4 +256,16 @@ public class DateMacroEvaluatorTests
         Assert.Equal("2026-06-04", sut.Evaluate("today(iso)")?.InsertionText);
         Assert.Equal("12:00", sut.Evaluate("now(24h)")?.InsertionText);
     }
+
+    [Fact]
+    public void AWeekdayMacroAtMidnightReadsTheClockOnce()
+    {
+        // The first reading is Thursday 23:59:59.999, every later one is Friday.
+        int reads = 0;
+        var sut = new DateMacroEvaluator(
+            () => reads++ == 0 ? new DateTime(2026, 6, 4, 23, 59, 59, 999) : new DateTime(2026, 6, 5, 0, 0, 0),
+            CultureInfo.GetCultureInfo("en-US"));
+
+        Assert.Equal("Jun 5, 2026", sut.Evaluate("next-fri")?.InsertionText);
+    }
 }

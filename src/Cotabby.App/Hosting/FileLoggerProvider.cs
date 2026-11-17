@@ -26,7 +26,24 @@ public sealed class FileLoggerProvider : ILoggerProvider
         { AutoFlush = true };
     }
 
-    public ILogger CreateLogger(string categoryName) => new FileLogger(categoryName, _gate, _writer);
+    public ILogger CreateLogger(string categoryName) => new FileLogger(categoryName, this);
+
+    private bool IsOpen
+    {
+        get
+        {
+            lock (_gate) return _writer is not null;
+        }
+    }
+
+    /// <summary>Writes one line, or drops it once the provider is disposed, so late messages at shutdown never throw.</summary>
+    private void Write(string line)
+    {
+        lock (_gate)
+        {
+            _writer?.WriteLine(line);
+        }
+    }
 
     public void Dispose()
     {
@@ -37,22 +54,19 @@ public sealed class FileLoggerProvider : ILoggerProvider
         }
     }
 
-    private sealed class FileLogger(string category, object gate, StreamWriter? writer) : ILogger
+    private sealed class FileLogger(string category, FileLoggerProvider owner) : ILogger
     {
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => writer is not null && logLevel >= LogLevel.Debug;
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Debug && owner.IsOpen;
 
         public void Log<TState>(
             LogLevel logLevel, EventId eventId, TState state,
             Exception? exception, Func<TState, Exception?, string> formatter)
         {
-            if (!IsEnabled(logLevel) || writer is null) return;
+            if (!IsEnabled(logLevel)) return;
             var line = $"{DateTime.Now:HH:mm:ss.fff} {ShortLevel(logLevel)}: {category}[{eventId.Id}] {formatter(state, exception)}";
             if (exception is not null) line += $" :: {exception}";
-            lock (gate)
-            {
-                writer.WriteLine(line);
-            }
+            owner.Write(line);
         }
 
         private static string ShortLevel(LogLevel l) => l switch

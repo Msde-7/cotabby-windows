@@ -109,7 +109,9 @@ public sealed partial class DateMacroEvaluator : IMacroEvaluator
     {
         var parts = keyword.Split('-', 2);
         if (parts.Length != 2 || !Weekdays.TryGetValue(parts[1], out var target)) return null;
-        int forward = ((int)target - (int)_calendar.GetDayOfWeek(_now()) + 7) % 7;
+        // One reading of the clock, so a macro typed at midnight cannot mix two different days.
+        var today = _now();
+        int forward = ((int)target - (int)_calendar.GetDayOfWeek(today) + 7) % 7;
         int? delta = parts[0] switch
         {
             "this" => forward,
@@ -117,7 +119,7 @@ public sealed partial class DateMacroEvaluator : IMacroEvaluator
             "last" => forward == 0 ? -7 : forward - 7,
             _ => null,
         };
-        return delta is { } days ? AddDays(days) : null;
+        return delta is { } days ? Offset(days, (calendar, _, n) => calendar.AddDays(today, n)) : null;
     }
 
     private string FormatDate(DateTime date, string? style) => style switch

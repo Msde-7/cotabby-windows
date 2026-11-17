@@ -210,10 +210,23 @@ internal static class PerformancePane
             else store.EndSampling();
         }
 
-        panel.IsVisibleChanged += (_, _) => Sample(panel.IsVisible);
+        // A minimized window still counts as visible to WPF, so its state is checked too.
+        Window? window = null;
+        bool Wanted() => panel.IsVisible && window?.WindowState != WindowState.Minimized;
+        void OnWindowState(object? sender, EventArgs e) => Sample(Wanted());
+        panel.IsVisibleChanged += (_, _) =>
+        {
+            if (window is null && Window.GetWindow(panel) is { } owner)
+            {
+                window = owner;
+                window.StateChanged += OnWindowState;
+            }
+            Sample(Wanted());
+        };
         context.Closed += () =>
         {
             store.Changed -= OnChanged;
+            if (window is not null) window.StateChanged -= OnWindowState;
             Sample(false);
             store.Dispose();
         };
