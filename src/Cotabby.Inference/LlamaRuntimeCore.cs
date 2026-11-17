@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Numerics;
 using System.Text;
 using Cotabby.Core.Support;
 using LLama;
@@ -403,31 +404,43 @@ public sealed class LlamaRuntimeCore : IDisposable
         Span<int> ids = stackalloc int[TopK];
         Span<float> vals = stackalloc float[TopK];
         int count = 0;
-        for (int i = 0; i < logits.Length; i++)
+        int width = Vector<float>.Count;
+        int i = 0;
+        while (i < logits.Length)
         {
-            float v = logits[i];
-            if (count == k && v <= vals[count - 1]) continue;
-            // Insertion into the descending top-K window.
-            int pos = count < k ? count : k - 1;
-            while (pos > 0 && vals[pos - 1] < v)
+            // Once the window is full, whole vectors at or below its lowest logit are skipped. They
+            // are exactly the values the scalar test below would skip.
+            if (count == k && Vector.IsHardwareAccelerated)
             {
-                if (pos < k)
-                {
-                    vals[pos] = vals[pos - 1];
-                    ids[pos] = ids[pos - 1];
-                }
-                pos--;
+                var floor = new Vector<float>(vals[k - 1]);
+                while (i <= logits.Length - width && Vector.LessThanOrEqualAll(new Vector<float>(logits[i..]), floor)) i += width;
             }
-            vals[pos] = v;
-            ids[pos] = i;
-            if (count < k) count++;
+            for (int end = Math.Min(logits.Length, i + width); i < end; i++)
+            {
+                float v = logits[i];
+                if (count == k && v <= vals[count - 1]) continue;
+                // Insertion into the descending top-K window.
+                int pos = count < k ? count : k - 1;
+                while (pos > 0 && vals[pos - 1] < v)
+                {
+                    if (pos < k)
+                    {
+                        vals[pos] = vals[pos - 1];
+                        ids[pos] = ids[pos - 1];
+                    }
+                    pos--;
+                }
+                vals[pos] = v;
+                ids[pos] = i;
+                if (count < k) count++;
+            }
         }
 
-        for (int i = 0; i < count; i++)
+        for (int rank = 0; rank < count; rank++)
         {
-            var token = (LLamaToken)ids[i];
+            var token = (LLamaToken)ids[rank];
             if (token.IsEndOfGeneration(Vocab)) return token;
-            if (blocked.Contains(ids[i])) continue;
+            if (blocked.Contains(ids[rank])) continue;
 
             int byteLen = WritePiece(token, scratch);
             if (byteLen == 0) continue;

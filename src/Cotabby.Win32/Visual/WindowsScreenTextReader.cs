@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
 using Cotabby.Core.Context;
@@ -28,6 +29,10 @@ public sealed class WindowsScreenTextReader : IScreenTextReader
     private readonly OcrEngine? _engine;
     private readonly SemaphoreSlim _oneAtATime = new(1, 1);
     private readonly List<(ulong Hash, int MaxChars, IReadOnlyList<OcrLine> Lines)> _cache = [];
+
+    // Reused by every capture under _oneAtATime, so a large window is not a new large-object
+    // allocation every few seconds. Zeroed once each read is done.
+    private byte[] _pixels = [];
 
     public WindowsScreenTextReader(ILogger logger)
     {
@@ -67,6 +72,7 @@ public sealed class WindowsScreenTextReader : IScreenTextReader
         }
         finally
         {
+            Array.Clear(_pixels);
             _oneAtATime.Release();
         }
     }
@@ -152,7 +158,7 @@ public sealed class WindowsScreenTextReader : IScreenTextReader
     }
 
     /// <summary>Copies a screen rectangle into a top-down 32-bit buffer of the given size.</summary>
-    private static unsafe byte[]? CopyScreen(RECT source, int width, int height)
+    private unsafe byte[]? CopyScreen(RECT source, int width, int height)
     {
         IntPtr screen = GetDC(IntPtr.Zero);
         if (screen == IntPtr.Zero) return null;
@@ -176,11 +182,10 @@ public sealed class WindowsScreenTextReader : IScreenTextReader
             {
                 return null;
             }
-            var pixels = new byte[width * height * 4];
-            Marshal.Copy(bits, pixels, 0, pixels.Length);
+            if (_pixels.Length != width * height * 4) _pixels = new byte[width * height * 4];
             // GDI leaves alpha undefined. OCR reads premultiplied pixels, so they are made opaque.
-            for (int i = 3; i < pixels.Length; i += 4) pixels[i] = 255;
-            return pixels;
+            CopyOpaque(new ReadOnlySpan<uint>((void*)bits, width * height), MemoryMarshal.Cast<byte, uint>(_pixels.AsSpan()));
+            return _pixels;
         }
         finally
         {
@@ -189,6 +194,22 @@ public sealed class WindowsScreenTextReader : IScreenTextReader
             if (memory != IntPtr.Zero) DeleteDC(memory);
             ReleaseDC(IntPtr.Zero, screen);
         }
+    }
+
+    /// <summary>Copies BGRA pixels with every alpha byte set to 255.</summary>
+    private static void CopyOpaque(ReadOnlySpan<uint> source, Span<uint> target)
+    {
+        const uint OpaqueAlpha = 0xFF000000;
+        int i = 0;
+        if (Vector.IsHardwareAccelerated)
+        {
+            var alpha = new Vector<uint>(OpaqueAlpha);
+            for (; i <= source.Length - Vector<uint>.Count; i += Vector<uint>.Count)
+            {
+                (new Vector<uint>(source[i..]) | alpha).CopyTo(target[i..]);
+            }
+        }
+        for (; i < source.Length; i++) target[i] = source[i] | OpaqueAlpha;
     }
 
     private async Task<IReadOnlyList<OcrLine>> RecognizeAsync(CapturedImage image, int maxCharacters)
