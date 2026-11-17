@@ -16,7 +16,17 @@ public sealed class WindowsSpellChecker(ISpellingLexicon fallback) : ISpellingLe
     private readonly object _gate = new();
     private readonly Dictionary<SpellingDictionaryLanguage, ISpellChecker?> _checkers = [];
 
-    public bool IsKnownWord(string word, SpellingDictionaryLanguage language)
+    /// <remarks>
+    /// The checkers are COM objects created and used in the multithreaded apartment. A call from a
+    /// single-threaded apartment, such as the UI thread, would create one there that the pool's
+    /// threads then cannot use, so such a call is moved to the pool.
+    /// </remarks>
+    public bool IsKnownWord(string word, SpellingDictionaryLanguage language) =>
+        Thread.CurrentThread.GetApartmentState() == ApartmentState.STA
+            ? Task.Run(() => IsKnownWordInPool(word, language)).GetAwaiter().GetResult()
+            : IsKnownWordInPool(word, language);
+
+    private bool IsKnownWordInPool(string word, SpellingDictionaryLanguage language)
     {
         lock (_gate)
         {
@@ -34,6 +44,11 @@ public sealed class WindowsSpellChecker(ISpellingLexicon fallback) : ISpellingLe
             catch (COMException)
             {
                 _checkers[language] = null;
+                return fallback.IsKnownWord(word, language);
+            }
+            catch (InvalidCastException)
+            {
+                // A checker reached from the wrong apartment. The bundled lexicon answers this time.
                 return fallback.IsKnownWord(word, language);
             }
         }

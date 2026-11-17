@@ -125,6 +125,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         public string? Pending;
         public bool DrainQueued;
         public volatile bool Finished;
+
+        /// <summary>What this stream shows, read by the checks off the UI context.</summary>
+        public volatile string Rendered = "";
     }
 
     /// <summary>What the hook thread may accept right now.</summary>
@@ -691,6 +694,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             History?.HistoryExamples(field, settings.UsesEndpoint),
             settings.ScreenContext ? _screen?.For(field) : null);
 
+    /// <summary>
+    /// Takes the newest partial off the decode thread. Its checks run on the thread pool, like a
+    /// final answer's: they consult the Windows spell checker, a COM object that must stay on the
+    /// pool's threads, where every other check uses it. Only the render reaches the UI context.
+    /// </summary>
     private void QueuePartial(PartialStream stream, string partial)
     {
         lock (stream.Gate)
@@ -699,29 +707,49 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             if (stream.DrainQueued) return;
             stream.DrainQueued = true;
         }
-        Post(() =>
+        ThreadPool.UnsafeQueueUserWorkItem(_ => DrainPartial(stream), null);
+    }
+
+    private void DrainPartial(PartialStream stream)
+    {
+        string? partial;
+        lock (stream.Gate)
         {
-            string? pending;
-            lock (stream.Gate)
+            partial = stream.Pending;
+            stream.Pending = null;
+            stream.DrainQueued = false;
+        }
+        if (partial is null || stream.Finished || stream.Ct.IsCancellationRequested) return;
+        try
+        {
+            string rendered = stream.Rendered;
+            string candidate = StreamedGhostTextPolicy.CompletedBufferedPrediction(partial, GraphemeString.CountOf(rendered));
+            if (string.IsNullOrWhiteSpace(candidate)) return;
+            if (CompletionFinalizer.Finalize(candidate, stream.Field, stream.Settings, _engine.SpacingIsExact, _typos)
+                is not { } completion)
             {
-                pending = stream.Pending;
-                stream.Pending = null;
-                stream.DrainQueued = false;
+                return;
             }
-            if (pending is not null) ShowPartial(stream, pending);
-        });
+            if (!StreamedGhostTextPolicy.IsRenderableExtension(completion.Predicted, rendered.Length > 0 ? rendered : null)) return;
+            Post(() => ShowPartial(stream, partial, completion));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "A streamed partial of {ReqId} was skipped.", stream.RequestId);
+        }
     }
 
     /// <summary>
-    /// Shows a partial as a real, acceptable suggestion, so the user can take the first words the
-    /// moment they appear. It passes the same checks as a final answer, minus a word still being
-    /// generated, and only ever extends what shows.
+    /// Shows a checked partial as a real, acceptable suggestion, so the user can take the first words
+    /// the moment they appear. It only ever extends what shows.
     /// </summary>
-    private void ShowPartial(PartialStream stream, string partial)
+    private void ShowPartial(PartialStream stream, string partial, FinalCompletion completion)
     {
         if (stream.Finished || stream.Ct.IsCancellationRequested || _keySequence != stream.Sequence) return;
         bool growing = _session is { } shown && shown.RequestId == stream.RequestId && _streamingRequestId == stream.RequestId;
         if (_session is not null && !growing) return;
+        // A newer partial may have been shown while this one was checked.
+        if (!StreamedGhostTextPolicy.IsRenderableExtension(completion.Predicted, growing ? _streamRendered : null)) return;
         var field = stream.Field;
         if (_focusIdentity.Length > 0 && FocusIdentity(field) != _focusIdentity) return;
         if (PausedReason() is not null) return;
@@ -734,19 +762,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             return;
         }
 
-        string candidate = StreamedGhostTextPolicy.CompletedBufferedPrediction(
-            partial, growing ? GraphemeString.CountOf(_streamRendered) : 0);
-        if (string.IsNullOrWhiteSpace(candidate)) return;
-        if (CompletionFinalizer.Finalize(candidate, field, stream.Settings, _engine.SpacingIsExact, _typos) is not { } completion)
-        {
-            return;
-        }
-        if (!StreamedGhostTextPolicy.IsRenderableExtension(completion.Predicted, growing ? _streamRendered : null)) return;
-
         if (!growing)
         {
             Present(stream.RequestId, completion, field, (int)stream.Elapsed.ElapsedMilliseconds, stream.Sequence, stream.Ct,
                 streamed: true);
+            if (_streamingRequestId == stream.RequestId) stream.Rendered = completion.Predicted;
             return;
         }
         if (_dismissals.Suppresses(DismissalScope(field), field.PrecedingText, field.TrailingText, completion.Visible, Now()))
@@ -755,8 +775,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
         var grown = _session! with { PredictedText = completion.Predicted, FirstOfferLength = completion.FirstOfferLength };
         _session = grown;
-        _streamRendered = completion.Predicted;
+        _streamRendered = stream.Rendered = completion.Predicted;
         _overlay.Update(grown.VisibleText);
+        _logger.LogDebug("Streamed suggestion req={ReqId} grew to {Chars} chars.", stream.RequestId, grown.VisibleText.Length);
     }
 
     private async Task RetryPartialAsync(PartialStream stream, string partial, double pauseSeconds)
@@ -1169,6 +1190,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         var final = current with { PredictedText = completion.Predicted, FirstOfferLength = completion.FirstOfferLength };
         _session = final;
         _overlay.Update(final.VisibleText);
+        _logger.LogDebug("Final answer req={ReqId} replaced the streamed suggestion ({Chars} chars).", final.RequestId, final.VisibleText.Length);
         PrefetchContinuation(final, atOffer: true);
     }
 

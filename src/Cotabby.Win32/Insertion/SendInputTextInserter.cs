@@ -31,17 +31,25 @@ public sealed class SendInputTextInserter : ITextInserter
 {
     private readonly ILogger<SendInputTextInserter> _logger;
     private readonly ClipboardTextReader? _clipboardContext;
+    private readonly IFocusTracker? _focus;
 
     // Held from the first key of an insertion until its clipboard restore, so the next paste
     // never saves the suggestion as the user's clipboard.
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     /// <param name="clipboardContext">Told about every paste, so it does not take one for a copy by the user.</param>
-    public SendInputTextInserter(ILogger<SendInputTextInserter> logger, ClipboardTextReader? clipboardContext = null)
+    /// <param name="focus">Reads the field after a typed edit, so keys the host dropped can be sent again.</param>
+    public SendInputTextInserter(
+        ILogger<SendInputTextInserter> logger, ClipboardTextReader? clipboardContext = null, IFocusTracker? focus = null)
     {
         _logger = logger;
         _clipboardContext = clipboardContext;
+        _focus = focus;
     }
+
+    /// <summary>How long a typed edit gets to show in the field before it is checked.</summary>
+    private const int VerifyTimeoutMs = 300;
+    private const int VerifyPollMs = 30;
 
     /// <summary>Lets the host apply the deletes before the replacement text arrives.</summary>
     private const int DeleteSettleMs = 40;
@@ -61,18 +69,29 @@ public sealed class SendInputTextInserter : ITextInserter
     /// <summary>Pause between typed bursts, so the host's input queue drains.</summary>
     private const int BurstGapMs = 20;
 
+    /// <summary>Pause between the backspaces of a replacement.</summary>
+    private const int BackspaceSpacingMs = 4;
+
     public async Task<bool> ReplaceAsync(FocusedField target, int deleteCount, string text, CancellationToken ct)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         Task? restore = null;
         try
         {
+            string? before = ReadPreceding(target);
             if (deleteCount > 0)
             {
-                if (!Send(target, () => KeySender.SendBackspaces(deleteCount), "backspaces")) return false;
+                // One backspace per call, a moment apart. A burst of them sent in one call was seen to
+                // lose a key in Windows 11 Notepad, which left a character the edit meant to remove.
+                for (int i = 0; i < deleteCount; i++)
+                {
+                    if (!Send(target, () => KeySender.SendBackspaces(1), "backspaces")) return false;
+                    if (i < deleteCount - 1) await Task.Delay(BackspaceSpacingMs, ct).ConfigureAwait(false);
+                }
                 await Task.Delay(DeleteSettleMs, ct).ConfigureAwait(false);
             }
             (bool inserted, restore) = await InsertLockedAsync(target, text, ct).ConfigureAwait(false);
+            if (inserted && restore is null) await RepairAsync(target, before, deleteCount, text, ct).ConfigureAwait(false);
             return inserted;
         }
         finally
@@ -89,13 +108,60 @@ public sealed class SendInputTextInserter : ITextInserter
         Task? restore = null;
         try
         {
+            string? before = ReadPreceding(target);
             (bool inserted, restore) = await InsertLockedAsync(target, text, ct).ConfigureAwait(false);
+            if (inserted && restore is null) await RepairAsync(target, before, 0, text, ct).ConfigureAwait(false);
             return inserted;
         }
         finally
         {
             ReleaseAfter(restore);
         }
+    }
+
+    /// <summary>The text before the caret of the target field now, or null when it cannot be read.</summary>
+    private string? ReadPreceding(FocusedField target)
+    {
+        try
+        {
+            return _focus?.Refresh() is { } field && SameField(field, target) ? field.PrecedingText : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static bool SameField(FocusedField a, FocusedField b) => a.ProcessId == b.ProcessId && a.FieldId == b.FieldId;
+
+    /// <summary>
+    /// Checks a typed edit once the host has had time to show it, and sends the keys it dropped. Only
+    /// typed edits are checked: a paste arrives whole or not at all, and the clipboard is busy.
+    /// </summary>
+    private async Task RepairAsync(FocusedField target, string? before, int deleteCount, string text, CancellationToken ct)
+    {
+        if (before is null) return;
+        string expected = before[..Math.Max(0, before.Length - deleteCount)] + text;
+        string? live = null;
+        for (int waited = 0; waited <= VerifyTimeoutMs; waited += VerifyPollMs)
+        {
+            await Task.Delay(VerifyPollMs, ct).ConfigureAwait(false);
+            live = ReadPreceding(target);
+            if (live is null) return;
+            // The edit is there, possibly followed by what the user typed since.
+            if (live.Replace('\u00A0', ' ').StartsWith(expected.Replace('\u00A0', ' '), StringComparison.Ordinal)) return;
+        }
+        if (live is null || EditRepair.Plan(before, deleteCount, text, live) is not { } plan) return;
+
+        _logger.LogWarning(
+            "The host dropped keys from an edit. Sending {Backspaces} backspaces and {Chars} chars again.",
+            plan.Backspaces, plan.Text.Length);
+        for (int i = 0; i < plan.Backspaces; i++)
+        {
+            if (!Send(target, () => KeySender.SendBackspaces(1), "backspaces")) return;
+            await Task.Delay(BackspaceSpacingMs, ct).ConfigureAwait(false);
+        }
+        if (plan.Text.Length > 0 && SyntheticKeys.CanType(plan.Text)) Send(target, () => KeySender.SendText(plan.Text), "text");
     }
 
     /// <summary>Releases the gate now, or once a pending clipboard restore has finished.</summary>

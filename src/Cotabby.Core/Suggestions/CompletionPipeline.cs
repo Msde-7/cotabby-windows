@@ -47,7 +47,8 @@ public static class CompletionPipeline
                 TrailingText: request.Suffix,
                 IsMultiLineEnabled: !request.SingleLine,
                 WordRange: request.WordRange));
-        // Text that only continues what is on screen is no suggestion, however clean it is.
-        return normalized with { Text = ScreenEchoGuard.Trim(normalized.Text, request.ScreenContext, request.Prefix) };
+        // Text that only continues the screen or the prompt's own notes is no suggestion, however clean it is.
+        string shownContext = string.Join('\n', new[] { request.ScreenContext, request.LanguageInstruction }.Concat(request.SurfaceLines));
+        return normalized with { Text = ContextEchoGuard.Trim(normalized.Text, shownContext, request.Prefix) };
     }
 }

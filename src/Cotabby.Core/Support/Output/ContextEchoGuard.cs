@@ -3,24 +3,27 @@ using System.Text;
 namespace Cotabby.Core.Support.Output;
 
 /// <summary>
-/// Stops a suggestion from copying the screen. Screen context gives a base model the window's text,
-/// and with nothing better to say it may continue that text: a dialog, a status bar, a sidebar.
+/// Stops a suggestion from copying context the model was shown but the user never wrote: the text
+/// on screen, and the prompt's own description of the writer's language and app. With nothing better
+/// to say, a base model may continue that text, such as a dialog, a status bar or the language note.
+/// The user's notes, clipboard and earlier writing are left out on purpose, since reusing them is
+/// what they are there for.
 /// A name or a short phrase taken from the screen is what screen context is for, so only three
 /// shapes are cut: a later line of the suggestion that reproduces a whole line on screen, any line
 /// that reproduces a screen line carrying a number (a status bar or counter), and a run of
 /// <see cref="MinCopiedRun"/> words taken from the screen that the user's own text does not hold.
 /// </summary>
-public static class ScreenEchoGuard
+public static class ContextEchoGuard
 {
     /// <summary>The shortest run of words counted as copying rather than borrowing a phrase.</summary>
     public const int MinCopiedRun = 6;
 
     /// <summary>The completion cut before the first copied part, or unchanged when nothing was copied.</summary>
-    public static string Trim(string completion, string screenContext, string precedingText)
+    public static string Trim(string completion, string context, string precedingText)
     {
-        if (completion.Length == 0 || string.IsNullOrWhiteSpace(screenContext)) return completion;
+        if (completion.Length == 0 || string.IsNullOrWhiteSpace(context)) return completion;
 
-        var screenLines = screenContext.Split('\n')
+        var screenLines = context.Split('\n')
             .Select(Words)
             .Where(words => words.Count > 0)
             .ToList();
