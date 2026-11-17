@@ -18,7 +18,10 @@ public sealed class SuggestionCoordinatorContinuationTests : CoordinatorHarness
         Type("orld");
 
         await Shown(" again");
-        Assert.Equal(requests, Engine.Requests.Count);
+        // The text after "world" was generated once, ahead of time. Showing " again" may start the
+        // continuation after it, which is a request for different text.
+        Assert.Single(Engine.Requests, r => r.Prefix == "hello world");
+        Assert.DoesNotContain(Engine.Requests.Skip(requests), r => r.Prefix != "hello world again");
     }
 
     [Fact]

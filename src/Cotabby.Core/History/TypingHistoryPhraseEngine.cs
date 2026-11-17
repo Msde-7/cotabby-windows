@@ -12,9 +12,14 @@ namespace Cotabby.Core.History;
 /// </para>
 /// </summary>
 public sealed class TypingHistoryPhraseEngine(
-    ISuggestionEngine inner, ISuggestionHistoryProvider history, Func<bool> usesEndpoint) : ISuggestionEngine
+    ISuggestionEngine inner, ISuggestionHistoryProvider history, Func<bool> usesEndpoint,
+    Func<bool>? historyActive = null) : ISuggestionEngine
 {
-    public bool IsReady => inner.IsReady;
+    /// <summary>
+    /// History can answer while the local model is missing or still loading, so the engine is ready
+    /// whenever on-device history is on. The endpoint never takes a phrase, so it waits for its engine.
+    /// </summary>
+    public bool IsReady => inner.IsReady || (!usesEndpoint() && historyActive?.Invoke() == true);
 
     /// <summary>
     /// A phrase is the user's own text, character for character, which matches the local engine's
@@ -25,6 +30,6 @@ public sealed class TypingHistoryPhraseEngine(
     public Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct, Action<string>? onPartial = null)
     {
         if (history.PhraseContinuation(request, usesEndpoint()) is { } phrase) return Task.FromResult(phrase);
-        return inner.GenerateAsync(request, ct, onPartial);
+        return inner.IsReady ? inner.GenerateAsync(request, ct, onPartial) : Task.FromResult(string.Empty);
     }
 }

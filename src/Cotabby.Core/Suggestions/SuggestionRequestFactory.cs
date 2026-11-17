@@ -142,7 +142,7 @@ public static class SuggestionRequestFactory
         var surface = SurfaceContextComposer.Compose(
             AppSurfaceClassifier.Classify(
                 field.ProcessName, TerminalAppDetector.IsIntegratedTerminal(field.ClassName)),
-            applicationName: field.ProcessName,
+            applicationName: field.AppDisplayName.Length > 0 ? field.AppDisplayName : field.ProcessName,
             windowTitle: field.WindowTitle,
             fieldPlaceholder: field.HelpText);
         return surface is null ? [] : SurfaceContextComposer.PrefaceLines(surface);

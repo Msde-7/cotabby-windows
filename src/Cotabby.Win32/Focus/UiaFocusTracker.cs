@@ -313,6 +313,8 @@ public sealed class UiaFocusTracker : IFocusTracker
             AutomationId = info.AutomationId ?? string.Empty,
             ClassName = info.ClassName ?? string.Empty,
             WindowTitle = ForegroundWindowTitle(),
+            AppDisplayName = AppDisplayNames.For(pid),
+            ImeLanguageId = ImeState.ConvertingLanguage(),
             HostFontName = font.Name,
             HostFontSizePt = font.SizePt,
             HostFontWeight = font.Weight,

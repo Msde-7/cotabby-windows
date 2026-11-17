@@ -70,6 +70,15 @@ public sealed record FocusedField
     /// <summary>Class name. In Chromium hosts this is the DOM class list.</summary>
     public string ClassName { get; init; } = "";
 
+    /// <summary>The app's name as its publisher gives it, such as "Google Chrome", or empty when unknown.</summary>
+    public string AppDisplayName { get; init; } = "";
+
+    /// <summary>
+    /// Language of the input method when it is converting into its native script (a Japanese,
+    /// Chinese or Korean input method in that mode), or 0 when keys reach the field as typed.
+    /// </summary>
+    public int ImeLanguageId { get; init; }
+
     /// <summary>Title of the window that holds the field.</summary>
     public string WindowTitle { get; init; } = "";
 

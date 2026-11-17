@@ -30,7 +30,8 @@ public sealed class SuggestionCoordinatorPredictAheadTests : CoordinatorHarness
         _hold.SetResult();
 
         await Shown("rld again");
-        Assert.Equal(requests, Engine.Requests.Count);
+        // Nothing was asked for the typed text. Only the continuation after the suggestion may follow.
+        Assert.DoesNotContain(Engine.Requests.Skip(requests), r => r.Prefix != "hello world again");
     }
 
     [Fact]

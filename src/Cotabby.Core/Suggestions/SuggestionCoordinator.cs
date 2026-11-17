@@ -7,6 +7,7 @@ using Cotabby.Core.Insertion;
 using Cotabby.Core.Overlay;
 using Cotabby.Core.Spelling;
 using Cotabby.Core.Support;
+using Cotabby.Core.Text;
 using Microsoft.Extensions.Logging;
 
 namespace Cotabby.Core.Suggestions;
@@ -59,6 +60,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private readonly TypoCorrectionAdvisor? _typos;
     private readonly ClipboardContextSource? _clipboard;
     private readonly SuggestionDismissalMemory _dismissals = new();
+    private readonly ImeCompositionTracker _ime = new();
 
     private volatile SuggestionSettings _settings = SuggestionSettings.Default;
     private bool? _batterySaverWasOn;
@@ -66,6 +68,15 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private volatile AcceptKeyOwnership? _ownership;
 
     private SuggestionSession? _session;
+
+    /// <summary>
+    /// The request whose partials may still grow the visible suggestion. Null once the user types
+    /// into it or accepts from it, which freezes it at what was streamed.
+    /// </summary>
+    private string? _streamingRequestId;
+
+    /// <summary>What the streamed suggestion shows, so a partial only ever extends it.</summary>
+    private string _streamRendered = "";
     private FocusedField? _sessionField;
     private bool _sessionAcceptedAny;
     private bool _sessionPrefetched;
@@ -96,6 +107,26 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private long _keySequence;
     private int _focusedPid;
 
+    /// <summary>
+    /// Partials of one streamed request. They arrive on the decode thread at token rate, so only
+    /// the newest waits and at most one drain is queued on the UI context at a time.
+    /// </summary>
+    private sealed class PartialStream(
+        string requestId, FocusedField field, SuggestionSettings settings, long sequence, Stopwatch elapsed,
+        CancellationToken ct)
+    {
+        public string RequestId { get; } = requestId;
+        public FocusedField Field { get; } = field;
+        public SuggestionSettings Settings { get; } = settings;
+        public long Sequence { get; } = sequence;
+        public Stopwatch Elapsed { get; } = elapsed;
+        public CancellationToken Ct { get; } = ct;
+        public readonly object Gate = new();
+        public string? Pending;
+        public bool DrainQueued;
+        public volatile bool Finished;
+    }
+
     /// <summary>What the hook thread may accept right now.</summary>
     private sealed record Offer(KeyBinding AcceptWord, KeyBinding AcceptAll);
 
@@ -103,8 +134,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
     private sealed record AcceptedTail(string Text, string PrecedingText);
 
-    /// <summary>A generation for the text a suggestion leaves once typed through, ready before it is.</summary>
-    private sealed record PrefetchedContinuation(string FocusIdentity, string PrecedingText, string Text);
+    /// <summary>
+    /// A generation for the text a suggestion leaves once used, started before it is. The text may
+    /// still be generating; empty means it produced nothing.
+    /// </summary>
+    private sealed record PrefetchedContinuation(string FocusIdentity, string PrecedingText, Task<string> Text);
 
     public SuggestionCoordinator(
         IKeyboardHook hook,
@@ -241,11 +275,18 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         {
             RecordHistory(field);
             int pid = field?.ProcessId ?? 0;
+            string previousIdentity = _focusIdentity;
             _focusIdentity = field is null ? "" : FocusIdentity(field);
+            if (previousIdentity != _focusIdentity) _ime.Reset();
+            _ime.Observe(field?.ImeLanguageId ?? 0);
             TrackScreen(field);
             bool sameHost = pid != 0 && (_focusedPid == 0 || pid == _focusedPid);
             _focusedPid = pid;
-            if (sameHost && (_sessionField is null || _sessionField.FieldId == field!.FieldId)) return;
+            // A host that names no field, or names the same one again, is the same place. Another
+            // named field in the same app is a different place, so work for the old one stops.
+            string fieldId = field?.FieldId ?? "";
+            bool sameField = fieldId.Length == 0 || previousIdentity.Length == 0 || previousIdentity == _focusIdentity;
+            if (sameHost && sameField && (_sessionField is null || _sessionField.FieldId == fieldId)) return;
             SetPublishBaseline(null);
             CancelSession("focus moved");
             CancelPrefetch();
@@ -271,8 +312,10 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             {
                 // Suppressing here is the only way to eat the key before the host sees it.
                 args.Suppress = true;
-                _work.Cancel();
+                // The accept is queued before the work is cancelled. Cancelling can end a streamed
+                // request at once, and its cleanup must not reach the UI context ahead of the accept.
                 Post(() => Accept(all, ev.IsRepeat));
+                _work.Cancel();
                 return;
             }
         }
@@ -306,6 +349,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
 
         TrackForHostPublish(ev);
+        if (HoldsForComposition(ev)) return;
         _cadence.Record(_focusIdentity, ev.Kind == KeyKind.Character ? ev.Character.ToString() : "", Now());
 
         if (_session is { } session)
@@ -324,6 +368,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                     return;
                 case SuggestionSessionReconciler.Outcome.Advance when result.Next is { VisibleText.Length: > 0 } next:
                     _session = next;
+                    _streamingRequestId = null;
                     _expectedPreceding += ev.Character;
                     _overlay.Update(next.VisibleText);
                     _ = ReanchorAsync(next.RequestId, HostPublishPollMs);
@@ -374,6 +419,28 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Holds Cotabby back while an input method composes text the app has not received yet. A
+    /// suggestion would continue text that is about to change, and accepting one would land in
+    /// the middle of the composition. Committing the composition asks for a suggestion again.
+    /// </summary>
+    private bool HoldsForComposition(KeyboardEvent ev)
+    {
+        bool committed = _ime.Key(ev);
+        if (_ime.IsComposing)
+        {
+            if (_session is not null) CancelSession("the input method is composing");
+            _prediction = null;
+            _work.Cancel();
+            return true;
+        }
+        if (!committed) return false;
+        // The commit replaces the composition in the field, which a key count cannot follow.
+        SetPublishBaseline(null);
+        SchedulePrediction(typed: null);
+        return true;
+    }
+
+    /// <summary>
     /// A typed letter the running generation agrees with keeps it going instead of starting over,
     /// so the suggestion is ready when the user pauses.
     /// </summary>
@@ -398,25 +465,40 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         var baseline = _publishBaseline;
         int delta = _expectedDelta;
         long sequence = _keySequence;
-        _ = _work.Submit(ct => PredictAsync(requestId, settings, baseline, delta, typed, requiresTextChange, sequence, ct));
+        long submittedAt = _clock.GetTimestamp();
+        // The debounce runs alongside the wait for the host to show the key, not after it.
+        _ = _work.Submit(
+            ct => PredictAsync(requestId, settings, baseline, delta, typed, requiresTextChange, sequence, submittedAt, ct),
+            TimeSpan.Zero);
     }
 
     private async Task PredictAsync(
         string requestId, SuggestionSettings settings, FocusedField? baseline, int delta, char? typed,
-        bool requiresTextChange, long sequence, CancellationToken ct)
+        bool requiresTextChange, long sequence, long submittedAt, CancellationToken ct)
     {
         TypingPrediction? prediction = null;
+        PartialStream? stream = null;
         bool presented = false;
         try
         {
             var field = await WaitForHostPublishAsync(baseline, delta, typed, requiresTextChange, ct)
                 .ConfigureAwait(false);
+            // Whatever is left of the quiet time after a key, once the host has shown it. A key in
+            // the meantime cancels this work, so a fast typist still starts no generation per key.
+            var quiet = _work.Debounce - _clock.GetElapsedTime(submittedAt);
+            if (quiet > TimeSpan.Zero) await Task.Delay(quiet, _clock, ct).ConfigureAwait(false);
             RecordHistory(field);
             if (field is null) return;
             Post(() =>
             {
                 if (_keySequence == sequence) SetPublishBaseline(field);
+                _ime.Observe(field.ImeLanguageId);
             });
+            if (field.ImeLanguageId != 0 && _ime.IsComposing)
+            {
+                _logger.LogDebug("Request {ReqId} skipped: the input method is composing.", requestId);
+                return;
+            }
 
             TrackScreen(field, settings);
             if (SuggestionAvailability.DisabledReason(settings, field) is { } reason)
@@ -439,7 +521,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
             var stopwatch = Stopwatch.StartNew();
             string text;
-            if (TakePrefetched(field) is { } prefetched)
+            if (await TakePrefetchedAsync(field, ct).ConfigureAwait(false) is { } prefetched)
             {
                 text = prefetched;
                 _logger.LogDebug("Request {ReqId} answered by the prefetched continuation.", requestId);
@@ -451,11 +533,20 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 {
                     prediction = _prediction = new TypingPrediction(field, sequence, ct);
                 }
-                text = await GenerateAsync(BuildRequest(field, requestId, settings), ct, prediction is null ? null : partial =>
+                if (settings.StreamWhileGenerating) stream = new PartialStream(requestId, field, settings, sequence, stopwatch, ct);
+                var predicting = prediction;
+                var streaming = stream;
+                Action<string>? onPartial = predicting is null && streaming is null ? null : partial =>
                 {
-                    if (!prediction.Receive(partial, final: false)) RestartPrediction(prediction, "the model left what was typed");
-                }).ConfigureAwait(false);
-                UpdateDebounce(settings, (int)stopwatch.ElapsedMilliseconds);
+                    if (predicting is not null && !predicting.Receive(partial, final: false))
+                    {
+                        RestartPrediction(predicting, "the model left what was typed");
+                    }
+                    if (streaming is not null) QueuePartial(streaming, partial);
+                };
+                text = await GenerateAsync(BuildRequest(field, requestId, settings), ct, onPartial).ConfigureAwait(false);
+                // A cancelled request says nothing about how fast the engine is.
+                if (!ct.IsCancellationRequested) UpdateDebounce(settings, (int)stopwatch.ElapsedMilliseconds);
             }
             int latencyMs = (int)stopwatch.ElapsedMilliseconds;
             ct.ThrowIfCancellationRequested();
@@ -513,6 +604,12 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
         finally
         {
+            if (stream is not null)
+            {
+                stream.Finished = true;
+                // A streamed suggestion the final answer did not confirm goes away with it.
+                if (!presented) Post(() => EndStream(requestId, "the final answer was dropped"));
+            }
             // A finished request keeps no keys. Keys it kept for an answer that was then dropped
             // still need a request of their own.
             if (prediction?.Close() is { Length: > 0 } && !presented && !ct.IsCancellationRequested)
@@ -549,6 +646,101 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             History?.HistoryExamples(field, settings.UsesEndpoint),
             settings.ScreenContext ? _screen?.For(field) : null);
 
+    private void QueuePartial(PartialStream stream, string partial)
+    {
+        lock (stream.Gate)
+        {
+            stream.Pending = partial;
+            if (stream.DrainQueued) return;
+            stream.DrainQueued = true;
+        }
+        Post(() =>
+        {
+            string? pending;
+            lock (stream.Gate)
+            {
+                pending = stream.Pending;
+                stream.Pending = null;
+                stream.DrainQueued = false;
+            }
+            if (pending is not null) ShowPartial(stream, pending);
+        });
+    }
+
+    /// <summary>
+    /// Shows a partial as a real, acceptable suggestion, so the user can take the first words the
+    /// moment they appear. It passes the same checks as a final answer, minus a word still being
+    /// generated, and only ever extends what shows.
+    /// </summary>
+    private void ShowPartial(PartialStream stream, string partial)
+    {
+        if (stream.Finished || stream.Ct.IsCancellationRequested || _keySequence != stream.Sequence) return;
+        bool growing = _session is { } shown && shown.RequestId == stream.RequestId && _streamingRequestId == stream.RequestId;
+        if (_session is not null && !growing) return;
+        var field = stream.Field;
+        if (_focusIdentity.Length > 0 && FocusIdentity(field) != _focusIdentity) return;
+        if (PausedReason() is not null) return;
+        // Mid-word, nothing flashes up between two keys, as with a final answer. The partial is tried
+        // again after the pause unless a newer one has arrived by then.
+        double pause = _cadence.RemainingDelay(FocusIdentity(field), field.PrecedingText, Now());
+        if (pause > 0)
+        {
+            _ = RetryPartialAsync(stream, partial, pause);
+            return;
+        }
+
+        string candidate = StreamedGhostTextPolicy.CompletedBufferedPrediction(
+            partial, growing ? GraphemeString.CountOf(_streamRendered) : 0);
+        if (string.IsNullOrWhiteSpace(candidate)) return;
+        if (CompletionFinalizer.Finalize(candidate, field, stream.Settings, _engine.SpacingIsExact, _typos) is not { } completion)
+        {
+            return;
+        }
+        if (!StreamedGhostTextPolicy.IsRenderableExtension(completion.Predicted, growing ? _streamRendered : null)) return;
+
+        if (!growing)
+        {
+            Present(stream.RequestId, completion, field, (int)stream.Elapsed.ElapsedMilliseconds, stream.Sequence, stream.Ct,
+                streamed: true);
+            return;
+        }
+        if (_dismissals.Suppresses(DismissalScope(field), field.PrecedingText, field.TrailingText, completion.Visible, Now()))
+        {
+            return;
+        }
+        var grown = _session! with { PredictedText = completion.Predicted, FirstOfferLength = completion.FirstOfferLength };
+        _session = grown;
+        _streamRendered = completion.Predicted;
+        _overlay.Update(grown.VisibleText);
+    }
+
+    private async Task RetryPartialAsync(PartialStream stream, string partial, double pauseSeconds)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(pauseSeconds), _clock, stream.Ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        lock (stream.Gate)
+        {
+            if (stream.Pending is not null || stream.DrainQueued) return;
+        }
+        QueuePartial(stream, partial);
+    }
+
+    /// <summary>Clears a streamed suggestion that is still growing, once its request ends without a final answer.</summary>
+    private void EndStream(string requestId, string reason)
+    {
+        if (_streamingRequestId != requestId) return;
+        _streamingRequestId = null;
+        if (_session?.RequestId != requestId) return;
+        _logger.LogInformation("Suggestion cleared ({Reason}).", reason);
+        ClearSession();
+    }
+
     /// <summary>Keeps screen capture running for a field suggestions may appear in, and stops it everywhere else.</summary>
     private void TrackScreen(FocusedField? field, SuggestionSettings? settings = null)
     {
@@ -575,21 +767,18 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     });
 
     /// <summary>
-    /// Generates what follows a suggestion that is nearly typed through, so the suggestion after it is
-    /// ready when the user reaches its end. It runs beside the current work, which it must not cancel,
-    /// and only fills <see cref="_prefetched"/>, which nothing shows until the live text matches it.
+    /// Generates what follows a suggestion before the user reaches its end, so the next one is
+    /// ready the moment it is needed. Three cases qualify: a suggestion nearly typed through, a word
+    /// ending on its own, and a spelling fix, where the next words are predicted as if the ending or
+    /// fix were already in. It runs beside the current work, which it must not cancel, and only fills
+    /// <see cref="_prefetched"/>, which nothing shows until the live text matches it.
     /// </summary>
-    private void PrefetchContinuation(SuggestionSession session)
+    /// <param name="atOffer">True when called as the suggestion first shows.</param>
+    private void PrefetchContinuation(SuggestionSession session, bool atOffer = false)
     {
-        if (_sessionPrefetched || session.Correction is not null || _sessionField is not { } offeredIn
-            || session.PredictedText.Length > ContinuationPrefetchChars || session.IsExhausted || !_engine.IsReady)
-        {
-            return;
-        }
+        if (_sessionPrefetched || _sessionField is not { } offeredIn || session.IsExhausted || !_engine.IsReady) return;
         var settings = _settings;
-        // The text once the suggestion is typed through, from the session rather than the field,
-        // which may not have published the last keys yet.
-        string preceding = _expectedPreceding + session.PredictedText;
+        if (ContinuationTarget(session, settings, atOffer) is not { } preceding) return;
         if (!SuggestionRequestFactory.ShouldGenerate(preceding, offeredIn.TrailingText, settings.SuggestWithinWords)) return;
         _sessionPrefetched = true;
 
@@ -597,33 +786,64 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         string identity = FocusIdentity(field);
         CancelPrefetch();
         var cts = _prefetch = new CancellationTokenSource();
-        _ = Task.Run(async () =>
+        var text = Task.Run(async () =>
         {
             try
             {
                 var request = BuildRequest(field, "pre_" + Guid.NewGuid().ToString("N")[..8], settings);
-                string text = await GenerateAsync(request, cts.Token).ConfigureAwait(false);
-                if (text.Length == 0 || cts.IsCancellationRequested) return;
-                Post(() => _prefetched = new PrefetchedContinuation(identity, preceding, text));
-                _logger.LogDebug("Prefetched the continuation of {ReqId}.", session.RequestId);
+                string generated = await GenerateAsync(request, cts.Token).ConfigureAwait(false);
+                if (generated.Length > 0) _logger.LogDebug("Prefetched the continuation of {ReqId}.", session.RequestId);
+                return cts.IsCancellationRequested ? "" : generated;
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Prefetching the continuation of {ReqId} failed.", session.RequestId);
+                return "";
             }
         });
+        _prefetched = new PrefetchedContinuation(identity, preceding, text);
     }
 
-    /// <summary>The prefetched continuation when it was generated for this very text, used once.</summary>
-    private string? TakePrefetched(FocusedField field)
+    /// <summary>
+    /// The text before the caret once the suggestion is used, built from the session rather than the
+    /// field, which may not have published the last keys yet. Null when nothing should be prefetched.
+    /// </summary>
+    private string? ContinuationTarget(SuggestionSession session, SuggestionSettings settings, bool atOffer)
+    {
+        if (session.Correction is { } correction)
+        {
+            // An unconfirmed fix is new, speculative text, so it stays on this PC like upstream's.
+            if (settings.UsesEndpoint) return null;
+            return TypoCorrectionReplacementPlanner.Plan(
+                    _expectedPreceding, correction.Word, correction.CorrectedWord, requiresTrailingSpace: false) is { } fix
+                ? _expectedPreceding[..^fix.DeletingUtf16Count] + fix.ReplacementText
+                : null;
+        }
+        if (session.PredictedText.Length <= ContinuationPrefetchChars) return _expectedPreceding + session.PredictedText;
+        // A lone word ending: the words after it are a guess the model has not made yet.
+        bool wordEnding = atOffer && !settings.UsesEndpoint
+            && !session.PredictedText.Any(char.IsWhiteSpace)
+            && CaretWordContext.UnfinishedWord(_expectedPreceding) is not null;
+        return wordEnding ? _expectedPreceding + session.PredictedText : null;
+    }
+
+    /// <summary>
+    /// The prefetched continuation when it was generated for this very text, waiting for it if it is
+    /// still running. Used once. Null when there is none for this text or it produced nothing.
+    /// </summary>
+    private async Task<string?> TakePrefetchedAsync(FocusedField field, CancellationToken ct)
     {
         var prefetched = Interlocked.Exchange(ref _prefetched, null);
-        return prefetched is not null
-            && prefetched.FocusIdentity == FocusIdentity(field)
-            && SuggestionSessionReconciler.SpaceNormalized(prefetched.PrecedingText)
-                == SuggestionSessionReconciler.SpaceNormalized(field.PrecedingText)
-            ? prefetched.Text
-            : null;
+        if (prefetched is null || prefetched.FocusIdentity != FocusIdentity(field)) return null;
+        string expected = SuggestionSessionReconciler.SpaceNormalized(prefetched.PrecedingText);
+        string live = SuggestionSessionReconciler.SpaceNormalized(field.PrecedingText);
+        // The space added after accepting, or typed by the user, ends the same word. It is the one
+        // difference allowed, and it takes the place of the continuation's own leading space.
+        bool joinedBySpace = live == expected + " " && !expected.EndsWith(' ');
+        if (live != expected && !joinedBySpace) return null;
+        string text = await prefetched.Text.WaitAsync(ct).ConfigureAwait(false);
+        if (joinedBySpace) text = text.StartsWith(' ') ? text[1..] : "";
+        return text.Length == 0 ? null : text;
     }
 
     private void CancelPrefetch()
@@ -786,12 +1006,21 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
     }
 
+    /// <param name="streamed">True for a partial that later partials and the final answer may grow.</param>
     private void Present(
         string requestId, FinalCompletion completion, FocusedField field, int latencyMs, long sequence,
-        CancellationToken ct, TypoCorrection? correction = null)
+        CancellationToken ct, TypoCorrection? correction = null, bool streamed = false)
     {
+        // The final answer of a streamed request takes over the suggestion its partials built.
+        if (!streamed && _session is { } shown && shown.RequestId == requestId && _streamingRequestId == requestId)
+        {
+            ReplaceStream(completion, field);
+            return;
+        }
         // A key handled after the work finished can no longer cancel it, so the sequence is checked too.
         if (ct.IsCancellationRequested || _session is not null || _keySequence != sequence) return;
+        // Focus may have moved to another field in the same app while this was decided.
+        if (_focusIdentity.Length > 0 && FocusIdentity(field) != _focusIdentity) return;
 
         var session = new SuggestionSession
         {
@@ -822,6 +1051,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         _sessionAcceptedAny = false;
         _sessionPrefetched = false;
         _expectedPreceding = preceding;
+        _streamingRequestId = streamed ? requestId : null;
+        _streamRendered = streamed ? completion.Predicted : "";
         PublishOffer();
         _overlay.Show(text, field.CaretRect, StyleFor(field, correction), field);
         if (correction is null) Metrics.RecordShown(latencyMs);
@@ -829,12 +1060,33 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         _logger.LogDebug("Suggestion text req={ReqId} \"{Text}\"", requestId, LogText.Escape(text));
 
         _ = WatchSessionAsync(requestId);
+        // A partial is still growing, so the words after it are not known yet.
+        if (!streamed) PrefetchContinuation(session, atOffer: true);
 
         // A queued press only counts while the key is still owned. Later it would accept unseen text.
         bool acceptQueued = _queuedAccept && _ownership is { } owned && _clock.GetTimestamp() < owned.ExpiresAt;
         _ownership = null;
         _queuedAccept = false;
         if (acceptQueued && correction is null) Accept(all: false, isRepeat: true);
+    }
+
+    /// <summary>
+    /// Swaps a streamed suggestion for the final answer, which was checked against the same text.
+    /// A final answer that no longer begins with what shows leaves the suggestion as it is.
+    /// </summary>
+    private void ReplaceStream(FinalCompletion completion, FocusedField field)
+    {
+        _streamingRequestId = null;
+        if (_session is not { } current) return;
+        if (!completion.Predicted.StartsWith(current.VisibleText, StringComparison.Ordinal)
+            || _dismissals.Suppresses(DismissalScope(field), field.PrecedingText, field.TrailingText, completion.Visible, Now()))
+        {
+            return;
+        }
+        var final = current with { PredictedText = completion.Predicted, FirstOfferLength = completion.FirstOfferLength };
+        _session = final;
+        _overlay.Update(final.VisibleText);
+        PrefetchContinuation(final, atOffer: true);
     }
 
     /// <summary>
@@ -869,6 +1121,9 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
     private bool IsStillAtOffer(FocusedField? live) =>
         live is not null && _sessionField is { } offeredIn && SameField(live, offeredIn)
+        && !live.HasSelection
+        && SuggestionSessionReconciler.SpaceNormalized(live.TrailingText)
+            == SuggestionSessionReconciler.SpaceNormalized(offeredIn.TrailingText)
         && SuggestionSessionReconciler.FollowsExpected(
             _expectedPreceding, live.PrecedingText, PublishLagChars + _pendingInsertChars);
 
@@ -882,6 +1137,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
 
         var settings = _settings;
+        _streamingRequestId = null;
         if (session.Correction is { } correction)
         {
             ClearSession();
@@ -920,7 +1176,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         string expected = _expectedPreceding;
         string insertion = AcceptanceChunker.InsertionChunk(chunk, expected);
         if (exhausted && settings.AddSpaceAfterAccept) insertion = AcceptanceChunker.AppendingTrailingSpace(insertion);
-        var accepted = new AcceptedChunk(session.RequestId, field, expected, chunk, insertion, exhausted, firstChunk);
+        var accepted = new AcceptedChunk(
+            session.RequestId, field, expected, chunk, insertion, exhausted, firstChunk, _pendingInsertChars);
         _expectedPreceding = expected + insertion;
         _pendingInsertChars += insertion.Length;
 
@@ -957,7 +1214,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     /// <summary>One accept, decided on the UI context and carried out on the thread pool.</summary>
     private sealed record AcceptedChunk(
         string RequestId, FocusedField OfferedIn, string ExpectedPreceding, string Chunk, string Insertion,
-        bool Exhausted, bool FirstChunk);
+        bool Exhausted, bool FirstChunk, int PendingBefore);
 
     private async Task InsertAcceptedAsync(AcceptedChunk accepted)
     {
@@ -966,8 +1223,10 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             // The text goes where the caret is, so it is only sent if the caret is still where the
             // suggestion was shown.
             var field = _focus.Refresh();
+            // Chunks accepted just before this one may not have reached the field yet.
             if (field is null || !SameField(field, accepted.OfferedIn)
-                || !SuggestionSessionReconciler.FollowsExpected(accepted.ExpectedPreceding, field.PrecedingText, PublishLagChars))
+                || !SuggestionSessionReconciler.FollowsExpected(
+                    accepted.ExpectedPreceding, field.PrecedingText, PublishLagChars + accepted.PendingBefore))
             {
                 Post(() => CancelSession("the caret left the suggestion before the accept"));
                 return;
@@ -1087,6 +1346,8 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private void ClearSession()
     {
         _session = null;
+        _streamingRequestId = null;
+        _streamRendered = "";
         _sessionField = null;
         _offer = null;
         _overlay.Hide();

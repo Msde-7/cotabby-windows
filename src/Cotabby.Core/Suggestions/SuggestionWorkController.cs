@@ -31,7 +31,8 @@ public sealed class SuggestionWorkController : IAsyncDisposable
     /// scheduled before it. The returned task completes when the work finishes, is cancelled
     /// or throws.
     /// </summary>
-    public Task Submit(Func<CancellationToken, Task> work)
+    /// <param name="delay">Overrides <see cref="Debounce"/> for this submit, for work that waits on its own.</param>
+    public Task Submit(Func<CancellationToken, Task> work, TimeSpan? delay = null)
     {
         if (_disposed) return Task.CompletedTask;
 
@@ -48,16 +49,17 @@ public sealed class SuggestionWorkController : IAsyncDisposable
 
         // The work always starts on the thread pool. With no debounce it would otherwise run on
         // the caller, which is the UI thread.
-        var task = Task.Run(() => RunAsync(work, cts));
+        var wait = delay ?? Debounce;
+        var task = Task.Run(() => RunAsync(work, wait, cts));
         lock (_gate) { _pendingTask = task; }
         return task;
     }
 
-    private async Task RunAsync(Func<CancellationToken, Task> work, CancellationTokenSource cts)
+    private async Task RunAsync(Func<CancellationToken, Task> work, TimeSpan delay, CancellationTokenSource cts)
     {
         try
         {
-            await Task.Delay(Debounce, cts.Token).ConfigureAwait(false);
+            if (delay > TimeSpan.Zero) await Task.Delay(delay, cts.Token).ConfigureAwait(false);
             await work(cts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { /* expected */ }
