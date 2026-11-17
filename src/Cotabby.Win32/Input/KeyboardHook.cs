@@ -378,6 +378,8 @@ public sealed class KeyboardHook : IKeyboardHook
         return modifiers;
     }
 
+    private const uint VK_PACKET = 0xE7;
+
     private static bool IsDown(int vk) => (GetKeyState(vk) & 0x8000) != 0;
 
     /// <summary>
@@ -386,6 +388,13 @@ public sealed class KeyboardHook : IKeyboardHook
     /// </summary>
     private char Translate(uint vk, uint scanCode)
     {
+        // The touch keyboard, the emoji panel and text-sending tools type through VK_PACKET, which
+        // carries the UTF-16 unit in the scan code. Half of a surrogate pair is no character alone.
+        if (vk == VK_PACKET)
+        {
+            char unit = (char)(scanCode & 0xFFFF);
+            return char.IsSurrogate(unit) ? ' ' : unit;
+        }
         GetKeyboardState(_keyState);
         var layout = GetKeyboardLayout(GetWindowThreadProcessId(GetForegroundWindow(), out _));
         int count = ToUnicodeEx(

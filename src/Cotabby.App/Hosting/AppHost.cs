@@ -142,7 +142,9 @@ public sealed class AppHost : IAsyncDisposable
         TypingHistory = new TypingHistoryStore(
             DpapiTypingHistoryKeyStore.StandardVault(), Settings.TypingHistoryPreferences,
             logger: loggers.CreateLogger<TypingHistoryStore>());
-        var historyAwareEngine = new TypingHistoryPhraseEngine(_router, TypingHistory, () => _router.UseEndpoint);
+        var historyAwareEngine = new TypingHistoryPhraseEngine(
+            _router, TypingHistory, () => _router.UseEndpoint, () => Settings.TypingHistoryEnabled);
+        var llama = _services.GetRequiredService<LlamaSuggestionEngine>();
 
         IcuWordBreaker.Install();
 
@@ -164,6 +166,8 @@ public sealed class AppHost : IAsyncDisposable
         _batterySaver.Changed += OnBatterySaverChanged;
         Coordinator.InlineCaptureActive = () => EmojiPicker.IsCapturing || _macros.IsCapturing;
         Coordinator.History = TypingHistory;
+        // The local model evaluates a newly focused field's prompt ahead of the first key.
+        Coordinator.Prewarm = (request, ct) => _router.UseEndpoint ? Task.CompletedTask : llama.PrewarmAsync(request, ct);
         Coordinator.HistoryRecorder = TypingHistory;
         var screenReader = new WindowsScreenTextReader(loggers.CreateLogger<WindowsScreenTextReader>());
         ScreenContextAvailable = screenReader.IsAvailable;

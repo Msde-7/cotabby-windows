@@ -190,6 +190,14 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
     private ScreenContextSource? _screen;
 
+    /// <summary>
+    /// Evaluates a request's prompt ahead of time without generating, so the first suggestion in a
+    /// newly focused field does not pay for the whole prompt. Null skips it.
+    /// </summary>
+    public Func<SuggestionRequest, CancellationToken, Task>? Prewarm { get; set; }
+
+    private CancellationTokenSource? _prewarm;
+
     /// <summary>Records what the user types. It sees each fresh read of the focused field.</summary>
     public ITypingHistoryObserver? HistoryRecorder { get; set; }
 
@@ -263,6 +271,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         _hook.KeyEvent -= OnKeyEvent;
         _focus.FocusChanged -= OnFocusChanged;
         _prefetch?.Cancel();
+        _prewarm?.Cancel();
         ScreenContext = null;
         _focus.Stop();
         _hook.Stop();
@@ -277,7 +286,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             int pid = field?.ProcessId ?? 0;
             string previousIdentity = _focusIdentity;
             _focusIdentity = field is null ? "" : FocusIdentity(field);
-            if (previousIdentity != _focusIdentity) _ime.Reset();
+            if (previousIdentity != _focusIdentity)
+            {
+                _ime.Reset();
+                PrewarmField(field);
+            }
             _ime.Observe(field?.ImeLanguageId ?? 0);
             TrackScreen(field);
             bool sameHost = pid != 0 && (_focusedPid == 0 || pid == _focusedPid);
@@ -469,6 +482,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     /// <param name="requiresTextChange">Wait until the text differs from the baseline, as after a correction.</param>
     private void SchedulePrediction(char? typed, bool requiresTextChange = false)
     {
+        CancelPrewarm();
         _prediction = null;
         var requestId = "req_" + Guid.NewGuid().ToString("N")[..8];
         var settings = _settings;
@@ -770,6 +784,44 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         if (_session?.RequestId != requestId) return;
         _logger.LogInformation("Suggestion cleared ({Reason}).", reason);
         ClearSession();
+    }
+
+    /// <summary>
+    /// Starts evaluating the prompt of a field that just gained focus. The engine gives it up as soon
+    /// as a real request arrives, and a key or another focus change cancels it here.
+    /// </summary>
+    private void PrewarmField(FocusedField? field)
+    {
+        CancelPrewarm();
+        var settings = _settings;
+        if (Prewarm is not { } prewarm || field is null || settings.UsesEndpoint || !IsAvailableIn(field)
+            || field.IsSecure || field.ImeLanguageId != 0 || !_engine.IsReady
+            || !SuggestionRequestFactory.ShouldGenerate(field.PrecedingText, field.TrailingText, settings.SuggestWithinWords))
+        {
+            return;
+        }
+        var cts = _prewarm = new CancellationTokenSource();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await prewarm(BuildRequest(field, "warm_" + Guid.NewGuid().ToString("N")[..8], settings), cts.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Prewarming the focused field failed.");
+            }
+        });
+    }
+
+    private void CancelPrewarm()
+    {
+        _prewarm?.Cancel();
+        _prewarm = null;
     }
 
     /// <summary>Keeps screen capture running for a field suggestions may appear in, and stops it everywhere else.</summary>

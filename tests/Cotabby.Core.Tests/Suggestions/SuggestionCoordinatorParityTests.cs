@@ -133,4 +133,35 @@ public sealed class SuggestionCoordinatorParityTests : CoordinatorHarness
         await Shown(" is a word");
         Assert.Single(Engine.Requests, r => r.Prefix == "ask " + word);
     }
+
+    [Fact]
+    public async Task FocusingAFieldWithText_PrewarmsItsPrompt_AndAKeyCancelsThePrewarm()
+    {
+        var prewarmed = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Coordinator.Prewarm = async (request, ct) =>
+        {
+            prewarmed.Enqueue(request.Prefix);
+            try { await Task.Delay(Timeout.Infinite, ct); }
+            catch (OperationCanceledException) { cancelled.TrySetResult(); }
+        };
+
+        Focus.Focus(Fields.Text("Dear team,") with { FieldId = "body" });
+        await Eventually(() => prewarmed.Contains("Dear team,"), "the focused field's prompt is prewarmed");
+
+        Type(" we");
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task FocusingAnEmptyField_PrewarmsNothing()
+    {
+        int calls = 0;
+        Coordinator.Prewarm = (_, _) => { Interlocked.Increment(ref calls); return Task.CompletedTask; };
+
+        Focus.Focus(Fields.Text("") with { FieldId = "empty" });
+
+        await Task.Delay(150);
+        Assert.Equal(0, calls);
+    }
 }

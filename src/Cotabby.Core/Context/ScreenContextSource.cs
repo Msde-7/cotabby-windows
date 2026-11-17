@@ -63,7 +63,14 @@ public sealed class ScreenContextSource : IDisposable
     /// Which field a session belongs to. The window title is part of it: a chat app can keep its
     /// composer while the conversation changes, and the old conversation must not leak into the new one.
     /// </summary>
-    public static string IdentityOf(FocusedField field) => $"{field.ProcessId}:{field.FieldId}:{field.WindowTitle}";
+    public static string IdentityOf(FocusedField field) =>
+        $"{field.ProcessId}:{field.FieldId}:{TitleKey(field.WindowTitle)}";
+
+    /// <summary>
+    /// The title without the unsaved-changes mark editors add, so the first edit in Notepad
+    /// ("*notes - Notepad") or VS Code ("● notes") does not count as another document.
+    /// </summary>
+    private static string TitleKey(string title) => title.TrimStart('*', '●', ' ');
 
     /// <summary>Starts capturing for this field unless it already is.</summary>
     public void Track(FocusedField field, bool usesEndpoint)

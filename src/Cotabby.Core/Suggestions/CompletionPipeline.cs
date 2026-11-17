@@ -1,3 +1,4 @@
+using Cotabby.Core.Support.Output;
 using Cotabby.Core.Support;
 
 namespace Cotabby.Core.Suggestions;
@@ -36,8 +37,9 @@ public static class CompletionPipeline
             PromptTokenBudget.ForRequest(PromptTokenBudget.Configured(EndpointContextWindowTokens), request.MaxTokens),
             forEndpoint: true);
 
-    public static SuggestionNormalizationResult Normalize(string raw, string prompt, SuggestionRequest request) =>
-        SuggestionTextNormalizer.NormalizeDetailed(
+    public static SuggestionNormalizationResult Normalize(string raw, string prompt, SuggestionRequest request)
+    {
+        var normalized = SuggestionTextNormalizer.NormalizeDetailed(
             raw,
             new SuggestionNormalizationRequest(
                 Prompt: prompt,
@@ -45,4 +47,7 @@ public static class CompletionPipeline
                 TrailingText: request.Suffix,
                 IsMultiLineEnabled: !request.SingleLine,
                 WordRange: request.WordRange));
+        // Text that only continues what is on screen is no suggestion, however clean it is.
+        return normalized with { Text = ScreenEchoGuard.Trim(normalized.Text, request.ScreenContext, request.Prefix) };
+    }
 }
