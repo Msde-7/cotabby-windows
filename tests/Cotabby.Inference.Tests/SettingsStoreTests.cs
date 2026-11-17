@@ -40,6 +40,51 @@ public sealed class SettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void FileThatCannotBeRead_IsNotTreatedAsCorruptAndIsNeverSavedOver()
+    {
+        _store.Save(new AppSettings { Enabled = false, UserName = "Ada" });
+        var saved = File.ReadAllText(_store.Path);
+
+        AppSettings settings;
+        using (new FileStream(_store.Path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            settings = _store.Load();
+        }
+
+        Assert.True(settings.Enabled);
+        Assert.True(_store.CouldNotRead);
+        Assert.Empty(Directory.GetFiles(_directory, "settings.json.corrupt-*"));
+        _store.Save(new AppSettings());
+        Assert.Equal(saved, File.ReadAllText(_store.Path));
+    }
+
+    [Fact]
+    public async Task FileHeldForAMoment_IsReadOnceItIsFree()
+    {
+        _store.Save(new AppSettings { UserName = "Ada" });
+
+        var held = new FileStream(_store.Path, FileMode.Open, FileAccess.Read, FileShare.None);
+        var release = Task.Delay(300).ContinueWith(_ => held.Dispose());
+        var settings = _store.Load();
+        await release;
+
+        Assert.Equal("Ada", settings.UserName);
+        Assert.False(_store.CouldNotRead);
+    }
+
+    [Fact]
+    public void CorruptFile_CanBeSavedOver()
+    {
+        File.WriteAllText(_store.Path, "not json");
+
+        _store.Load();
+        _store.Save(new AppSettings { UserName = "Ada" });
+
+        Assert.False(_store.CouldNotRead);
+        Assert.Equal("Ada", _store.Load().UserName);
+    }
+
+    [Fact]
     public void NullLists_BecomeEmptyOrDefault()
     {
         var settings = SettingsStore.Parse("""

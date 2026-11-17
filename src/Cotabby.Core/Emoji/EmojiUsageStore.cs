@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Cotabby.Core.Support;
 
 namespace Cotabby.Core.Emoji;
 
@@ -74,12 +75,19 @@ public sealed class EmojiUsageStore
     {
         _recents = [];
         _frequency = [];
-        try
+        // Claiming a version marks every write still queued as older, so none can bring the
+        // cleared history back after the file is deleted.
+        long version = ++_version;
+        lock (_writeGate)
         {
-            File.Delete(_path);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
+            _writtenVersion = version;
+            try
+            {
+                File.Delete(_path);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+            }
         }
     }
 
@@ -114,8 +122,7 @@ public sealed class EmojiUsageStore
                 _writtenVersion = version;
                 try
                 {
-                    if (Path.GetDirectoryName(_path) is { Length: > 0 } directory) Directory.CreateDirectory(directory);
-                    File.WriteAllBytes(_path, bytes);
+                    AtomicFile.WriteAllBytes(_path, bytes);
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {

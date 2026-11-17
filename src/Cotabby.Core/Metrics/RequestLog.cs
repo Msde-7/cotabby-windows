@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Cotabby.Core.Support;
 
 namespace Cotabby.Core.Metrics;
 
@@ -68,8 +69,7 @@ public sealed class RequestLog
         if (_path is null) return;
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-            File.WriteAllText(_path, JsonSerializer.Serialize(_entries));
+            AtomicFile.WriteAllBytes(_path, JsonSerializer.SerializeToUtf8Bytes(_entries));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

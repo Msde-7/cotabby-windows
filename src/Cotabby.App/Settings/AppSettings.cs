@@ -220,10 +220,17 @@ public sealed class SettingsStore
         Converters = { new JsonStringEnumConverter() },
     };
 
-    private const int ReadAttempts = 3;
-    private const int ReadRetryMs = 50;
+    // About two seconds in all, for a scanner or sync client that holds the file a while.
+    private const int ReadAttempts = 20;
+    private const int ReadRetryMs = 100;
 
     public string Path { get; }
+
+    /// <summary>
+    /// True when the file exists but could not be read. The defaults run instead, and saving is
+    /// off for the session, so the real settings are still there on the next launch.
+    /// </summary>
+    public bool CouldNotRead { get; private set; }
 
     public SettingsStore()
         : this(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Cotabby"))
@@ -240,16 +247,27 @@ public sealed class SettingsStore
     public static SettingsStore InDirectory(string directory) => new(directory);
 
     /// <summary>
-    /// The saved settings, or the defaults when there are none. A file that cannot be read or
-    /// parsed is first copied aside as settings.json.corrupt-&lt;time&gt;, because the next save
-    /// replaces it with the defaults.
+    /// The saved settings, or the defaults when there are none. A file that cannot be parsed is
+    /// first copied aside as settings.json.corrupt-&lt;time&gt;, because the next save replaces it
+    /// with the defaults. A file that cannot be read is left alone, see <see cref="CouldNotRead"/>.
     /// </summary>
     public AppSettings Load()
     {
+        CouldNotRead = false;
         if (!File.Exists(Path)) return new AppSettings();
+        string json;
         try
         {
-            return Parse(ReadWithRetry());
+            json = ReadWithRetry();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            CouldNotRead = true;
+            return new AppSettings();
+        }
+        try
+        {
+            return Parse(json);
         }
         catch (Exception)
         {
@@ -258,8 +276,12 @@ public sealed class SettingsStore
         }
     }
 
-    public void Save(AppSettings settings) =>
+    /// <summary>Writes the settings, unless the file could not be read at load, see <see cref="CouldNotRead"/>.</summary>
+    public void Save(AppSettings settings)
+    {
+        if (CouldNotRead) return;
         AtomicFile.WriteAllBytes(Path, JsonSerializer.SerializeToUtf8Bytes(settings, JsonOpts));
+    }
 
     /// <summary>Another process, such as a virus scanner, may hold the file for a moment.</summary>
     private string ReadWithRetry()
@@ -270,7 +292,7 @@ public sealed class SettingsStore
             {
                 return File.ReadAllText(Path);
             }
-            catch (IOException) when (attempt < ReadAttempts)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException && attempt < ReadAttempts)
             {
                 Thread.Sleep(ReadRetryMs);
             }

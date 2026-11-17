@@ -34,10 +34,25 @@ public static class LaunchAtLogin
         catch (Exception) { }
     }
 
+    /// <summary>Whether the Run key has a Cotabby entry, or null when the registry cannot be read.</summary>
+    public static bool? IsRegistered()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: false);
+            return key?.GetValue(ValueName) is not null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
     private static string? ResolveLaunchTarget()
     {
         // Under `dotnet run` the main module is dotnet.exe, so fall back to Cotabby.exe next to
-        // the app's assemblies.
+        // the app's assemblies. Without one nothing is registered, since dotnet.exe alone would
+        // start nothing at login.
         var main = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
         if (!string.IsNullOrWhiteSpace(main) &&
             !Path.GetFileName(main).Equals("dotnet.exe", StringComparison.OrdinalIgnoreCase))
@@ -45,6 +60,6 @@ public static class LaunchAtLogin
             return main;
         }
         var guess = Path.Combine(AppContext.BaseDirectory, "Cotabby.exe");
-        return File.Exists(guess) ? guess : main;
+        return File.Exists(guess) ? guess : null;
     }
 }

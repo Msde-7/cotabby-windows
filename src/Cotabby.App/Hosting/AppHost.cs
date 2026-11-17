@@ -94,7 +94,11 @@ public sealed class AppHost : IAsyncDisposable
 
         SettingsStore = _services.GetRequiredService<SettingsStore>();
         Settings = SettingsStore.Load();
-        Runtime = _services.GetRequiredService<LlamaRuntimeManager>();
+        // The Run key is written only where it disagrees with the setting, so running another copy,
+        // such as a dev build, does not repoint Open at Login to it. Defaults that stand in for a
+        // file that could not be read are not the user's choice, so they leave the key alone.
+        _launchAtLoginApplied = SettingsStore.CouldNotRead ? Settings.LaunchAtLogin : LaunchAtLogin.IsRegistered();
+        Runtime =_services.GetRequiredService<LlamaRuntimeManager>();
         Downloader = _services.GetRequiredService<ModelDownloader>();
         EndpointClient = _services.GetRequiredService<OpenAICompatibleApiClient>();
         EndpointCredentials = _services.GetRequiredService<IOpenAICompatibleCredentialStore>();
@@ -102,7 +106,11 @@ public sealed class AppHost : IAsyncDisposable
         var loggers = _services.GetRequiredService<ILoggerFactory>();
         _spelling = new SymSpellCorrector(logger: loggers.CreateLogger<SymSpellCorrector>());
         _logger = loggers.CreateLogger("Cotabby.App");
-        _hook = _services.GetRequiredService<IKeyboardHook>();
+        if (SettingsStore.CouldNotRead)
+        {
+            _logger.LogWarning("{Path} could not be read. Running on the defaults without saving over it.", SettingsStore.Path);
+        }
+        _hook =_services.GetRequiredService<IKeyboardHook>();
         var focus = _services.GetRequiredService<IFocusTracker>();
         var inserter = _services.GetRequiredService<ITextInserter>();
 
@@ -271,7 +279,8 @@ public sealed class AppHost : IAsyncDisposable
         _macros.Enabled = Settings.MacrosEnabled;
         _overlay.ApplyAppearance(Settings);
         _macroPreview.ApplyAppearance(Settings);
-        // The Run key is written at startup and when the switch changes, not on every settings change.
+        // The Run key is written when the switch changes, or at startup when it disagrees with the
+        // switch, not on every settings change.
         if (_launchAtLoginApplied != Settings.LaunchAtLogin)
         {
             LaunchAtLogin.Set(Settings.LaunchAtLogin);

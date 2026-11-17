@@ -125,4 +125,16 @@ public sealed class EmojiUsageStoreTests : IDisposable
         Assert.True(recentOnly.IsFavorite("WAVE"));
         Assert.True(frequentEnough.IsFavorite("Fire"));
     }
+
+    [Fact]
+    public void ClearWinsOverAWriteStillQueued()
+    {
+        var queued = new List<Action>();
+        var sut = new EmojiUsageStore(_path, queued.Add);
+        sut.Record("joy");
+        sut.Clear();
+        foreach (var write in queued) write();
+
+        Assert.Empty(new EmojiUsageStore(_path).Snapshot().RecentAliases);
+    }
 }
