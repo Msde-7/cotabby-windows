@@ -89,32 +89,7 @@ public sealed class AppHost : IAsyncDisposable
         _overlay = overlay;
         _macroPreview = macroPreview;
 
-        var sc = new ServiceCollection();
-        sc.AddLogging(b =>
-        {
-            b.SetMinimumLevel(DebugLogging ? LogLevel.Debug : LogLevel.Information);
-            b.AddDebug();
-            b.AddProvider(new FileLoggerProvider(LogPath));
-        });
-        sc.AddSingleton(_ =>
-        {
-            // GGUF downloads are large, so the timeout is generous.
-            var http = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
-            http.DefaultRequestHeaders.UserAgent.ParseAdd(
-                "Cotabby-Windows/0.2 (+https://github.com/Msde-7/cotabby-windows)");
-            return http;
-        });
-        sc.AddSingleton<SettingsStore>();
-        sc.AddSingleton<IFocusTracker, UiaFocusTracker>();
-        sc.AddSingleton<IKeyboardHook, KeyboardHook>();
-        sc.AddSingleton<ClipboardTextReader>();
-        sc.AddSingleton<ITextInserter, SendInputTextInserter>();
-        sc.AddSingleton<LlamaRuntimeManager>();
-        sc.AddSingleton<ModelDownloader>();
-        sc.AddSingleton<LlamaSuggestionEngine>();
-        sc.AddSingleton<OpenAICompatibleApiClient>(_ => new OpenAICompatibleApiClient());
-        sc.AddSingleton<IOpenAICompatibleCredentialStore>(_ => new DpapiOpenAICompatibleCredentialStore());
-        _services = sc.BuildServiceProvider();
+        _services = BuildServices();
 
         SettingsStore = _services.GetRequiredService<SettingsStore>();
         Settings = SettingsStore.Load();
@@ -133,7 +108,8 @@ public sealed class AppHost : IAsyncDisposable
         _endpoint = new OpenAICompatibleSuggestionEngine(
             EndpointClient, EndpointCredentials, Settings.EndpointSettings,
             loggers.CreateLogger<OpenAICompatibleSuggestionEngine>());
-        _router = new SuggestionEngineRouter(_services.GetRequiredService<LlamaSuggestionEngine>(), _endpoint)
+        var llama = _services.GetRequiredService<LlamaSuggestionEngine>();
+        _router = new SuggestionEngineRouter(llama, _endpoint)
         {
             Completed = RecordRequest,
         };
@@ -144,7 +120,6 @@ public sealed class AppHost : IAsyncDisposable
             logger: loggers.CreateLogger<TypingHistoryStore>());
         var historyAwareEngine = new TypingHistoryPhraseEngine(
             _router, TypingHistory, () => _router.UseEndpoint, () => Settings.TypingHistoryEnabled);
-        var llama = _services.GetRequiredService<LlamaSuggestionEngine>();
 
         IcuWordBreaker.Install();
 
@@ -182,6 +157,36 @@ public sealed class AppHost : IAsyncDisposable
         Coordinator.Metrics.Restore(Settings.WordsAccepted);
 
         ApplySettings();
+    }
+
+    private static ServiceProvider BuildServices()
+    {
+        var sc = new ServiceCollection();
+        sc.AddLogging(b =>
+        {
+            b.SetMinimumLevel(DebugLogging ? LogLevel.Debug : LogLevel.Information);
+            b.AddDebug();
+            b.AddProvider(new FileLoggerProvider(LogPath));
+        });
+        sc.AddSingleton(_ =>
+        {
+            // GGUF downloads are large, so the timeout is generous.
+            var http = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd(
+                "Cotabby-Windows/0.2 (+https://github.com/Msde-7/cotabby-windows)");
+            return http;
+        });
+        sc.AddSingleton<SettingsStore>();
+        sc.AddSingleton<IFocusTracker, UiaFocusTracker>();
+        sc.AddSingleton<IKeyboardHook, KeyboardHook>();
+        sc.AddSingleton<ClipboardTextReader>();
+        sc.AddSingleton<ITextInserter, SendInputTextInserter>();
+        sc.AddSingleton<LlamaRuntimeManager>();
+        sc.AddSingleton<ModelDownloader>();
+        sc.AddSingleton<LlamaSuggestionEngine>();
+        sc.AddSingleton<OpenAICompatibleApiClient>(_ => new OpenAICompatibleApiClient());
+        sc.AddSingleton<IOpenAICompatibleCredentialStore>(_ => new DpapiOpenAICompatibleCredentialStore());
+        return sc.BuildServiceProvider();
     }
 
     /// <summary>Pushes <see cref="Settings"/> into the running app and saves them.</summary>

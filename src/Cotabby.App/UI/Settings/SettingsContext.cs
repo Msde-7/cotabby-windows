@@ -1,3 +1,4 @@
+using System.Windows;
 using Cotabby.App.Hosting;
 using Cotabby.App.Settings;
 
@@ -28,6 +29,27 @@ internal sealed class SettingsContext(AppHost host, Action<SettingsPane> navigat
     {
         _refreshers.Add(refresh);
         Guarded(refresh);
+    }
+
+    /// <summary>
+    /// Like <see cref="OnRefresh"/> for work too costly to repeat off screen: while
+    /// <paramref name="view"/> is hidden a refresh only marks it stale, and it catches up when shown.
+    /// Returns the refresh, for callers that also run it on their own events.
+    /// </summary>
+    public Action OnRefreshWhileVisible(UIElement view, Action refresh)
+    {
+        bool stale = false;
+        void RefreshIfVisible()
+        {
+            stale = !view.IsVisible;
+            if (!stale) refresh();
+        }
+        view.IsVisibleChanged += (_, _) =>
+        {
+            if (view.IsVisible && stale) Guarded(RefreshIfVisible);
+        };
+        OnRefresh(RefreshIfVisible);
+        return RefreshIfVisible;
     }
 
     public void Refresh() => Guarded(() =>

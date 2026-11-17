@@ -74,6 +74,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     // the window last sat on.
     private double _anchorScale = 1.0;
     private bool _rightToLeft;
+    private bool _excludedFromCapture;
 
     public GhostOverlayWindow()
     {
@@ -101,8 +102,6 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         _excludedFromCapture = settings.ScreenContext;
         if (_source is not null) OverlayWindowInterop.SetExcludedFromCapture(_source.Handle, _excludedFromCapture);
     }
-
-    private bool _excludedFromCapture;
 
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
@@ -293,26 +292,25 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
             TabKeycap.Visibility = Visibility.Collapsed;
             return;
         }
-        double scaleX = _anchorScale;
-        double scaleY = _anchorScale;
         var area = OverlayWindowInterop.WorkAreaAt(_anchor.X, _anchor.Y);
-        if (_style == OverlayStyle.Inline && !TryRenderInline(text, area, scaleX, scaleY))
+        if (_style == OverlayStyle.Inline && !TryRenderInline(text, area))
         {
             // No honest inline layout exists for this text here, so the card shows it.
             UseStyle(OverlayStyle.Popup);
             ApplyFont(_anchor);
         }
-        if (_style != OverlayStyle.Inline) RenderCard(text, area, scaleX, scaleY);
+        if (_style != OverlayStyle.Inline) RenderCard(text, area);
     }
 
-    private bool TryRenderInline(string text, ScreenRect area, double scaleX, double scaleY)
+    private bool TryRenderInline(string text, ScreenRect area)
     {
         var anchor = _anchor;
+        double scale = _anchorScale;
         double caretX = LaggedCaretX(anchor);
-        var (left, right) = BandFor(anchor, area, scaleX);
-        double firstRowDip = (right - caretX - 1) / scaleX;
-        double bandDip = (right - left) / scaleX;
-        double indentDip = (caretX + 1 - left) / scaleX;
+        var (left, right) = BandFor(anchor, area, scale);
+        double firstRowDip = (right - caretX - 1) / scale;
+        double bandDip = (right - left) / scale;
+        double indentDip = (caretX + 1 - left) / scale;
         // A second row would cover the host's following lines, and a single-line field scrolls instead.
         bool canWrap = !_rightToLeft && _field is { IsSingleLine: false, FieldRect.IsEmpty: false } field
             && string.IsNullOrWhiteSpace(field.TrailingText)
@@ -324,31 +322,32 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         if (layout is null) return false;
 
         bool wrapped = layout.Rows.Count > 1;
-        double rowHeightDip = Math.Max(anchor.Height / scaleY, GhostText.FontSize);
+        double rowHeightDip = Math.Max(anchor.Height / scale, GhostText.FontSize);
         SetRows(layout.Rows, wrapped ? indentDip : 0, rowHeightDip);
         TabKeycap.Visibility = layout.ShowsKeycap && !wrapped ? Visibility.Visible : Visibility.Collapsed;
         UpdateLayout();
 
-        double width = ActualWidth * scaleX;
-        double height = ActualHeight * scaleY;
+        double width = ActualWidth * scale;
+        double height = ActualHeight * scale;
         // Inline text continues the line at the caret, on its left for right-to-left text. Wrapped
         // rows start at the band's left edge with the first indented to the caret.
         double x = wrapped ? left : _rightToLeft ? caretX - width - 1 : caretX + 1;
-        double y = anchor.Y + Math.Max(0, (anchor.Height - (wrapped ? rowHeightDip * scaleY : height)) / 2.0);
+        double y = anchor.Y + Math.Max(0, (anchor.Height - (wrapped ? rowHeightDip * scale : height)) / 2.0);
         Place(x, y, width, height, area);
         return true;
     }
 
-    private void RenderCard(string text, ScreenRect area, double scaleX, double scaleY)
+    private void RenderCard(string text, ScreenRect area)
     {
+        double scale = _anchorScale;
         SetRows([GhostCardPlacement.CardText(text)]);
         TabKeycap.Visibility = TabKeycapLabel.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         UpdateLayout();
 
-        double width = ActualWidth * scaleX;
-        double height = ActualHeight * scaleY;
+        double width = ActualWidth * scale;
+        double height = ActualHeight * scale;
         var fieldRect = _field?.FieldRect ?? ScreenRect.Empty;
-        double inset = (CardPadding.Left + Card.BorderThickness.Left) * scaleX;
+        double inset = (CardPadding.Left + Card.BorderThickness.Left) * scale;
         Place(
             GhostCardPlacement.Left(_anchor, fieldRect, width, inset, _rightToLeft),
             GhostCardPlacement.Top(_anchor, fieldRect, CardGapPx),

@@ -144,12 +144,13 @@ internal static class PerformancePane
             }
         }
 
+        var view = new StackPanel { Children = { rows, clear } };
+        var refresh = context.OnRefreshWhileVisible(view, Update);
         // Requests are recorded on the generating thread.
-        void OnChanged() => rows.Dispatcher.BeginInvoke(Update);
+        void OnChanged() => rows.Dispatcher.BeginInvoke(refresh);
         log.Changed += OnChanged;
         context.Closed += () => log.Changed -= OnChanged;
-        context.OnRefresh(Update);
-        return new StackPanel { Children = { rows, clear } };
+        return view;
     }
 
     /// <summary>

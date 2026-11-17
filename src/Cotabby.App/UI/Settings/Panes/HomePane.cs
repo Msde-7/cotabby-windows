@@ -3,8 +3,6 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
-using Cotabby.App.Hosting;
-using Cotabby.App.Settings;
 using Cotabby.App.UI.Controls;
 using Cotabby.Core.Macros;
 

@@ -38,7 +38,7 @@ internal sealed class ModelList : StackPanel
     {
         _context = context;
         context.Closed += () => _loading?.Cancel();
-        context.OnRefresh(Rebuild);
+        context.OnRefreshWhileVisible(this, Rebuild);
     }
 
     private bool Busy => _loading is not null || _copying;

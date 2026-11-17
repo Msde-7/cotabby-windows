@@ -67,9 +67,8 @@ public partial class WelcomeWindow : Window
         // A second run starts on the tier whose model is already chosen, a first run on the recommended one.
         var selectedModel = host.SelectedModelId;
         _template = _availability.Values
-            .Where(a => !a.IsDisabled && OnboardingTemplateRecommender.Plan(a.Template).Model.Id == selectedModel)
-            .Select(a => (OnboardingTemplate?)a.Template)
-            .FirstOrDefault()
+            .FirstOrDefault(a => !a.IsDisabled && OnboardingTemplateRecommender.Plan(a.Template).Model.Id == selectedModel)
+            ?.Template
             ?? OnboardingTemplateRecommender.Recommended(memory);
         UpdateTemplateVisuals();
 
@@ -300,6 +299,8 @@ public partial class WelcomeWindow : Window
         // starting and stopping it on every status change.
         var spin = new DoubleAnimation(0, 360, TimeSpan.FromSeconds(1.1)) { RepeatBehavior = RepeatBehavior.Forever };
         DoneSpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, spin);
+        // Removed on close so the endless clock never outlives the window.
+        Closed += (_, _) => DoneSpinnerRotate.BeginAnimation(RotateTransform.AngleProperty, null);
     }
 
     private void BuildShortcutRows()

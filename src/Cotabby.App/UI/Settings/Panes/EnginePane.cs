@@ -65,13 +65,15 @@ internal static class EnginePane
 
     /// <summary>The row that shows the models folder. The Advanced pane lists it too.</summary>
     public static SettingsRow ModelsFolder(Rows r) =>
-        r.Action("Models Folder", ModelCatalog.DefaultLocalDirectory(), "Open Folder", () =>
-        {
-            var folder = ModelCatalog.DefaultLocalDirectory();
-            Directory.CreateDirectory(folder);
-            Ui.OpenPath(folder);
-        })
+        r.Action("Models Folder", ModelCatalog.DefaultLocalDirectory(), "Open Folder", OpenModelsFolder)
         .Tagged("path directory open reveal location storage downloaded files");
+
+    public static void OpenModelsFolder()
+    {
+        var folder = ModelCatalog.DefaultLocalDirectory();
+        Directory.CreateDirectory(folder);
+        Ui.OpenPath(folder);
+    }
 
     private static IEnumerable<SettingsCard> Local(params SettingsCard[] cards) =>
         cards.Select(card => card.VisibleWhen(s => s.Engine == EngineKind.Local));

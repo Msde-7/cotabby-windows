@@ -1,5 +1,4 @@
 using System.Drawing;
-using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using Cotabby.App.Hosting;
@@ -112,7 +111,7 @@ public sealed class TrayController : IDisposable
             menu.Items.Add(item);
         }
         // Refreshing on open keeps a pause that expired in the background from showing as active.
-        menu.Opened += (_, _) => Refresh();
+        menu.Opened += (_, _) => Refresh(menuOpen: true);
         _tray.ContextMenu = menu;
         _tray.TrayLeftMouseUp += (_, _) => SettingsWindow.ShowOrFocus(host);
 
@@ -128,7 +127,9 @@ public sealed class TrayController : IDisposable
         Refresh();
     });
 
-    private void Refresh()
+    private void Refresh() => Refresh(_tray.ContextMenu?.IsOpen == true);
+
+    private void Refresh(bool menuOpen)
     {
         var settings = _host.Settings;
         bool paused = settings.Pause?.IsActive(DateTimeOffset.Now) == true;
@@ -150,7 +151,8 @@ public sealed class TrayController : IDisposable
         Check(_engineMenu, settings.Engine.ToString());
         // The local model is only loaded for the local engine, as upstream hides its Model row.
         _modelMenu.Visibility = Ui.Shown(local);
-        if (local) RebuildModelMenu();
+        // Listing the models reads the models folder, so a built menu waits until it is open to be seen.
+        if (local && (menuOpen || _modelMenu.Items.Count == 0)) RebuildModelMenu();
 
         var (low, high) = WordCountPreset.Clamp(settings.CustomLowWords, settings.CustomHighWords);
         _customLengthItem.Header = $"Custom ({low}–{high} words)";
@@ -171,12 +173,7 @@ public sealed class TrayController : IDisposable
         Check(_modelMenu, _host.EffectiveModelId);
 
         var folderItem = new MenuItem { Header = "Open Models Folder" };
-        folderItem.Click += (_, _) =>
-        {
-            var folder = ModelCatalog.DefaultLocalDirectory();
-            Directory.CreateDirectory(folder);
-            Ui.OpenPath(folder);
-        };
+        folderItem.Click += (_, _) => EnginePane.OpenModelsFolder();
         _modelMenu.Items.Add(new Separator());
         _modelMenu.Items.Add(folderItem);
     }

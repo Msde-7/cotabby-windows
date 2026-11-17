@@ -377,10 +377,6 @@ public sealed class SettingsStore
             GhostFontSizeLimits.Normalized(settings.GhostFontSizeFloor, settings.GhostFontSizeCeiling);
         settings.GhostTextColor = SettingsValues.GhostColor(settings.GhostTextColor);
         settings.ShortcutOverrides = ShortcutConflicts.Normalize(settings.ShortcutOverrides);
-        settings.Languages ??= [.. LanguageCatalog.DefaultLanguages];
-        settings.BlockedApps ??= [];
-        settings.SpellingDictionaries ??= [.. SpellingDictionaryCatalog.DefaultEnabledCodes];
-        settings.TypingHistoryExcludedApps ??= [];
     }
 
     /// <summary>Files written before shortcuts were recordable stored the accept-all key by name.</summary>
