@@ -13,8 +13,11 @@ namespace Cotabby.Core.Spelling;
 /// </summary>
 public sealed class SymSpellCorrector : ISpellingLexicon, IDisposable
 {
-    /// <summary>How many language indexes stay in memory.</summary>
-    private const int CacheLimit = 2;
+    /// <summary>
+    /// How long a dictionary that failed to load is left alone. Without it every lookup, which
+    /// means every keystroke, would queue another doomed load.
+    /// </summary>
+    private static readonly TimeSpan FailureBackoff = TimeSpan.FromMinutes(10);
 
     private sealed class CacheEntry(SymSpell symSpell, WordPrefixIndex prefixes)
     {
@@ -27,19 +30,29 @@ public sealed class SymSpellCorrector : ISpellingLexicon, IDisposable
     private readonly Func<SpellingDictionaryLanguage, string?> _resourceLoader;
     private readonly ILogger _logger;
     private readonly CancellationTokenSource _cancellation = new();
+    private readonly int _cacheLimit;
 
     // Guarded by _lock.
     private readonly Dictionary<SpellingDictionaryLanguage, CacheEntry> _cache = [];
     private readonly HashSet<SpellingDictionaryLanguage> _loadingLanguages = [];
+    private readonly Dictionary<SpellingDictionaryLanguage, long> _failedUntil = [];
     private ulong _accessSequence;
 
     /// <param name="resourceLoader">Returns a dictionary's text, or null when it is unavailable. Defaults to the bundled files.</param>
+    /// <param name="cacheLimit">
+    /// How many language indexes stay in memory. Defaults to every bundled dictionary: settings
+    /// can enable all of them, and the language resolver switches between enabled languages word by
+    /// word, so a smaller cache would rebuild an evicted index, which takes seconds, over and over.
+    /// Indexes load on first use, so memory still only grows with the languages actually typed.
+    /// </param>
     public SymSpellCorrector(
         Func<SpellingDictionaryLanguage, string?>? resourceLoader = null,
-        ILogger<SymSpellCorrector>? logger = null)
+        ILogger<SymSpellCorrector>? logger = null,
+        int? cacheLimit = null)
     {
         _resourceLoader = resourceLoader ?? SpellingDictionaryResources.Loader();
         _logger = logger ?? NullLogger<SymSpellCorrector>.Instance;
+        _cacheLimit = Math.Max(1, cacheLimit ?? SpellingDictionaryCatalog.AllLanguages.Count);
     }
 
     /// <summary>
@@ -85,6 +98,11 @@ public sealed class SymSpellCorrector : ISpellingLexicon, IDisposable
                 entry.LastAccessSequence = ++_accessSequence;
                 return entry;
             }
+            if (_failedUntil.TryGetValue(language, out long retryAt))
+            {
+                if (Environment.TickCount64 < retryAt) return null;
+                _failedUntil.Remove(language);
+            }
             if (!_loadingLanguages.Add(language)) return null;
         }
 
@@ -94,11 +112,13 @@ public sealed class SymSpellCorrector : ISpellingLexicon, IDisposable
 
     private void Load(SpellingDictionaryLanguage language)
     {
+        bool failed = false;
         try
         {
             if (_resourceLoader(language) is not { } contents)
             {
                 _logger.LogError("SymSpell dictionary {Resource}.txt was not found.", language.ResourceName());
+                failed = true;
                 return;
             }
 
@@ -111,10 +131,22 @@ public sealed class SymSpellCorrector : ISpellingLexicon, IDisposable
         }
         catch (OperationCanceledException)
         {
+            // A cancelled load is not a failure. The claim is released so a later lookup may retry.
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SymSpell dictionary {Resource}.txt failed to load.", language.ResourceName());
+            failed = true;
         }
         finally
         {
-            lock (_lock) _loadingLanguages.Remove(language);
+            lock (_lock)
+            {
+                // Recorded under the same lock that releases the claim, so no lookup can slip in
+                // between and queue another load.
+                if (failed) _failedUntil[language] = Environment.TickCount64 + (long)FailureBackoff.TotalMilliseconds;
+                _loadingLanguages.Remove(language);
+            }
         }
     }
 
@@ -126,7 +158,7 @@ public sealed class SymSpellCorrector : ISpellingLexicon, IDisposable
     {
         entry.LastAccessSequence = ++_accessSequence;
         _cache[language] = entry;
-        while (_cache.Count > CacheLimit)
+        while (_cache.Count > _cacheLimit)
         {
             _cache.Remove(_cache.MinBy(cached => cached.Value.LastAccessSequence).Key);
         }

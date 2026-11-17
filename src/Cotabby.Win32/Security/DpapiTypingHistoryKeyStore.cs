@@ -36,10 +36,7 @@ public sealed class DpapiTypingHistoryKeyStore(string? filePath = null) : ITypin
     public byte[] CreateKey()
     {
         byte[] key = RandomNumberGenerator.GetBytes(KeySize);
-        if (Path.GetDirectoryName(_filePath) is { Length: > 0 } directory) Directory.CreateDirectory(directory);
-        string temporary = _filePath + ".tmp";
-        File.WriteAllBytes(temporary, ProtectedData.Protect(key, Entropy, DataProtectionScope.CurrentUser));
-        File.Move(temporary, _filePath, overwrite: true);
+        AtomicFile.WriteAllBytes(_filePath, ProtectedData.Protect(key, Entropy, DataProtectionScope.CurrentUser));
         return key;
     }
 

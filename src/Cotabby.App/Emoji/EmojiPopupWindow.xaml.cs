@@ -73,8 +73,9 @@ public partial class EmojiPopupWindow : Window
         _selectedIndex = 0;
         SetSelectedIndex(selectedIndex);
 
-        Show();
+        // Placed before it shows, so it never flashes where the last capture left it.
         PositionAt(caretRect, width, height);
+        Show();
     }
 
     /// <summary>Moves the selection chip and scrolls the ribbon so the selected cell is centered.</summary>
@@ -95,13 +96,15 @@ public partial class EmojiPopupWindow : Window
     {
         if (_source is null) return;
 
-        // Metrics are device independent units while caret and monitor rectangles are physical pixels.
-        var toDevice = _source.CompositionTarget!.TransformToDevice;
-        double pixelWidth = Math.Ceiling(width * toDevice.M11);
-        double pixelHeight = Math.Ceiling(height * toDevice.M22);
+        // Metrics are device independent units while caret and monitor rectangles are physical
+        // pixels. The scale is the one of the monitor the panel is going to, not the one it was on.
+        double centerX = caretRect.X + caretRect.Width / 2;
+        double centerY = caretRect.Y + caretRect.Height / 2;
+        double scale = OverlayWindowInterop.DipScaleAt(centerX, centerY);
+        double pixelWidth = Math.Ceiling(width * scale);
+        double pixelHeight = Math.Ceiling(height * scale);
 
-        var work = OverlayWindowInterop.WorkAreaAt(
-            caretRect.X + caretRect.Width / 2, caretRect.Y + caretRect.Height / 2);
+        var work = OverlayWindowInterop.WorkAreaAt(centerX, centerY);
         var frame = EmojiPickerPanelLayout.Frame(caretRect, pixelWidth, pixelHeight, work);
         OverlayWindowInterop.PlaceTopmost(_source.Handle, frame.X, frame.Y, frame.Width, frame.Height);
     }

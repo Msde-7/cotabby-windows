@@ -26,6 +26,24 @@ public class SymSpellTests
         SymSpell.DamerauOsa(Characters(source), Characters(target), maxDistance);
 
     [Fact]
+    public void LargeSharedDeleteBucketsKeepEveryWordAndAcceptLaterEntries()
+    {
+        // Every three-letter word starting with q shares the delete "q", so one bucket holds all of them.
+        var letters = Enumerable.Range('a', 26).Select(c => (char)c).ToArray();
+        var words = letters.SelectMany(second => letters.Select(third => $"q{second}{third}")).ToArray();
+        var symSpell = new SymSpell();
+        symSpell.LoadDictionary(string.Join('\n', words.Select((word, rank) => $"{word} {words.Length - rank}")));
+
+        Assert.Equal(words.Length, symSpell.WordCount);
+        // "qzz" and "qzk" are both one delete away. The more frequent one wins.
+        Assert.Equal(new SymSpellSuggestion("qzk", 1, 16), symSpell.BestSuggestion("qzzk"));
+
+        // A trimmed bucket still grows when a word is added after loading.
+        symSpell.CreateDictionaryEntry("qzzk", 5000);
+        Assert.Equal(new SymSpellSuggestion("qzzk", 1, 5000), symSpell.BestSuggestion("qzzkx"));
+    }
+
+    [Fact]
     public void ExactMatchReturnsZeroDistance()
     {
         Assert.Equal(new SymSpellSuggestion("name", 0, 50000), MakeSymSpell().BestSuggestion("name"));

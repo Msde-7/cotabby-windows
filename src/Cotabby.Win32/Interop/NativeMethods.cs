@@ -18,6 +18,13 @@ internal static partial class NativeMethods
 
     public const int LLKHF_INJECTED = 0x10;
 
+    /// <summary>
+    /// dwExtraInfo stamped on every key Cotabby sends with SendInput. The hook skips only events
+    /// that carry it, so input other software injects (the touch keyboard, AutoHotkey, Mouse
+    /// Without Borders, remote desktop tools) is still seen. The value spells "CTBY".
+    /// </summary>
+    public static readonly IntPtr CotabbyInputMarker = new(0x43544259);
+
     public const int VK_SHIFT = 0x10;
     public const int VK_CONTROL = 0x11;
     public const int VK_MENU = 0x12; // Alt
@@ -147,7 +154,7 @@ internal static partial class NativeMethods
         public int y;
     }
 
-    [LibraryImport("user32.dll", EntryPoint = "GetMessageW")]
+    [LibraryImport("user32.dll", EntryPoint = "GetMessageW", SetLastError = true)]
     public static partial int GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
 
     [LibraryImport("user32.dll")]
@@ -162,6 +169,39 @@ internal static partial class NativeMethods
     public static partial bool PostThreadMessage(uint idThread, uint Msg, IntPtr wParam, IntPtr lParam);
 
     public const uint WM_QUIT = 0x0012;
+    public const uint WM_APP = 0x8000;
+
+    // Raw input, which the hook watchdog counts keys with
+
+    public const uint WM_INPUT = 0x00FF;
+    public const ushort HID_USAGE_PAGE_GENERIC = 0x01;
+    public const ushort HID_USAGE_GENERIC_KEYBOARD = 0x06;
+    public const uint RIDEV_REMOVE = 0x00000001;
+    public const uint RIDEV_INPUTSINK = 0x00000100;
+    public static readonly IntPtr HWND_MESSAGE = new(-3);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RAWINPUTDEVICE
+    {
+        public ushort usUsagePage;
+        public ushort usUsage;
+        public uint dwFlags;
+        public IntPtr hwndTarget;
+    }
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool RegisterRawInputDevices(
+        [In] RAWINPUTDEVICE[] pRawInputDevices, uint uiNumDevices, uint cbSize);
+
+    [LibraryImport("user32.dll", EntryPoint = "CreateWindowExW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    public static partial IntPtr CreateWindowEx(
+        uint dwExStyle, string lpClassName, string? lpWindowName, uint dwStyle,
+        int x, int y, int nWidth, int nHeight, IntPtr hWndParent, IntPtr hMenu, IntPtr hInstance, IntPtr lpParam);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool DestroyWindow(IntPtr hWnd);
 
     [LibraryImport("kernel32.dll")]
     public static partial uint GetCurrentThreadId();
@@ -174,12 +214,64 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll")]
     public static partial IntPtr GetForegroundWindow();
 
+    public const uint GA_ROOT = 2;
+
+    [LibraryImport("user32.dll")]
+    public static partial IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT
+    {
+        public int x;
+        public int y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT
+    {
+        public int left;
+        public int top;
+        public int right;
+        public int bottom;
+    }
+
+    [LibraryImport("user32.dll")]
+    public static partial IntPtr WindowFromPoint(POINT point);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
     [LibraryImport("user32.dll", EntryPoint = "GetWindowTextW")]
     public static unsafe partial int GetWindowText(IntPtr hWnd, char* lpString, int nMaxCount);
 
     // Clipboard
 
+    public const uint CF_TEXT = 1;
+    public const uint CF_DIB = 8;
     public const uint CF_UNICODETEXT = 13;
+    public const uint CF_HDROP = 15;
+    public const uint GMEM_MOVEABLE = 0x0002;
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool EmptyClipboard();
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool IsClipboardFormatAvailable(uint format);
+
+    [LibraryImport("user32.dll", EntryPoint = "RegisterClipboardFormatW", StringMarshalling = StringMarshalling.Utf16)]
+    public static partial uint RegisterClipboardFormat(string lpszFormat);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial IntPtr GlobalAlloc(uint uFlags, nuint dwBytes);
+
+    [LibraryImport("kernel32.dll")]
+    public static partial IntPtr GlobalFree(IntPtr hMem);
 
     [LibraryImport("user32.dll")]
     public static partial uint GetClipboardSequenceNumber();

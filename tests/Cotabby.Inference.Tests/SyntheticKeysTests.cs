@@ -68,6 +68,37 @@ public class SyntheticKeysTests
             SyntheticKeys.Paste([LeftWin]));
     }
 
+    [Fact]
+    public void MenuMask_IsOnePressOfTheInertKey()
+    {
+        Assert.Equal([Down(0xE8), Up(0xE8)], SyntheticKeys.MenuMask());
+    }
+
+    [Fact]
+    public void Bursts_CutTextIntoShortRuns()
+    {
+        Assert.Equal(["abcd", "efgh", "ij"], SyntheticKeys.Bursts("abcdefghij", 4));
+        Assert.Empty(SyntheticKeys.Bursts("", 4));
+    }
+
+    [Fact]
+    public void Bursts_NeverSplitASurrogatePair()
+    {
+        const string smile = "\uD83D\uDE00";
+        // The pair would straddle the first cut, so the first run ends before it.
+        Assert.Equal(["abc", smile + "d"], SyntheticKeys.Bursts("abc" + smile + "d", 4));
+    }
+
+    [Theory]
+    [InlineData(' ', false)]
+    [InlineData('A', false)]
+    [InlineData('\n', true)]
+    [InlineData('\u2029', true)]
+    public void HasLineBreak_FindsAnyBreak(char middle, bool expected)
+    {
+        Assert.Equal(expected, SyntheticKeys.HasLineBreak("one" + middle + "two"));
+    }
+
     [Theory]
     [InlineData("word", true)]
     [InlineData("two words", true)]

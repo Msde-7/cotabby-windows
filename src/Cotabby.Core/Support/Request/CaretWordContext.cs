@@ -41,11 +41,17 @@ public static class CaretWordContext
     /// or both in that order. A period is excluded because a dotted identifier or URL looks the
     /// same at this boundary, and any further whitespace means the writer has moved on.
     /// </summary>
+    /// <remarks>
+    /// Chromium and Electron editors publish a trailing typed space as U+00A0, so a no-break space
+    /// at the very end commits the word too. It is reported as <c>" "</c>: it is one UTF-16 unit
+    /// like the space, so delete counts stay exact, and a replacement re-types the plain space the
+    /// user pressed rather than a literal no-break space.
+    /// </remarks>
     public static CommittedWord? CommittedWordIn(string text)
     {
         var body = text;
         var delimiter = "";
-        if (body.EndsWith(' '))
+        if (body.Length > 0 && IsTypedSpace(body[^1]))
         {
             body = body[..^1];
             delimiter = " ";
@@ -65,6 +71,9 @@ public static class CaretWordContext
     }
 
     internal static bool IsConnector(Grapheme character) => character.IsAnyOf(Connectors);
+
+    /// <summary>A space key press as the field reports it: a space, or Chromium's trailing no-break space.</summary>
+    private static bool IsTypedSpace(char character) => character is ' ' or '\u00A0';
 
     // Upstream keeps this list apart from the CJK test in CompletionSeamGuard and the acceptance
     // list in SuggestionSessionReconciler. This one adds Thai and Lao and leaves out compatibility forms.

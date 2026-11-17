@@ -22,6 +22,7 @@
     <ProjectReference Include="..\..\src\Cotabby.Core\Cotabby.Core.csproj" />
     <ProjectReference Include="..\..\src\Cotabby.Inference\Cotabby.Inference.csproj" />
     <ProjectReference Include="..\..\src\Cotabby.Win32\Cotabby.Win32.csproj" />
+    <ProjectReference Include="..\..\src\Cotabby.App\Cotabby.App.csproj" />
   </ItemGroup>
 
 </Project>

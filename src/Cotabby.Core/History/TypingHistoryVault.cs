@@ -85,7 +85,14 @@ public sealed class TypingHistoryVault(string filePath, ITypingHistoryKeyStore k
 
         if (Path.GetDirectoryName(filePath) is { Length: > 0 } directory) Directory.CreateDirectory(directory);
         string temporary = filePath + ".tmp";
-        File.WriteAllBytes(temporary, sealedBytes);
+        // The bytes reach the disk before the rename. Otherwise a power loss right after the move
+        // can leave the archive name pointing at a file whose contents were never written.
+        using (var file = new FileStream(
+            temporary, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 4096, FileOptions.WriteThrough))
+        {
+            file.Write(sealedBytes);
+            file.Flush(flushToDisk: true);
+        }
         File.Move(temporary, filePath, overwrite: true);
     }
 

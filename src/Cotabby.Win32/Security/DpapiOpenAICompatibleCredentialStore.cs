@@ -31,11 +31,8 @@ public sealed class DpapiOpenAICompatibleCredentialStore(string? filePath = null
             return;
         }
 
-        if (Path.GetDirectoryName(_filePath) is { Length: > 0 } directory)
-        {
-            Directory.CreateDirectory(directory);
-        }
-        File.WriteAllBytes(
+        // A torn write would leave a file DPAPI cannot decrypt, losing the saved key.
+        AtomicFile.WriteAllBytes(
             _filePath,
             ProtectedData.Protect(Encoding.UTF8.GetBytes(key), null, DataProtectionScope.CurrentUser));
     }

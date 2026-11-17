@@ -36,8 +36,10 @@ public static class SyntheticKeys
     private const ushort VkUnassigned = 0xE8;
 
     /// <summary>True for short text with no line break, which hosts take as keystrokes.</summary>
-    public static bool CanType(string text) =>
-        text.Length <= MaxTypedChars && text.AsSpan().IndexOfAny("\n\r\v\f\u0085\u2028\u2029") < 0;
+    public static bool CanType(string text) => text.Length <= MaxTypedChars && !HasLineBreak(text);
+
+    /// <summary>True when the text holds any character a host may take as a line or paragraph break.</summary>
+    public static bool HasLineBreak(string text) => text.AsSpan().IndexOfAny("\n\r\v\f\u0085\u2028\u2029") >= 0;
 
     /// <summary>Each UTF-16 unit as a Unicode key press, so surrogate pairs arrive intact.</summary>
     public static List<SyntheticKey> Text(IEnumerable<ushort> heldModifiers, string text)
@@ -62,6 +64,30 @@ public static class SyntheticKeys
         return keys;
     }
 
+    /// <summary>
+    /// A press of a key that does nothing. Sent while Alt or Win is still held after the key that
+    /// went with it was swallowed, so the release that follows does not open the menu bar or the
+    /// Start menu.
+    /// </summary>
+    public static List<SyntheticKey> MenuMask() => [SyntheticKey.Down(VkUnassigned), SyntheticKey.Up(VkUnassigned)];
+
+    /// <summary>
+    /// Cuts text into runs of at most <paramref name="maxChars"/> UTF-16 units, typed one burst
+    /// at a time. A run never ends between the two halves of a surrogate pair.
+    /// </summary>
+    public static IEnumerable<string> Bursts(string text, int maxChars = MaxTypedChars)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxChars, 2);
+        int start = 0;
+        while (start < text.Length)
+        {
+            int length = Math.Min(maxChars, text.Length - start);
+            if (start + length < text.Length && char.IsHighSurrogate(text[start + length - 1])) length--;
+            yield return text.Substring(start, length);
+            start += length;
+        }
+    }
+
     /// <summary>Ctrl+V as virtual keys, because a shortcut is not a character.</summary>
     public static List<SyntheticKey> Paste(IEnumerable<ushort> heldModifiers)
     {
@@ -79,11 +105,7 @@ public static class SyntheticKeys
         var keys = new List<SyntheticKey>();
         // Alt or Win released with no key in between opens the menu bar or the Start menu, so a
         // key that does nothing is pressed first.
-        if (held.Any(key => key is VkLeftAlt or VkRightAlt or VkLeftWin or VkRightWin))
-        {
-            keys.Add(SyntheticKey.Down(VkUnassigned));
-            keys.Add(SyntheticKey.Up(VkUnassigned));
-        }
+        if (held.Any(key => key is VkLeftAlt or VkRightAlt or VkLeftWin or VkRightWin)) keys.AddRange(MenuMask());
         keys.AddRange(held.Select(SyntheticKey.Up));
         return keys;
     }

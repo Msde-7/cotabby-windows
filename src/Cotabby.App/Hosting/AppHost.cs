@@ -252,6 +252,11 @@ public sealed class AppHost : IAsyncDisposable
     {
         if (!args.Event.IsKeyDown || args.Event.IsRepeat || !Settings.GlobalToggle.Matches(args.Event)) return;
         args.Suppress = true;
+        // Windows never sees the swallowed key, so the Alt or Win release that follows looks like
+        // a lone tap and opens the menu bar or the Start menu. A key that does nothing, pressed
+        // while the modifier is still down, breaks that up. It is sent from the hook callback so
+        // it lands before the user can let go.
+        if ((args.Event.Modifiers & (KeyModifiers.Alt | KeyModifiers.Win)) != 0) KeySender.SendMenuMask();
         _ui.Post(_ => Update(s =>
         {
             s.Enabled = !s.Enabled;
@@ -340,22 +345,57 @@ public sealed class AppHost : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Shuts everything down. Each step runs on its own, so one failure, such as a settings file
+    /// another process holds, never skips the steps after it. Steps that wait on in-flight work
+    /// are bounded, so typing history is always written.
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
-        SaveSettings();
-        _hook.KeyEvent -= OnGlobalToggleKey;
-        SystemEvents.PowerModeChanged -= OnPowerModeChanged;
-        _batterySaver.Changed -= OnBatterySaverChanged;
-        _batterySaver.Dispose();
-        EmojiPicker.Dispose();
-        _macros.Dispose();
-        _spelling.Dispose();
-        await Coordinator.DisposeAsync().ConfigureAwait(false);
-        _screenContext?.Dispose();
+        var stepTimeout = TimeSpan.FromSeconds(2);
+
+        Step("save settings", SaveSettings);
+        Step("unsubscribe", () =>
+        {
+            _hook.KeyEvent -= OnGlobalToggleKey;
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            _batterySaver.Changed -= OnBatterySaverChanged;
+        });
+        Step("battery saver monitor", _batterySaver.Dispose);
+        Step("emoji picker", EmojiPicker.Dispose);
+        Step("macros", _macros.Dispose);
+        Step("spelling", _spelling.Dispose);
+        await StepAsync("coordinator", () => Coordinator.DisposeAsync().AsTask()).ConfigureAwait(false);
+        Step("screen context", () => _screenContext?.Dispose());
         // Write the field being typed in now. The debounced background save may not have run yet.
-        TypingHistory.Flush();
-        await Runtime.DisposeAsync().ConfigureAwait(false);
-        EndpointClient.Dispose();
-        await _services.DisposeAsync().ConfigureAwait(false);
+        Step("typing history", TypingHistory.Flush);
+        await StepAsync("model runtime", () => Runtime.DisposeAsync().AsTask()).ConfigureAwait(false);
+        Step("endpoint client", EndpointClient.Dispose);
+        // Last, because it closes the log.
+        await StepAsync("services", () => _services.DisposeAsync().AsTask()).ConfigureAwait(false);
+
+        void Step(string name, Action step)
+        {
+            try
+            {
+                step();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Shutdown step failed: {Step}.", name);
+            }
+        }
+
+        async Task StepAsync(string name, Func<Task> step)
+        {
+            try
+            {
+                await step().WaitAsync(stepTimeout).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Shutdown step failed: {Step}.", name);
+            }
+        }
     }
 }

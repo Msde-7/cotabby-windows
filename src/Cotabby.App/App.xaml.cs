@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Threading;
 using Cotabby.App.Emoji;
@@ -16,6 +17,12 @@ public partial class App : Application
     private const string SingleInstanceMutexName =
         "Local\\Cotabby.SingleInstance.{6f3b1d44-2c1b-4d0f-8c3d-2a1f1f7b1b2a}";
 
+    /// <summary>
+    /// Longest wait for the host to shut down. Exit blocks the UI thread for it, so a step stuck on
+    /// in-flight work cannot keep the process alive forever.
+    /// </summary>
+    private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(8);
+
     private Mutex? _singleInstance;
     private AppHost? _host;
     private TrayController? _tray;
@@ -24,9 +31,15 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        // Attached first, so a failure while the host is built is logged too.
+        DispatcherUnhandledException += OnUiException;
+        AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+        TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+
         _singleInstance = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out bool createdNew);
         if (!createdNew)
         {
+            _singleInstance.Dispose();
             _singleInstance = null;
             MessageBox.Show("Cotabby is already running. Check the system tray.",
                 "Cotabby", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -34,16 +47,27 @@ public partial class App : Application
             return;
         }
 
-        // Realizing the windows now makes the first suggestion and the first popup instant.
-        var overlay = Realized(new GhostOverlayWindow());
-        var macroPreview = Realized(new GhostOverlayWindow());
-        var emojiPopup = Realized(new EmojiPopupWindow());
+        try
+        {
+            // Realizing the windows now makes the first suggestion and the first popup instant.
+            var overlay = Realized(new GhostOverlayWindow());
+            var macroPreview = Realized(new GhostOverlayWindow());
+            var emojiPopup = Realized(new EmojiPopupWindow());
 
-        _host = new AppHost(SynchronizationContext.Current!, overlay, macroPreview, emojiPopup);
-        DispatcherUnhandledException += OnUiException;
+            _host = new AppHost(SynchronizationContext.Current!, overlay, macroPreview, emojiPopup);
+            _tray = new TrayController(_host);
+            _host.Coordinator.Start();
+        }
+        catch (Exception ex)
+        {
+            // Without a host there is no tray icon to quit from, so the process must not linger.
+            Log(ex, "Cotabby failed to start.");
+            MessageBox.Show($"Cotabby could not start: {ex.Message}\n\nDetails are in {AppHost.LogPath}",
+                "Cotabby", MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown(1);
+            return;
+        }
 
-        _tray = new TrayController(_host);
-        _host.Coordinator.Start();
         _ = LoadModelAsync(_host, _tray);
 
         if (_host.Settings.ShowFirstRunWelcome)
@@ -73,24 +97,101 @@ public partial class App : Application
         }
     }
 
-    protected override async void OnExit(ExitEventArgs e)
+    /// <summary>
+    /// Shuts down synchronously. An async exit would return to WPF at its first await, and the
+    /// dispatcher stops before the rest runs, so typing history, the model and the mutex were
+    /// never released. The host is disposed on the thread pool, so steps that post back to the
+    /// UI thread cannot deadlock against this wait.
+    /// </summary>
+    protected override void OnExit(ExitEventArgs e)
     {
         try
         {
             _tray?.Dispose();
-            if (_host is not null) await _host.DisposeAsync();
         }
-        finally
+        catch (Exception ex)
         {
-            _singleInstance?.ReleaseMutex();
-            base.OnExit(e);
+            Log(ex, "Disposing the tray icon failed.");
         }
+
+        if (_host is { } host)
+        {
+            try
+            {
+                var disposal = Task.Run(async () => await host.DisposeAsync().ConfigureAwait(false));
+                if (!disposal.Wait(ShutdownTimeout))
+                {
+                    Log(new TimeoutException($"Shutdown did not finish within {ShutdownTimeout.TotalSeconds:0} s."),
+                        "Shutdown timed out.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log(ex, "Shutdown failed.");
+            }
+        }
+
+        if (_singleInstance is not null)
+        {
+            try
+            {
+                _singleInstance.ReleaseMutex();
+            }
+            catch (ApplicationException)
+            {
+                // Not owned by this thread. Windows releases it when the process exits.
+            }
+            _singleInstance.Dispose();
+            _singleInstance = null;
+        }
+        base.OnExit(e);
     }
 
     private void OnUiException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         // A failed settings click must not take down the keyboard hook with it.
         e.Handled = true;
-        _host?.LogError(e.Exception, "Unhandled UI exception.");
+        Log(e.Exception, "Unhandled UI exception.");
+    }
+
+    private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e) =>
+        Log(e.ExceptionObject as Exception,
+            e.IsTerminating ? "Unhandled exception. Cotabby is closing." : "Unhandled exception.");
+
+    private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+    {
+        Log(e.Exception, "Unobserved task exception.");
+        e.SetObserved();
+    }
+
+    /// <summary>
+    /// Logs through the host when there is one, and straight to the log file otherwise, such as
+    /// when the host failed to build or has already shut its logger down.
+    /// </summary>
+    private void Log(Exception? ex, string message)
+    {
+        try
+        {
+            if (_host is { } host && ex is not null)
+            {
+                host.LogError(ex, message);
+                return;
+            }
+            string line = $"{DateTime.Now:HH:mm:ss.fff} fail: Cotabby.App[0] {message}{(ex is null ? "" : $" :: {ex}")}{Environment.NewLine}";
+            Directory.CreateDirectory(Path.GetDirectoryName(AppHost.LogPath)!);
+            try
+            {
+                File.AppendAllText(AppHost.LogPath, line);
+            }
+            catch (IOException)
+            {
+                // A half-built host may still hold the log open for writing.
+                File.AppendAllText(Path.ChangeExtension(AppHost.LogPath, ".crash.log"), line);
+            }
+        }
+        catch (Exception)
+        {
+            // The log itself is unavailable. There is nowhere left to report to.
+        }
     }
 }

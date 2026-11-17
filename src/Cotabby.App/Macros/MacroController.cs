@@ -11,6 +11,12 @@ namespace Cotabby.App.Macros;
 /// Drives inline slash macros. Typing <c>/5+5</c> previews the result at the caret
 /// and the accept key replaces the typed macro with it.
 /// </summary>
+/// <remarks>
+/// Keys arrive on the keyboard hook thread, which Windows cuts off when a callback runs long, so
+/// a query is evaluated on the thread pool. Only the accept key needs the result before the
+/// callback returns, to decide whether to swallow it. When the evaluation of the latest query
+/// has not finished by then, that one query is evaluated in the callback.
+/// </remarks>
 public sealed class MacroController : IDisposable
 {
     private readonly IKeyboardHook _hook;
@@ -22,6 +28,10 @@ public sealed class MacroController : IDisposable
     private readonly MacroTriggerStateMachine _machine = new();
     private readonly object _gate = new();
     private MacroResult? _result;
+    // The query _result was evaluated for, or null while its evaluation is pending.
+    private string? _resultQuery;
+    // Bumped whenever the query or capture changes, so a late evaluation is dropped.
+    private int _evaluation;
     private bool _enabled = true;
     private int _capturePid;
 
@@ -38,7 +48,14 @@ public sealed class MacroController : IDisposable
         _logger = logger;
         _hook.KeyEvent += OnKeyEvent;
         _focus.FocusChanged += OnFocusChanged;
+        // The first evaluation of each family builds its tables, which must not happen inside the hook.
+        Task.Run(() =>
+        {
+            foreach (var query in WarmUpQueries) _engine.Evaluate(query);
+        });
     }
+
+    private static readonly string[] WarmUpQueries = ["today", "random", "1km->m", "1usd->eur", "1+1"];
 
     public bool Enabled
     {
@@ -80,7 +97,15 @@ public sealed class MacroController : IDisposable
                 return;
             }
 
-            var outcome = _machine.Apply(InlineCommitKey.Normalize(args.Event, CommitKeyFor(_focus.Current?.ProcessName)), _result is not null);
+            var ev = InlineCommitKey.Normalize(args.Event, CommitKeyFor(_focus.Current?.ProcessName));
+            if (ev is { IsKeyDown: true, Kind: KeyKind.Tab } && _machine.IsActive && _resultQuery != _machine.Query)
+            {
+                // Whether to swallow the key cannot wait for the pending evaluation.
+                _evaluation++;
+                Preview(EvaluateSafely(_machine.Query), _machine.Query);
+            }
+
+            var outcome = _machine.Apply(ev, _result is not null);
             args.Suppress = _machine.ConsumesKey;
             switch (outcome)
             {
@@ -89,23 +114,55 @@ public sealed class MacroController : IDisposable
                     if (_focus.Current is not { IsSecure: false } field || !CanCapture(field)) End();
                     break;
                 case MacroTriggerStateMachine.Outcome.QueryChanged:
-                    Preview(_engine.Evaluate(_machine.Query));
+                    EvaluateLater(_machine.Query);
                     break;
                 case MacroTriggerStateMachine.Outcome.Commit when _result is { } result:
                     int deleteCount = _machine.QueryAtCommitLength;
-                    Preview(null);
+                    _evaluation++;
+                    Preview(null, null);
                     _ = Task.Run(() => CommitAsync(result, deleteCount));
                     break;
                 case MacroTriggerStateMachine.Outcome.Cancel:
-                    Preview(null);
+                    _evaluation++;
+                    Preview(null, null);
                     break;
             }
         }
     }
 
-    private void Preview(MacroResult? result)
+    /// <summary>Evaluates <paramref name="query"/> on the thread pool and previews it if it is still current.</summary>
+    private void EvaluateLater(string query)
+    {
+        int evaluation = ++_evaluation;
+        _result = null;
+        _resultQuery = null;
+        _ = Task.Run(() =>
+        {
+            var result = EvaluateSafely(query);
+            lock (_gate)
+            {
+                if (evaluation == _evaluation) Preview(result, query);
+            }
+        });
+    }
+
+    private MacroResult? EvaluateSafely(string query)
+    {
+        try
+        {
+            return _engine.Evaluate(query);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Macro evaluation failed.");
+            return null;
+        }
+    }
+
+    private void Preview(MacroResult? result, string? query)
     {
         _result = result;
+        _resultQuery = query;
         if (result is null)
         {
             _preview.Hide();
@@ -153,6 +210,7 @@ public sealed class MacroController : IDisposable
     private void End()
     {
         _machine.Reset();
-        Preview(null);
+        _evaluation++;
+        Preview(null, null);
     }
 }

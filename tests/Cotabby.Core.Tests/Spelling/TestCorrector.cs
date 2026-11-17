@@ -8,10 +8,14 @@ internal static class TestCorrector
     private static readonly TimeSpan LoadTimeout = TimeSpan.FromSeconds(60);
 
     /// <summary>A corrector that can read the given dictionaries and has loaded none of them.</summary>
-    public static SymSpellCorrector Cold(params (SpellingDictionaryLanguage Language, string Contents)[] dictionaries)
+    public static SymSpellCorrector Cold(params (SpellingDictionaryLanguage Language, string Contents)[] dictionaries) =>
+        Cold(cacheLimit: null, dictionaries);
+
+    public static SymSpellCorrector Cold(
+        int? cacheLimit, params (SpellingDictionaryLanguage Language, string Contents)[] dictionaries)
     {
         var contents = dictionaries.ToDictionary(dictionary => dictionary.Language, dictionary => dictionary.Contents);
-        return new SymSpellCorrector(resourceLoader: language => contents.GetValueOrDefault(language));
+        return new SymSpellCorrector(resourceLoader: language => contents.GetValueOrDefault(language), cacheLimit: cacheLimit);
     }
 
     public static SymSpellCorrector Loaded(params (SpellingDictionaryLanguage Language, string Contents)[] dictionaries)

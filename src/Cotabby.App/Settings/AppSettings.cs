@@ -1,4 +1,5 @@
 using System.IO;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -11,6 +12,7 @@ using Cotabby.Core.Spelling;
 using Cotabby.Core.Suggestions;
 using Cotabby.Inference.OpenAICompatible;
 using Cotabby.Core.Support;
+using Cotabby.Win32.Security;
 
 namespace Cotabby.App.Settings;
 
@@ -216,49 +218,93 @@ public sealed class SettingsStore
         Converters = { new JsonStringEnumConverter() },
     };
 
+    private const int ReadAttempts = 3;
+    private const int ReadRetryMs = 50;
+
     public string Path { get; }
 
     public SettingsStore()
+        : this(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Cotabby"))
     {
-        var dir = System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Cotabby");
-        Directory.CreateDirectory(dir);
-        Path = System.IO.Path.Combine(dir, "settings.json");
     }
 
+    private SettingsStore(string directory)
+    {
+        Directory.CreateDirectory(directory);
+        Path = System.IO.Path.Combine(directory, "settings.json");
+    }
+
+    /// <summary>A store that keeps settings.json in <paramref name="directory"/>, for tests.</summary>
+    public static SettingsStore InDirectory(string directory) => new(directory);
+
+    /// <summary>
+    /// The saved settings, or the defaults when there are none. A file that cannot be read or
+    /// parsed is first copied aside as settings.json.corrupt-&lt;time&gt;, because the next save
+    /// replaces it with the defaults.
+    /// </summary>
     public AppSettings Load()
     {
         if (!File.Exists(Path)) return new AppSettings();
         try
         {
-            return Parse(File.ReadAllText(Path));
+            return Parse(ReadWithRetry());
         }
-        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        catch (Exception)
         {
+            BackUpUnreadable();
             return new AppSettings();
         }
     }
 
-    public void Save(AppSettings settings)
+    public void Save(AppSettings settings) =>
+        AtomicFile.WriteAllBytes(Path, JsonSerializer.SerializeToUtf8Bytes(settings, JsonOpts));
+
+    /// <summary>Another process, such as a virus scanner, may hold the file for a moment.</summary>
+    private string ReadWithRetry()
     {
-        var tmp = Path + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(settings, JsonOpts));
-        File.Move(tmp, Path, overwrite: true);
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return File.ReadAllText(Path);
+            }
+            catch (IOException) when (attempt < ReadAttempts)
+            {
+                Thread.Sleep(ReadRetryMs);
+            }
+        }
     }
 
+    private void BackUpUnreadable()
+    {
+        try
+        {
+            File.Copy(Path, $"{Path}.corrupt-{DateTime.Now:yyyyMMdd-HHmmss}", overwrite: true);
+        }
+        catch (Exception)
+        {
+            // Nothing more can be kept. The defaults still load.
+        }
+    }
+
+    /// <summary>Parses a settings file. Throws when the text is not a JSON object.</summary>
     public static AppSettings Parse(string json)
     {
-        if (JsonNode.Parse(json) is not JsonObject root) return new AppSettings();
+        if (JsonNode.Parse(json) is not JsonObject root)
+        {
+            throw new JsonException("The settings file does not hold a JSON object.");
+        }
         MigrateLegacyKeys(root);
         AppSettings settings;
         try
         {
             settings = root.Deserialize<AppSettings>(JsonOpts) ?? new AppSettings();
         }
-        catch (JsonException)
+        catch (Exception)
         {
             settings = ParseFieldByField(root);
         }
+        RestoreNulls(settings);
         Sanitize(settings);
         return settings;
     }
@@ -282,11 +328,40 @@ public sealed class SettingsStore
                     property.SetValue(settings, property.GetValue(parsed));
                 }
             }
-            catch (Exception ex) when (ex is JsonException or InvalidOperationException or NotSupportedException)
+            catch (Exception)
             {
             }
         }
         return settings;
+    }
+
+    /// <summary>
+    /// A hand edit may set a list or text to null, which the rest of the app never expects. Every
+    /// such value goes back to its default, and null entries are dropped from lists of names.
+    /// </summary>
+    private static void RestoreNulls(AppSettings settings)
+    {
+        var defaults = new AppSettings();
+        var nullability = new NullabilityInfoContext();
+        foreach (var property in typeof(AppSettings).GetProperties())
+        {
+            if (!property.CanRead || !property.CanWrite || property.PropertyType.IsValueType) continue;
+            var value = property.GetValue(settings);
+            if (value is List<string> names)
+            {
+                names.RemoveAll(name => name is null);
+            }
+            else if (value is null && nullability.Create(property).WriteState == NullabilityState.NotNull)
+            {
+                property.SetValue(settings, property.GetValue(defaults));
+            }
+        }
+        settings.AcceptWord = WithLabel(settings.AcceptWord, defaults.AcceptWord);
+        settings.AcceptAll = WithLabel(settings.AcceptAll, defaults.AcceptAll);
+        settings.GlobalToggle = WithLabel(settings.GlobalToggle, defaults.GlobalToggle);
+
+        static KeyBinding WithLabel(KeyBinding binding, KeyBinding fallback) =>
+            binding.Label is not null ? binding : fallback;
     }
 
     /// <summary>Puts values a hand edit or an older version may have left out of range back in it.</summary>
@@ -303,14 +378,17 @@ public sealed class SettingsStore
         settings.Languages ??= [.. LanguageCatalog.DefaultLanguages];
         settings.BlockedApps ??= [];
         settings.SpellingDictionaries ??= [.. SpellingDictionaryCatalog.DefaultEnabledCodes];
+        settings.TypingHistoryExcludedApps ??= [];
     }
 
     /// <summary>Files written before shortcuts were recordable stored the accept-all key by name.</summary>
     private static void MigrateLegacyKeys(JsonObject root)
     {
-        if (root["AcceptSuggestionKey"] is JsonValue legacy && !root.ContainsKey(nameof(AppSettings.AcceptAll)))
+        // A legacy value that is not a string carries no choice, so the default stays.
+        if (root["AcceptSuggestionKey"] is JsonValue legacy && legacy.TryGetValue<string>(out var name)
+            && !root.ContainsKey(nameof(AppSettings.AcceptAll)))
         {
-            var binding = legacy.GetValue<string>().Trim().ToLowerInvariant() switch
+            var binding = name.Trim().ToLowerInvariant() switch
             {
                 "tilde" or "~" => new KeyBinding(KeyBinding.VkBacktick, KeyModifiers.Shift, "~"),
                 "backslash" or "\\" => new KeyBinding(0xDC, KeyModifiers.None, "\\"),

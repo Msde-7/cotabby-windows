@@ -59,9 +59,29 @@ public sealed class EmojiPickerController : IDisposable
         _longPauseTimer = new Timer(_ => CancelCapture());
         // The hook callback has a hard time budget and a cold decode of the catalog takes about
         // 100 ms, so it happens here instead of on the first colon.
-        Task.Run(() => EmojiCatalog.Bundled);
+        Task.Run(WarmUp);
         _hook.KeyEvent += OnKeyEvent;
         _focus.FocusChanged += OnFocusChanged;
+    }
+
+    /// <summary>
+    /// Does once, off the hook thread, the first-time work a capture and a commit would otherwise
+    /// do inside the hook: decoding the catalog, the first match and building the JSON
+    /// serializer that a commit uses to write the usage file. The throwaway store reads a file
+    /// that does not exist and discards its write.
+    /// </summary>
+    private void WarmUp()
+    {
+        try
+        {
+            new EmojiMatcher(EmojiCatalog.Bundled).Matches("smile", EmojiUsageSnapshot.Empty);
+            var scratch = Path.Combine(Path.GetTempPath(), $"cotabby-warmup-{Guid.NewGuid():N}", "emoji-usage.json");
+            new EmojiUsageStore(scratch, _ => { }).Record("smile");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Emoji picker warm-up failed.");
+        }
     }
 
     private static string UsageFilePath => Path.Combine(

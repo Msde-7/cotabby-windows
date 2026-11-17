@@ -59,7 +59,8 @@ public class SymSpellCorrectorTests
     [Fact]
     public void EvictsLeastRecentlyUsedLanguageAtCacheLimit()
     {
-        using var corrector = TestCorrector.Cold((English, "the 1000"), (German, "das 1000"), (Spanish, "hola 1000"));
+        using var corrector = TestCorrector.Cold(
+            cacheLimit: 2, (English, "the 1000"), (German, "das 1000"), (Spanish, "hola 1000"));
         TestCorrector.Load(corrector, English);
         TestCorrector.Load(corrector, German);
 
@@ -70,6 +71,17 @@ public class SymSpellCorrectorTests
         Assert.False(corrector.IsKnownWord("nmae", English));
         // German was evicted, so it is cold again and vouches for every word.
         Assert.True(corrector.IsKnownWord("nmae", German));
+    }
+
+    [Fact]
+    public void KeepsEveryBundledLanguageLoadedByDefault()
+    {
+        var languages = SpellingDictionaryCatalog.AllLanguages;
+        using var corrector = TestCorrector.Cold([.. languages.Select(language => (language, "word 1000"))]);
+        foreach (var language in languages) TestCorrector.Load(corrector, language);
+
+        // With every dictionary enabled none is evicted, so switching languages never rebuilds one.
+        foreach (var language in languages) Assert.False(corrector.IsKnownWord("nmae", language));
     }
 
     [Fact]
@@ -125,6 +137,30 @@ public class SymSpellCorrectorTests
         // A failed load publishes nothing, so lookups keep failing open.
         Assert.Null(corrector.BestCorrection("ciaoo", Italian));
         Assert.True(corrector.IsKnownWord("ciaoo", Italian));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AFailedLoadIsNotRetriedOnEveryLookup(bool throws)
+    {
+        int calls = 0;
+        using var corrector = new SymSpellCorrector(resourceLoader: _ =>
+        {
+            Interlocked.Increment(ref calls);
+            return throws ? throw new IOException("unreadable") : null;
+        });
+
+        // Keystrokes keep asking well after the first load has failed.
+        var until = DateTime.UtcNow + TimeSpan.FromMilliseconds(300);
+        while (DateTime.UtcNow < until)
+        {
+            Assert.Null(corrector.BestCorrection("ciaoo", Italian));
+            Assert.True(corrector.IsKnownWord("ciaoo", Italian));
+            Thread.Sleep(5);
+        }
+
+        Assert.Equal(1, Volatile.Read(ref calls));
     }
 
     [Fact]

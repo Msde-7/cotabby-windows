@@ -69,6 +69,10 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     private HostAdvanceFit _advanceFit = new();
     private AppSettings? _settings;
     private ScreenRect _anchor;
+    // Physical pixels per DIP on the monitor under the anchor. The window is moved there before it
+    // renders, so text is sized and placed with this scale and never with the one of the monitor
+    // the window last sat on.
+    private double _anchorScale = 1.0;
     private bool _rightToLeft;
 
     public GhostOverlayWindow()
@@ -119,6 +123,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         bool wasVisible = Visibility == Visibility.Visible;
         _field = field;
         _anchor = anchor;
+        _anchorScale = OverlayWindowInterop.DipScaleAt(anchor.X, anchor.Y);
         _rightToLeft = TextDirectionDetector.IsRightToLeft(field?.PrecedingText);
         TabKeycapLabel.Text = HintLabel(field?.ProcessName);
         UseStyle(style);
@@ -193,8 +198,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
 
         UseDefaultFace();
         _stableCaretHeightPx = Math.Max(_stableCaretHeightPx, anchor.Height);
-        double scale = _source?.CompositionTarget?.TransformToDevice.M22 ?? 1.0;
-        double caretHeightDip = _stableCaretHeightPx / Math.Max(scale, 0.1);
+        double caretHeightDip = _stableCaretHeightPx / Math.Max(_anchorScale, 0.1);
         GhostText.FontSize = Math.Round(GhostFontSizeLimits.Clamped(
             caretHeightDip * FontSizePerCaretHeight * _sizeMultiplier, _sizeFloor, _sizeCeiling), 1);
     }
@@ -216,7 +220,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
     {
         try
         {
-            double scale = OverlayWindowInterop.DipScaleAt(anchor.X, anchor.Y);
+            double scale = _anchorScale;
             _measurer.UseOfficeCloudFonts = OfficeProcesses.Contains(field.ProcessName);
             var resolution = GhostFontResolver.Resolve(new GhostFontInput
             {
@@ -283,14 +287,14 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
 
     private void Render(string text)
     {
-        if (_source?.CompositionTarget is not { } target || text.Length == 0)
+        if (_source?.CompositionTarget is null || text.Length == 0)
         {
             SetRows([text]);
             TabKeycap.Visibility = Visibility.Collapsed;
             return;
         }
-        double scaleX = target.TransformToDevice.M11;
-        double scaleY = target.TransformToDevice.M22;
+        double scaleX = _anchorScale;
+        double scaleY = _anchorScale;
         var area = OverlayWindowInterop.WorkAreaAt(_anchor.X, _anchor.Y);
         if (_style == OverlayStyle.Inline && !TryRenderInline(text, area, scaleX, scaleY))
         {
@@ -401,7 +405,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
             text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
             new Typeface(GhostText.FontFamily, GhostText.FontStyle, GhostText.FontWeight, FontStretches.Normal),
             GhostText.FontSize, Brushes.Black, null, TextOptions.GetTextFormattingMode(GhostText),
-            VisualTreeHelper.GetDpi(this).PixelsPerDip).WidthIncludingTrailingWhitespace;
+            _anchorScale).WidthIncludingTrailingWhitespace;
 
     /// <summary>
     /// The caret's x, moved past the text before it when the host has published a keystroke's text
@@ -414,7 +418,7 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         {
             return anchor.Right;
         }
-        double scale = OverlayWindowInterop.DipScaleAt(anchor.X, anchor.Y);
+        double scale = _anchorScale;
         var line = field.CaretLineRect;
         double lineWidth = Math.Max(line.Width, field.FieldRect.Right - line.X);
         bool lags = CaretLagPolicy.CaretLagsTypedText(

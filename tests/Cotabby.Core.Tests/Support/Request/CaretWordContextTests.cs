@@ -101,6 +101,32 @@ public class CaretWordContextTests
             CaretWordContext.CommittedWordIn("a nmae" + delimiter));
     }
 
+    /// <summary>
+    /// Chromium and Electron fields report a trailing typed space as U+00A0. It commits the word
+    /// like a space, and the planned edit deletes that one unit and re-types a plain space.
+    /// </summary>
+    [Theory]
+    [InlineData("a nmae\u00A0", " ")]
+    [InlineData("a nmae,\u00A0", ", ")]
+    public void AChromiumNoBreakSpaceCommitsTheWord(string text, string delimiter)
+    {
+        Assert.Equal(new CaretWordContext.CommittedWord("nmae", delimiter), CaretWordContext.CommittedWordIn(text));
+
+        var plan = TypoCorrectionReplacementPlanner.Plan(text, "nmae", "name", requiresTrailingSpace: false);
+        Assert.Equal(new TypoCorrectionReplacement(("nmae" + delimiter).Length, "name" + delimiter), plan);
+    }
+
+    [Fact]
+    public void AChromiumNoBreakSpaceSatisfiesTheTrailingSpaceRequirement()
+    {
+        Assert.Equal(
+            new TypoCorrectionReplacement(5, "name "),
+            TypoCorrectionReplacementPlanner.Plan("a nmae\u00A0", "nmae", "name", requiresTrailingSpace: true));
+        // A second space of either kind still means the writer moved on.
+        Assert.Null(CaretWordContext.CommittedWordIn("a nmae\u00A0 "));
+        Assert.Null(CaretWordContext.CommittedWordIn("a nmae \u00A0"));
+    }
+
     /// <summary>A period is not a delimiter because example.com and a sentence end look identical at this boundary.</summary>
     [Theory]
     [InlineData("a nmae.")]

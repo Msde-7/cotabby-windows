@@ -37,7 +37,27 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
 
     // FNV-1a hash of a delete variant to the indices of the words that produce it. Collisions are
     // harmless because every candidate is verified with a real bounded edit-distance check.
-    private readonly Dictionary<ulong, int[]> _deletes = [];
+    private readonly Dictionary<ulong, Bucket> _deletes = [];
+
+    /// <summary>
+    /// The word indices behind one delete hash. The array grows by doubling, so adding a word is
+    /// amortized constant time even for the very common short deletes, where copying the whole
+    /// bucket on every add would make loading quadratic in the bucket size.
+    /// </summary>
+    private struct Bucket
+    {
+        public int[] Items;
+        public int Count;
+
+        public void Add(int index)
+        {
+            if (Items is null) Items = new int[1];
+            else if (Count == Items.Length) Array.Resize(ref Items, Count * 2);
+            Items[Count++] = index;
+        }
+
+        public readonly ReadOnlySpan<int> Indices => Items.AsSpan(0, Count);
+    }
     private int _maxDictionaryWordLength;
 
     public int MaxDictionaryEditDistance { get; } = maxDictionaryEditDistance;
@@ -59,6 +79,12 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
             cancellationToken.ThrowIfCancellationRequested();
             CreateDictionaryEntry(word, count);
         }
+        // Growth slack is dropped once the index stops changing.
+        foreach (ulong key in _deletes.Keys)
+        {
+            ref var bucket = ref CollectionsMarshal.GetValueRefOrNullRef(_deletes, key);
+            if (bucket.Count < bucket.Items.Length) Array.Resize(ref bucket.Items, bucket.Count);
+        }
         _deletes.TrimExcess();
     }
 
@@ -72,8 +98,7 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
         _maxDictionaryWordLength = Math.Max(_maxDictionaryWordLength, characters.Length);
         foreach (ulong delete in DeleteHashes(characters))
         {
-            ref var bucket = ref CollectionsMarshal.GetValueRefOrAddDefault(_deletes, delete, out _);
-            bucket = bucket is null ? [index] : [.. bucket, index];
+            CollectionsMarshal.GetValueRefOrAddDefault(_deletes, delete, out _).Add(index);
         }
     }
 
@@ -102,9 +127,9 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
         for (int pointer = 0; pointer < candidates.Count; pointer++)
         {
             var candidate = candidates[pointer];
-            if (_deletes.TryGetValue(Hash(candidate), out var wordIndices))
+            if (_deletes.TryGetValue(Hash(candidate), out var bucket))
             {
-                foreach (int wordIndex in wordIndices)
+                foreach (int wordIndex in bucket.Indices)
                 {
                     var suggestion = _wordsList[wordIndex];
                     var suggestionCharacters = Characters(suggestion);

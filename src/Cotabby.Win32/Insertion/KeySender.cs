@@ -7,22 +7,29 @@ namespace Cotabby.Win32.Insertion;
 /// Sends <see cref="SyntheticKeys"/> batches to the focused application. One SendInput call with
 /// the whole batch cannot be interleaved with other input.
 /// </summary>
-internal static class KeySender
+/// <remarks>
+/// Every event carries <see cref="CotabbyInputMarker"/>, which is how the keyboard hook tells
+/// Cotabby's own keys from injected input it should handle. Each method returns false when
+/// Windows did not take the whole batch.
+/// </remarks>
+public static class KeySender
 {
-    public static void SendBackspaces(int count)
-    {
-        if (count > 0) Send(SyntheticKeys.Backspaces(HeldModifiers(), count));
-    }
+    public static bool SendBackspaces(int count) =>
+        count <= 0 || Send(SyntheticKeys.Backspaces(HeldModifiers(), count));
 
-    public static void SendText(string text) => Send(SyntheticKeys.Text(HeldModifiers(), text));
+    public static bool SendText(string text) => Send(SyntheticKeys.Text(HeldModifiers(), text));
 
-    public static void SendPaste() => Send(SyntheticKeys.Paste(HeldModifiers()));
+    public static bool SendPaste() => Send(SyntheticKeys.Paste(HeldModifiers()));
+
+    /// <inheritdoc cref="SyntheticKeys.MenuMask"/>
+    public static bool SendMenuMask() => Send(SyntheticKeys.MenuMask());
 
     private static IEnumerable<ushort> HeldModifiers() =>
         SyntheticKeys.Modifiers.Where(vk => (GetAsyncKeyState(vk) & 0x8000) != 0);
 
-    private static void Send(List<SyntheticKey> keys)
+    private static bool Send(List<SyntheticKey> keys)
     {
+        if (keys.Count == 0) return true;
         var inputs = new INPUT[keys.Count];
         for (int i = 0; i < inputs.Length; i++)
         {
@@ -36,10 +43,16 @@ internal static class KeySender
                 type = INPUT_KEYBOARD,
                 U = new INPUTUNION
                 {
-                    ki = new KEYBDINPUT { wVk = key.VirtualKey, wScan = key.Character, dwFlags = flags },
+                    ki = new KEYBDINPUT
+                    {
+                        wVk = key.VirtualKey,
+                        wScan = key.Character,
+                        dwFlags = flags,
+                        dwExtraInfo = CotabbyInputMarker,
+                    },
                 },
             };
         }
-        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>()) == inputs.Length;
     }
 }
