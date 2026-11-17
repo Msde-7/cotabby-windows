@@ -153,6 +153,9 @@ public sealed partial class SuggestionCoordinator
                     return;
                 }
                 if (!SuggestionRequestFactory.ShouldGenerate(live.PrecedingText, live.TrailingText, settings.SuggestWithinWords)) return;
+                // The request checked its answer against the text after the caret, but not what is
+                // left of it once the typed keys are taken off.
+                if (TrailingDuplicationFilter.DuplicatesTrailingText(text, live.TrailingText)) return;
                 _logger.LogDebug("Request {ReqId} kept through {Count} typed characters.", requestId, typedAhead.Length);
             }
             // An unusable result mid-word may still offer a local word ending.
@@ -343,10 +346,11 @@ public sealed partial class SuggestionCoordinator
                 }
             }
 
-            // Generation took a while. Show the suggestion only if the text it continues is still there.
+            // Generation took a while. Show the suggestion only if the text it continues is still there,
+            // in the same field, with the same text after the caret and nothing selected.
             var live = _focus.Refresh(readHostText: true);
             ct.ThrowIfCancellationRequested();
-            if (live is not null && live.ProcessId == field.ProcessId && !live.HostIsPredicting
+            if (live is not null && !live.HostIsPredicting && TypingPrediction.IsSameCaretPlace(field, live)
                 && SuggestionSessionReconciler.SpaceNormalized(live.PrecedingText)
                     == SuggestionSessionReconciler.SpaceNormalized(expected))
             {

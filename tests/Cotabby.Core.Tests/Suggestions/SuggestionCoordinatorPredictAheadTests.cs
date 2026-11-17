@@ -97,6 +97,71 @@ public sealed class SuggestionCoordinatorPredictAheadTests : CoordinatorHarness
     }
 
     [Fact]
+    public async Task SelectingTextWhileKeysAreKept_ShowsNothing()
+    {
+        Type("hello");
+        await GeneratingFor("hello");
+        Type(" wo");
+        Focus.Replace(Focus.Current! with { HasSelection = true });
+
+        _hold.SetResult();
+
+        await StaysHidden();
+    }
+
+    [Fact]
+    public async Task ChangingTheTextAfterTheCaretDuringGeneration_ShowsNothing()
+    {
+        Type("hello");
+        await GeneratingFor("hello");
+        Focus.Replace(Focus.Current! with { Text = "hello and more", CaretOffset = 5 });
+
+        _hold.SetResult();
+
+        await StaysHidden();
+    }
+
+    [Fact]
+    public async Task AnotherFieldInTheSameAppWithTheSameText_ShowsNothing()
+    {
+        Type("hello");
+        await GeneratingFor("hello");
+        Focus.Replace(Focus.Current! with { FieldId = "another field" });
+
+        _hold.SetResult();
+
+        await StaysHidden();
+    }
+
+    [Fact]
+    public async Task WhatIsLeftAfterTypedKeysRepeatsTheTextAfterTheCaret_AsksAgain()
+    {
+        Focus.Focus(Fields.Text("\nfriend") with { CaretOffset = 0 });
+        Engine.Completion = request => request.Prefix == "hello" ? " big friend" : "old";
+        TypeAtCaret("hello", "\nfriend");
+        await GeneratingFor("hello");
+
+        TypeAtCaret("hello big ", "\nfriend");
+        await Task.Delay(50);
+        _hold.SetResult();
+
+        await GeneratingFor("hello big ");
+        await Shown("old");
+    }
+
+    /// <summary>Types keys whose text the host shows before the caret, leaving the text after it alone.</summary>
+    private void TypeAtCaret(string preceding, string trailing)
+    {
+        string before = Focus.Current!.PrecedingText;
+        foreach (char c in preceding[before.Length..])
+        {
+            Hook.Press(Keys.Char(c));
+            before += c;
+            Focus.Replace(Focus.Current! with { Text = before + trailing, CaretOffset = before.Length });
+        }
+    }
+
+    [Fact]
     public async Task TurnedOff_EveryKeyStartsOver()
     {
         Coordinator.Settings = SuggestionSettings.Default with { PredictAheadWhileTyping = false };

@@ -100,11 +100,7 @@ public sealed class TypingPrediction(FocusedField field, long sequence, Cancella
     /// <summary>True when the live field is the request's field on the way to holding what was typed.</summary>
     public bool Accepts(FocusedField live)
     {
-        if (live.IsSecure || live.HasSelection || live.ProcessId != Field.ProcessId || live.FieldId != Field.FieldId
-            || Normalized(live.TrailingText) != Normalized(Field.TrailingText))
-        {
-            return false;
-        }
+        if (!IsSameCaretPlace(Field, live)) return false;
         string start = Normalized(Field.PrecedingText);
         string preceding = Normalized(live.PrecedingText);
         return preceding.StartsWith(start, StringComparison.Ordinal)
@@ -132,6 +128,15 @@ public sealed class TypingPrediction(FocusedField field, long sequence, Cancella
         string typed = Typed;
         return IsPublished(live) && text.StartsWith(typed, StringComparison.Ordinal) ? text[typed.Length..] : null;
     }
+
+    /// <summary>
+    /// True when the live field is still the one an answer was made for: the same field, not a
+    /// password field, with nothing selected and the same text after the caret. Only the text
+    /// before the caret may differ, by what the user typed since.
+    /// </summary>
+    public static bool IsSameCaretPlace(FocusedField field, FocusedField live) =>
+        !live.IsSecure && !live.HasSelection && live.ProcessId == field.ProcessId && live.FieldId == field.FieldId
+        && Normalized(live.TrailingText) == Normalized(field.TrailingText);
 
     private static string Normalized(string text) => SuggestionSessionReconciler.SpaceNormalized(text);
 }
