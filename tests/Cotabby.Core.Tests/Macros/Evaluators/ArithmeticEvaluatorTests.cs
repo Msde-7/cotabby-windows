@@ -157,6 +157,21 @@ public class ArithmeticEvaluatorTests
         Assert.Null(ArithmeticEvaluator.Format(double.NaN));
     }
 
+    [Fact]
+    public void DeeplyNestedParenthesesAreInvalidInsteadOfOverflowingTheStack()
+    {
+        // Thousands of levels used to overflow the stack, which ends the process outright.
+        Assert.Null(_sut.Evaluate(new string('(', 5000) + "1+1" + new string(')', 5000)));
+        Assert.Equal("4", _sut.Evaluate(new string('(', 20) + "2+2" + new string(')', 20))?.InsertionText);
+    }
+
+    [Fact]
+    public void ALongPowerChainIsInvalidInsteadOfOverflowingTheStack()
+    {
+        Assert.Null(_sut.Evaluate(string.Join('^', Enumerable.Repeat("1", 5000))));
+        Assert.Equal("1", _sut.Evaluate(string.Join('^', Enumerable.Repeat("1", 20)))?.InsertionText);
+    }
+
     [Theory]
     [InlineData("de-DE")]
     [InlineData("fr-FR")]

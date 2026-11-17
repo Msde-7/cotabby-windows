@@ -21,6 +21,10 @@ public sealed class SpellingLanguageResolver(Func<SpellingDictionaryLanguage, st
     // such a word from selecting an arbitrary enabled dictionary.
     private const double MinimumConfidence = 0.55;
 
+    // What CaretWordContext.CommittedWordIn accepts after a word: a space (or Chromium's no-break
+    // space) and the punctuation that commits a word.
+    private static readonly char[] CommittingDelimiters = [' ', ' ', ',', ';', ':', '!', '?'];
+
     private readonly LanguageVocabularyScorer _scorer = new(resourceLoader ?? SpellingDictionaryResources.Loader());
 
     /// <summary>
@@ -52,8 +56,12 @@ public sealed class SpellingLanguageResolver(Func<SpellingDictionaryLanguage, st
     /// </summary>
     private static string ContextSample(string precedingText, string currentWord)
     {
-        var context = precedingText.EndsWith(currentWord, StringComparison.Ordinal)
-            ? precedingText[..^currentWord.Length]
+        // The typo gate passes the text with the delimiter that committed the word ("wrold, "), so
+        // the delimiter is set aside before the word is matched. Upstream checks the raw text and
+        // so never removes the typo there.
+        var body = precedingText.TrimEnd(CommittingDelimiters);
+        var context = body.EndsWith(currentWord, StringComparison.Ordinal)
+            ? body[..^currentWord.Length]
             : precedingText;
         context = context.Trim();
         var source = context.Length == 0 ? currentWord : context;

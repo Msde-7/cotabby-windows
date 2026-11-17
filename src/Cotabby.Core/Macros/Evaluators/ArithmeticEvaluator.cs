@@ -38,8 +38,13 @@ public sealed class ArithmeticEvaluator : IMacroEvaluator
     /// </summary>
     private sealed class Parser(string text)
     {
+        // Nesting past this makes the input invalid. Unbounded recursion on a long run of "(" or
+        // "^" overflows the stack, which no catch can stop and which ends the process.
+        private const int MaxDepth = 64;
+
         private readonly char[] _characters = text.Where(c => !char.IsWhiteSpace(c)).ToArray();
         private int _index;
+        private int _depth;
         private bool _valid = true;
 
         public bool UsedOperator { get; private set; }
@@ -91,7 +96,10 @@ public sealed class ArithmeticEvaluator : IMacroEvaluator
             double value = ParseUnary();
             if (Peek() != '^') return value;
             Advance();
-            return Math.Pow(value, ParsePower()); // right associative
+            if (!Descend()) return 0;
+            double exponent = ParsePower(); // right associative
+            _depth--;
+            return Math.Pow(value, exponent);
         }
 
         private double ParseUnary()
@@ -121,7 +129,9 @@ public sealed class ArithmeticEvaluator : IMacroEvaluator
         {
             if (Peek() != '(') return ParseNumber();
             _index++;
+            if (!Descend()) return 0;
             double value = ParseExpression();
+            _depth--;
             if (Peek() == ')')
             {
                 _index++;
@@ -146,6 +156,18 @@ public sealed class ArithmeticEvaluator : IMacroEvaluator
         }
 
         private char? Peek() => _index < _characters.Length ? _characters[_index] : null;
+
+        // Enters one nesting level, or marks the input invalid when it is nested too deeply.
+        private bool Descend()
+        {
+            if (_depth >= MaxDepth)
+            {
+                _valid = false;
+                return false;
+            }
+            _depth++;
+            return true;
+        }
 
         // Consumes an operator and records that the input is an expression.
         private char Advance()

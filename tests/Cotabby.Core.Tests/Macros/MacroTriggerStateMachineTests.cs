@@ -266,4 +266,14 @@ public class MacroTriggerStateMachineTests
         idle.Apply(Key(KeyKind.Other), hasInsertableResult: false);
         Assert.Equal(Outcome.None, idle.Apply(Ch('/'), hasInsertableResult: false));
     }
+
+    [Fact]
+    public void AQueryLongerThanAnyMacroCancelsTheCapture()
+    {
+        var sm = Capturing(new string('(', MacroTriggerStateMachine.MaxQueryLength));
+        Assert.True(sm.IsActive);
+        Assert.Equal(Outcome.Cancel, sm.Apply(Ch('('), hasInsertableResult: false));
+        Assert.False(sm.IsActive);
+        Assert.Equal("", sm.Query);
+    }
 }

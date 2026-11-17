@@ -35,18 +35,28 @@ public static class OcrTextHygiene
     public static IReadOnlyList<OcrLine> DropHighSymbolDensity(IEnumerable<OcrLine> lines, double threshold = 0.2) =>
         lines.Where(l => !IsHighSymbolDensity(l.Text, threshold)).ToList();
 
+    // Counts characters (grapheme clusters) as upstream does, so a family or skin-toned emoji is one
+    // symbol rather than one per code point.
     private static bool IsHighSymbolDensity(string text, double threshold)
     {
         int total = 0, symbols = 0;
-        foreach (var scalar in text.EnumerateRunes())
+        foreach (var character in new GraphemeString(text))
         {
             total++;
-            bool allowed = scalar.Value == ' '
-                || (scalar.IsBmp && CommonPunctuation.Contains((char)scalar.Value))
-                || ScalarSets.IsAlphanumeric(scalar);
-            if (!allowed) symbols++;
+            if (!IsAllowedDensityCharacter(character)) symbols++;
         }
         return total > 0 && (double)symbols / total > threshold;
+    }
+
+    /// <summary>A space, common punctuation, or a character whose every scalar is a letter, mark or number.</summary>
+    private static bool IsAllowedDensityCharacter(Grapheme character)
+    {
+        if (character.Is(' ') || character.IsAnyOf(CommonPunctuation)) return true;
+        foreach (var scalar in character.Span.EnumerateRunes())
+        {
+            if (!ScalarSets.IsAlphanumeric(scalar)) return false;
+        }
+        return true;
     }
 
     /// <summary>

@@ -121,4 +121,21 @@ public class SpellingLanguageResolverTests
         Assert.Equal(German, resolver.Resolve("common deutsch ", "", [English, German]));
         Assert.Equal(English, resolver.Resolve("ENGLISH, common! ", "", [English, German]));
     }
+
+    [Theory]
+    [InlineData("hello mein ")]
+    [InlineData("hello mein, ")]
+    public void TypoIsLeftOutOfTheSampleAfterItsDelimiter(string precedingText)
+    {
+        // The typo gate checks a word once a delimiter commits it. A typo that happens to be a
+        // German word must not outvote the English before it.
+        var resolver = new SpellingLanguageResolver(language => language switch
+        {
+            English => "hello 50\nthere 50",
+            German => "hallo 50\nmein 50",
+            _ => null,
+        });
+
+        Assert.Equal(English, resolver.Resolve(precedingText, "mein", [English, German]));
+    }
 }

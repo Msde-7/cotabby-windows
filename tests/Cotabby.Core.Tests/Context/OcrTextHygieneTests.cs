@@ -203,4 +203,13 @@ public sealed class OcrTextHygieneTests
         ];
         Assert.Equal(Texts(input), OcrTextHygiene.Clean(input, "").Split('\n'));
     }
+
+    [Theory]
+    [InlineData("great job team \U0001F468‍\U0001F469‍\U0001F467‍\U0001F466")]
+    [InlineData("sounds good \U0001F44D\U0001F3FD\U0001F44D\U0001F3FD")]
+    public void DropHighSymbolDensity_CountsAnEmojiAsOneCharacter(string text)
+    {
+        // A family or skin-toned emoji is several code points but one character, as upstream counts.
+        Assert.Single(OcrTextHygiene.DropHighSymbolDensity([Line(text)]));
+    }
 }

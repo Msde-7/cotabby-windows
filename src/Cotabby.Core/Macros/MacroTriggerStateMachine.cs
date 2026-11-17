@@ -16,6 +16,7 @@ namespace Cotabby.Core.Macros;
 ///   <item>Escape cancels and is consumed.</item>
 ///   <item>Any other character, Enter, Delete, arrows, a Ctrl, Alt or Win chord, and Backspace
 ///   on an empty query cancel and pass through.</item>
+///   <item>A character past <see cref="MaxQueryLength"/> cancels and passes through.</item>
 /// </list>
 /// </remarks>
 public sealed class MacroTriggerStateMachine
@@ -35,6 +36,12 @@ public sealed class MacroTriggerStateMachine
     }
 
     private const char Trigger = '/';
+
+    /// <summary>
+    /// The longest query a capture holds. No macro comes near it, and every keystroke evaluates the
+    /// whole query, so a longer run is ordinary typing and the capture cancels.
+    /// </summary>
+    public const int MaxQueryLength = 256;
 
     // Last character typed while idle. Null means a boundary such as the start of a field.
     private char? _previousCharacter;
@@ -107,7 +114,7 @@ public sealed class MacroTriggerStateMachine
     {
         if (IsActive)
         {
-            if (!MacroQueryGrammar.Extends(c)) return End(c);
+            if (!MacroQueryGrammar.Extends(c) || Query.Length >= MaxQueryLength) return End(c);
             Query += c;
             return Outcome.QueryChanged;
         }
