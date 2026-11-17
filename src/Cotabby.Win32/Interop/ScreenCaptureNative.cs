@@ -12,15 +12,6 @@ internal static partial class ScreenCaptureNative
     public const int SM_CYVIRTUALSCREEN = 79;
     public const uint SRCCOPY = 0x00CC0020;
     public const int HALFTONE = 4;
-    public const uint GA_ROOT = 2;
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct RECT
-    {
-        public int Left, Top, Right, Bottom;
-        public readonly int Width => Right - Left;
-        public readonly int Height => Bottom - Top;
-    }
 
     [StructLayout(LayoutKind.Sequential)]
     public struct BITMAPINFOHEADER
@@ -39,14 +30,7 @@ internal static partial class ScreenCaptureNative
     }
 
     [LibraryImport("dwmapi.dll")]
-    public static partial int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out RECT value, int size);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static partial bool GetWindowRect(IntPtr hwnd, out RECT rect);
-
-    [LibraryImport("user32.dll")]
-    public static partial IntPtr GetAncestor(IntPtr hwnd, uint flags);
+    public static partial int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out NativeMethods.RECT value, int size);
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

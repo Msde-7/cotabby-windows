@@ -63,7 +63,7 @@ public sealed class ClipboardTextReader : IClipboardReader
 
     private static unsafe string? ReadUnicodeText()
     {
-        if (!TryOpenClipboard()) return null;
+        if (!ClipboardSwap.TryOpen(OpenAttempts, OpenRetryMs)) return null;
         try
         {
             IntPtr handle = GetClipboardData(CF_UNICODETEXT);
@@ -88,16 +88,5 @@ public sealed class ClipboardTextReader : IClipboardReader
         {
             CloseClipboard();
         }
-    }
-
-    /// <summary>Another process may hold the clipboard open for a moment.</summary>
-    private static bool TryOpenClipboard()
-    {
-        for (int attempt = 1; attempt <= OpenAttempts; attempt++)
-        {
-            if (OpenClipboard(IntPtr.Zero)) return true;
-            if (attempt < OpenAttempts) Thread.Sleep(OpenRetryMs);
-        }
-        return false;
     }
 }

@@ -54,7 +54,16 @@ public sealed class KeyboardHook : IKeyboardHook
     // Keys currently down, used to tell auto-repeat from a second press.
     private readonly HashSet<uint> _heldKeys = new();
 
-    public KeyboardHook(ILogger<KeyboardHook> logger) => _logger = logger;
+    // The key being classified, read by one cached translate delegate instead of a closure per key.
+    private uint _pendingVk;
+    private uint _pendingScanCode;
+    private readonly Func<char> _translatePending;
+
+    public KeyboardHook(ILogger<KeyboardHook> logger)
+    {
+        _logger = logger;
+        _translatePending = () => Translate(_pendingVk, _pendingScanCode);
+    }
 
     public event EventHandler<KeyEventArgs>? KeyEvent;
 
@@ -291,14 +300,14 @@ public sealed class KeyboardHook : IKeyboardHook
         }
     }
 
-    private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    private unsafe IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
         Interlocked.Increment(ref _callbacks);
         if (nCode < 0) return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
 
         try
         {
-            var data = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
+            var data = *(KBDLLHOOKSTRUCT*)lParam;
 
             // Cotabby's own SendInput is marked. Reacting to it would loop. Input that other
             // software injects is a person typing through it and is handled like a key press.
@@ -315,8 +324,9 @@ public sealed class KeyboardHook : IKeyboardHook
                 return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
             }
 
-            var key = KeyClassifier.Classify(
-                (int)data.vkCode, CurrentModifiers(), isDown, () => Translate(data.vkCode, data.scanCode));
+            _pendingVk = data.vkCode;
+            _pendingScanCode = data.scanCode;
+            var key = KeyClassifier.Classify((int)data.vkCode, CurrentModifiers(), isDown, _translatePending);
             bool isRepeat = isDown && !_heldKeys.Add(data.vkCode);
             if (isUp) _heldKeys.Remove(data.vkCode);
 

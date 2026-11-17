@@ -70,7 +70,7 @@ public static class ClipboardSwap
     {
         saved = null;
         sequence = 0;
-        if (!TryOpen()) return false;
+        if (!TryOpen(OpenAttempts, OpenRetryMs)) return false;
         try
         {
             if (Capture() is not { } snapshot || !EmptyClipboard()) return false;
@@ -98,7 +98,7 @@ public static class ClipboardSwap
     /// </summary>
     public static ClipboardRestoreOutcome TryRestore(ClipboardSnapshot saved, uint expectedSequence)
     {
-        if (!TryOpen()) return ClipboardRestoreOutcome.Failed;
+        if (!TryOpen(OpenAttempts, OpenRetryMs)) return ClipboardRestoreOutcome.Failed;
         try
         {
             if (GetClipboardSequenceNumber() != expectedSequence) return ClipboardRestoreOutcome.ChangedSince;
@@ -188,12 +188,12 @@ public static class ClipboardSwap
     }
 
     /// <summary>Another process may hold the clipboard open for a moment.</summary>
-    private static bool TryOpen()
+    internal static bool TryOpen(int attempts, int retryMs)
     {
-        for (int attempt = 1; attempt <= OpenAttempts; attempt++)
+        for (int attempt = 1; attempt <= attempts; attempt++)
         {
             if (OpenClipboard(IntPtr.Zero)) return true;
-            if (attempt < OpenAttempts) Thread.Sleep(OpenRetryMs);
+            if (attempt < attempts) Thread.Sleep(retryMs);
         }
         return false;
     }

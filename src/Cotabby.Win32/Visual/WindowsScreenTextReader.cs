@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Windows.Graphics.Imaging;
 using OcrEngine = Windows.Media.Ocr.OcrEngine;
 using OcrLine = Cotabby.Core.Context.OcrLine;
+using static Cotabby.Win32.Interop.NativeMethods;
 using static Cotabby.Win32.Interop.ScreenCaptureNative;
 
 namespace Cotabby.Win32.Visual;
@@ -221,13 +222,6 @@ public sealed class WindowsScreenTextReader : IScreenTextReader
             bottom = Math.Max(bottom, r.Y + r.Height);
         }
         return new OcrBounds(left / width, top / height, (right - left) / width, (bottom - top) / height);
-    }
-
-    private static unsafe string WindowTitle(IntPtr hwnd)
-    {
-        char* buffer = stackalloc char[256];
-        int length = NativeMethods.GetWindowText(hwnd, buffer, 256);
-        return length > 0 ? new string(buffer, 0, length) : "";
     }
 
     /// <summary>

@@ -101,15 +101,6 @@ public sealed class LlamaRuntimeCore : IDisposable
     }
 
     /// <summary>
-    /// Evaluates <paramref name="prompt"/> into memory without sampling, so a later generation for
-    /// the same text only evaluates what was typed since. The prompt is prepared with the default
-    /// generation options. Prefer the overload that takes the options the generation will use,
-    /// which keeps the healing and the context window identical.
-    /// </summary>
-    public Task PrewarmAsync(string prompt, CancellationToken ct) =>
-        PrewarmAsync(prompt, new LlamaGenerationOptions { MaxTokens = 0 }, ct);
-
-    /// <summary>
     /// Evaluates <paramref name="prompt"/> into memory without sampling, reusing the prefix
     /// already there exactly as a generation does, so a later <see cref="GenerateAsync"/> with the
     /// same <paramref name="options"/> and the same head only evaluates the rest.

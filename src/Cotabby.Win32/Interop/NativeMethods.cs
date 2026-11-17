@@ -62,7 +62,6 @@ internal static partial class NativeMethods
     {
         [FieldOffset(0)] public KEYBDINPUT ki;
         [FieldOffset(0)] public MOUSEINPUT mi;
-        [FieldOffset(0)] public HARDWAREINPUT hi;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -84,14 +83,6 @@ internal static partial class NativeMethods
         public uint dwFlags;
         public uint time;
         public IntPtr dwExtraInfo;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct HARDWAREINPUT
-    {
-        public uint uMsg;
-        public ushort wParamL;
-        public ushort wParamH;
     }
 
     public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
@@ -229,10 +220,9 @@ internal static partial class NativeMethods
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT
     {
-        public int left;
-        public int top;
-        public int right;
-        public int bottom;
+        public int Left, Top, Right, Bottom;
+        public readonly int Width => Right - Left;
+        public readonly int Height => Bottom - Top;
     }
 
     [LibraryImport("user32.dll")]
@@ -244,6 +234,15 @@ internal static partial class NativeMethods
 
     [LibraryImport("user32.dll", EntryPoint = "GetWindowTextW")]
     public static unsafe partial int GetWindowText(IntPtr hWnd, char* lpString, int nMaxCount);
+
+    /// <summary>The window's title, cut to 255 characters, or "" when it has none.</summary>
+    public static unsafe string WindowTitle(IntPtr hWnd)
+    {
+        const int MaxTitleChars = 256;
+        char* buffer = stackalloc char[MaxTitleChars];
+        int length = GetWindowText(hWnd, buffer, MaxTitleChars);
+        return length > 0 ? new string(buffer, 0, length) : string.Empty;
+    }
 
     // Clipboard
 

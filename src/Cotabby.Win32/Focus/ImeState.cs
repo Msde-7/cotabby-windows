@@ -17,15 +17,12 @@ internal static partial class ImeState
     private const uint QueryTimeoutMs = 20;
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct RECT { public int Left, Top, Right, Bottom; }
-
-    [StructLayout(LayoutKind.Sequential)]
     private struct GUITHREADINFO
     {
         public int cbSize;
         public int flags;
         public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret;
-        public RECT rcCaret;
+        public NativeMethods.RECT rcCaret;
     }
 
     /// <summary>The input method's language when it is open in native mode, otherwise 0.</summary>
@@ -36,6 +33,11 @@ internal static partial class ImeState
             IntPtr foreground = NativeMethods.GetForegroundWindow();
             if (foreground == IntPtr.Zero) return 0;
             uint thread = NativeMethods.GetWindowThreadProcessId(foreground, out _);
+            int language = (int)(NativeMethods.GetKeyboardLayout(thread).ToInt64() & 0xFFFF);
+            // Only East Asian input methods compose. Other layouts report native mode too.
+            // Checked first, so other layouts skip the two messages to the input method.
+            if ((language & 0x3FF) is not (0x04 or 0x11 or 0x12)) return 0;
+
             var info = new GUITHREADINFO { cbSize = Marshal.SizeOf<GUITHREADINFO>() };
             IntPtr focus = GetGUIThreadInfo(thread, ref info) && info.hwndFocus != IntPtr.Zero ? info.hwndFocus : foreground;
 
@@ -43,10 +45,7 @@ internal static partial class ImeState
             if (imeWindow == IntPtr.Zero) return 0;
             if (Query(imeWindow, IMC_GETOPENSTATUS) is not { } open || open == 0) return 0;
             if (Query(imeWindow, IMC_GETCONVERSIONMODE) is not { } mode || (mode & IME_CMODE_NATIVE) == 0) return 0;
-
-            int language = (int)(GetKeyboardLayout(thread).ToInt64() & 0xFFFF);
-            // Only East Asian input methods compose. Other layouts report native mode too.
-            return (language & 0x3FF) is 0x04 or 0x11 or 0x12 ? language : 0;
+            return language;
         }
         catch (Exception)
         {
@@ -67,7 +66,4 @@ internal static partial class ImeState
 
     [LibraryImport("imm32.dll")]
     private static partial IntPtr ImmGetDefaultIMEWnd(IntPtr hwnd);
-
-    [LibraryImport("user32.dll")]
-    private static partial IntPtr GetKeyboardLayout(uint threadId);
 }

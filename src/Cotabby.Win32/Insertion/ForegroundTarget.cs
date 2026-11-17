@@ -38,7 +38,7 @@ public static class ForegroundTarget
         var center = new POINT { x = (int)(field.X + field.Width / 2), y = (int)(field.Y + field.Height / 2) };
         var root = GetAncestor(foreground, GA_ROOT);
         if (root == IntPtr.Zero || !GetWindowRect(root, out var bounds)) return false;
-        if (center.x < bounds.left || center.x >= bounds.right || center.y < bounds.top || center.y >= bounds.bottom)
+        if (center.x < bounds.Left || center.x >= bounds.Right || center.y < bounds.Top || center.y >= bounds.Bottom)
         {
             return false;
         }

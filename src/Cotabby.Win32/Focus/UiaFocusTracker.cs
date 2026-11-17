@@ -149,28 +149,19 @@ public sealed class UiaFocusTracker : IFocusTracker
     {
         snapshot = null;
         elementId = null;
-        AutomationElement? element;
-        try
-        {
-            element = AutomationElement.FocusedElement;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "AutomationElement.FocusedElement threw.");
-            return false;
-        }
-        if (element is null) return false;
+        if (FocusedElement() is not { } focused) return false;
+        var (element, cached) = focused;
 
         try
         {
-            var info = element.Current;
+            var info = cached ? element.Cached : element.Current;
             elementId = ReadFieldId(element, info);
-            if (!IsEditableField(element, info))
+            if (!IsEditableField(element, info, cached))
             {
                 PrimeIfDormantRenderer(info);
                 return false;
             }
-            snapshot = BuildSnapshot(element, info, elementId, readHostText);
+            snapshot = BuildSnapshot(element, info, cached, elementId, readHostText);
             return snapshot is not null;
         }
         catch (ElementNotAvailableException) { return false; }
@@ -181,7 +172,63 @@ public sealed class UiaFocusTracker : IFocusTracker
         }
     }
 
-    private static bool IsEditableField(AutomationElement element, AutomationElement.AutomationElementInformation info)
+    /// <summary>
+    /// The focused element with every property and pattern a capture reads fetched in the same
+    /// cross-process call. Reading them one by one costs a round trip each. When the batched
+    /// fetch fails, the element is fetched plain and read live, as before.
+    /// </summary>
+    private (AutomationElement Element, bool Cached)? FocusedElement()
+    {
+        try
+        {
+            using (FocusCache.Activate())
+            {
+                return AutomationElement.FocusedElement is { } element ? (element, true) : null;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Fetching the focused element with its properties threw.");
+        }
+
+        try
+        {
+            return AutomationElement.FocusedElement is { } element ? (element, false) : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "AutomationElement.FocusedElement threw.");
+            return null;
+        }
+    }
+
+    // CacheRequest.Activate pushes onto a per-thread stack, so each thread keeps its own request.
+    [ThreadStatic] private static CacheRequest? _focusCache;
+
+    private static CacheRequest FocusCache => _focusCache ??= BuildFocusCache();
+
+    private static CacheRequest BuildFocusCache()
+    {
+        var request = new CacheRequest { TreeScope = TreeScope.Element, AutomationElementMode = AutomationElementMode.Full };
+        AutomationProperty[] properties =
+        [
+            AutomationElement.IsEnabledProperty, AutomationElement.ControlTypeProperty,
+            AutomationElement.ProcessIdProperty, AutomationElement.NameProperty, AutomationElement.HelpTextProperty,
+            AutomationElement.IsPasswordProperty, AutomationElement.LocalizedControlTypeProperty,
+            AutomationElement.BoundingRectangleProperty, AutomationElement.NativeWindowHandleProperty,
+            AutomationElement.ClassNameProperty, AutomationElement.AutomationIdProperty, ValuePattern.IsReadOnlyProperty,
+        ];
+        foreach (var property in properties) request.Add(property);
+        request.Add(ValuePattern.Pattern);
+        request.Add(TextPattern.Pattern);
+        return request;
+    }
+
+    private static bool TryGetPattern(AutomationElement element, AutomationPattern pattern, bool cached, out object? value) =>
+        cached ? element.TryGetCachedPattern(pattern, out value) : element.TryGetCurrentPattern(pattern, out value);
+
+    private static bool IsEditableField(
+        AutomationElement element, AutomationElement.AutomationElementInformation info, bool cached)
     {
         try
         {
@@ -197,12 +244,12 @@ public sealed class UiaFocusTracker : IFocusTracker
             }
 
             // Read-only fields get no suggestions. Not every editor exposes ValuePattern.
-            bool hasValue = element.TryGetCurrentPattern(ValuePattern.Pattern, out var raw);
-            if (hasValue && raw is ValuePattern vp && vp.Current.IsReadOnly) return false;
+            bool hasValue = TryGetPattern(element, ValuePattern.Pattern, cached, out var raw);
+            if (hasValue && raw is ValuePattern vp && (cached ? vp.Cached : vp.Current).IsReadOnly) return false;
 
             // Without TextPattern or ValuePattern there is no text to read. A combo box needs a
             // writable value or text, which a plain drop-down list does not have.
-            bool hasText = element.TryGetCurrentPattern(TextPattern.Pattern, out _);
+            bool hasText = TryGetPattern(element, TextPattern.Pattern, cached, out _);
             return hasText || hasValue;
         }
         catch (Exception) { return false; }
@@ -268,7 +315,7 @@ public sealed class UiaFocusTracker : IFocusTracker
     }
 
     private FocusedField? BuildSnapshot(
-        AutomationElement element, AutomationElement.AutomationElementInformation info, string fieldId,
+        AutomationElement element, AutomationElement.AutomationElementInformation info, bool cached, string fieldId,
         bool readHostText)
     {
         int pid = info.ProcessId;
@@ -278,11 +325,11 @@ public sealed class UiaFocusTracker : IFocusTracker
         bool isSecure = info.IsPassword
             || SecureFieldDetector.IsSecure(label, helpText, info.LocalizedControlType);
 
-        var textPattern = element.TryGetCurrentPattern(TextPattern.Pattern, out var rawText)
+        var textPattern = TryGetPattern(element, TextPattern.Pattern, cached, out var rawText)
             ? rawText as TextPattern
             : null;
         var caret = ReadCaretRange(textPattern);
-        var (text, caretOffset, hasSelection) = ReadTextAndCaret(element, textPattern, caret);
+        var (text, caretOffset, hasSelection) = ReadTextAndCaret(element, cached, textPattern, caret);
         var caretRect = ReadCaretRect(caret);
         var fieldRect = ToScreenRect(info.BoundingRectangle);
         var ct = info.ControlType;
@@ -312,7 +359,7 @@ public sealed class UiaFocusTracker : IFocusTracker
             HelpText = helpText,
             AutomationId = info.AutomationId ?? string.Empty,
             ClassName = info.ClassName ?? string.Empty,
-            WindowTitle = ForegroundWindowTitle(),
+            WindowTitle = NativeMethods.WindowTitle(NativeMethods.GetForegroundWindow()),
             AppDisplayName = AppDisplayNames.For(pid),
             ImeLanguageId = ImeState.ConvertingLanguage(),
             HostFontName = font.Name,
@@ -360,7 +407,7 @@ public sealed class UiaFocusTracker : IFocusTracker
     }
 
     private static (string text, int caretOffset, bool hasSelection) ReadTextAndCaret(
-        AutomationElement element, TextPattern? textPattern, TextPatternRange? selection)
+        AutomationElement element, bool cached, TextPattern? textPattern, TextPatternRange? selection)
     {
         // TextPattern is preferred because it gives the caret as a selection.
         if (textPattern is not null)
@@ -379,7 +426,7 @@ public sealed class UiaFocusTracker : IFocusTracker
             catch (Exception) { /* fall through */ }
         }
 
-        if (element.TryGetCurrentPattern(ValuePattern.Pattern, out var rawValue)
+        if (TryGetPattern(element, ValuePattern.Pattern, cached, out var rawValue)
             && rawValue is ValuePattern vp)
         {
             string v = vp.Current.Value ?? string.Empty;
@@ -549,14 +596,6 @@ public sealed class UiaFocusTracker : IFocusTracker
 
     private static ScreenRect ToScreenRect(System.Windows.Rect r) =>
         new(r.X, r.Y, r.Width, r.Height);
-
-    private static unsafe string ForegroundWindowTitle()
-    {
-        const int MaxTitleChars = 256;
-        char* buffer = stackalloc char[MaxTitleChars];
-        int length = NativeMethods.GetWindowText(NativeMethods.GetForegroundWindow(), buffer, MaxTitleChars);
-        return length > 0 ? new string(buffer, 0, length) : string.Empty;
-    }
 
     private static string TryGetProcessName(int pid)
     {
