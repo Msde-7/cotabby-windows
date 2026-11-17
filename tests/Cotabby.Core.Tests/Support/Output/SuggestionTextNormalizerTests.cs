@@ -156,4 +156,30 @@ public class SuggestionTextNormalizerTests
         Assert.Equal(
             "have been thinking about this", Normalize("have been thinking about this", request with { IsMultiLineEnabled = true }));
     }
+
+    [Fact]
+    public void ALoneCarriageReturnIsALineBreak()
+    {
+        // RichEdit hosts break lines with a lone CR, and the model can answer in kind.
+        const string raw = " for the update.\rBest,\rAnn";
+        Assert.Equal(" for the update.", Normalize(raw, Request("Thanks")));
+        Assert.Equal(" for the update.\nBest,\nAnn", Normalize(raw, Request("Thanks", isMultiLineEnabled: true)));
+    }
+
+    [Theory]
+    [InlineData("line one\r\nhello", "line one\r\nhello world")]
+    [InlineData("line one\rhello", "line one\rhello world")]
+    [InlineData("line one\r\nhello", "line one\nhello world")]
+    public void PrefixEchoMatchesAcrossLineEndingStyles(string precedingText, string raw)
+    {
+        Assert.Equal(" world", Normalize(raw, Request(precedingText)));
+    }
+
+    [Fact]
+    public void PromptEchoMatchesAcrossLineEndingStyles()
+    {
+        Assert.Equal(
+            " world",
+            Normalize("P\r\nline one\r\nhello world", Request("line one\r\nhello", prompt: "P\r\nline one\r\nhello")));
+    }
 }

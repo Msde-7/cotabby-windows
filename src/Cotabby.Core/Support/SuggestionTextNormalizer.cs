@@ -105,7 +105,9 @@ public static partial class SuggestionTextNormalizer
         string rawSuggestion, SuggestionNormalizationRequest request)
     {
         bool rawHadContent = !ScalarSets.IsBlank(rawSuggestion);
-        string normalized = rawSuggestion.Replace("\r", string.Empty);
+        // Upstream deletes every CR. Windows hosts such as RichEdit break lines with a lone CR, which
+        // reaches the prompt and can come back in the output, so CRLF and a lone CR become LF.
+        string normalized = NormalizeLineEndings(rawSuggestion);
 
         // Opening and role markers are removed in place, and anything from a stop marker onward
         // (a hallucinated new turn) is truncated.
@@ -184,17 +186,23 @@ public static partial class SuggestionTextNormalizer
     /// <summary>Removes an echoed prompt, then an echoed caret prefix, from the front of the output.</summary>
     private static string StripPromptEcho(string text, SuggestionNormalizationRequest request)
     {
+        // The output's line endings are already normalized, so the inputs are compared the same way.
         string normalized = text;
-        if (request.Prompt.Length > 0 && normalized.StartsWith(request.Prompt, StringComparison.Ordinal))
+        string prompt = NormalizeLineEndings(request.Prompt);
+        if (prompt.Length > 0 && normalized.StartsWith(prompt, StringComparison.Ordinal))
         {
-            normalized = ScalarSets.Trim(normalized[request.Prompt.Length..], IsControlOrNewline);
+            normalized = ScalarSets.Trim(normalized[prompt.Length..], IsControlOrNewline);
         }
-        if (request.PrecedingText.Length > 0 && normalized.StartsWith(request.PrecedingText, StringComparison.Ordinal))
+        string precedingText = NormalizeLineEndings(request.PrecedingText);
+        if (precedingText.Length > 0 && normalized.StartsWith(precedingText, StringComparison.Ordinal))
         {
-            normalized = normalized[request.PrecedingText.Length..];
+            normalized = normalized[precedingText.Length..];
         }
         return normalized;
     }
+
+    private static string NormalizeLineEndings(string text) =>
+        text.Contains('\r') ? text.Replace("\r\n", "\n").Replace('\r', '\n') : text;
 
     /// <summary>
     /// Names the most specific cause of an empty outcome at the safety gate, which rejects empty,
