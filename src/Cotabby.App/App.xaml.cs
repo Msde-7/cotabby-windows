@@ -61,8 +61,9 @@ public partial class App : Application
         catch (Exception ex)
         {
             // Without a host there is no tray icon to quit from, so the process must not linger.
-            Log(ex, "Cotabby failed to start.");
-            MessageBox.Show($"Cotabby could not start: {ex.Message}\n\nDetails are in {AppHost.LogPath}",
+            string? logged = Log(ex, "Cotabby failed to start.");
+            MessageBox.Show(
+                $"Cotabby could not start: {ex.Message}" + (logged is null ? "" : $"\n\nDetails are in {logged}"),
                 "Cotabby", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
             return;
@@ -166,32 +167,37 @@ public partial class App : Application
 
     /// <summary>
     /// Logs through the host when there is one, and straight to the log file otherwise, such as
-    /// when the host failed to build or has already shut its logger down.
+    /// when the host failed to build or has already shut its logger down. Returns the file the
+    /// line went to, or null when it could not be written.
     /// </summary>
-    private void Log(Exception? ex, string message)
+    private string? Log(Exception? ex, string message)
     {
         try
         {
             if (_host is { } host && ex is not null)
             {
                 host.LogError(ex, message);
-                return;
+                return AppHost.LogPath;
             }
             string line = $"{DateTime.Now:HH:mm:ss.fff} fail: Cotabby.App[0] {message}{(ex is null ? "" : $" :: {ex}")}{Environment.NewLine}";
             Directory.CreateDirectory(Path.GetDirectoryName(AppHost.LogPath)!);
             try
             {
                 File.AppendAllText(AppHost.LogPath, line);
+                return AppHost.LogPath;
             }
             catch (IOException)
             {
                 // A half-built host may still hold the log open for writing.
-                File.AppendAllText(Path.ChangeExtension(AppHost.LogPath, ".crash.log"), line);
+                string crashLog = Path.ChangeExtension(AppHost.LogPath, ".crash.log");
+                File.AppendAllText(crashLog, line);
+                return crashLog;
             }
         }
         catch (Exception)
         {
             // The log itself is unavailable. There is nowhere left to report to.
+            return null;
         }
     }
 }
