@@ -9,7 +9,7 @@ namespace Cotabby.App.UI.Settings.Panes;
 internal static class Branding
 {
     /// <summary>The informational version without the commit suffix the SDK appends.</summary>
-    private static string Version { get; } =
+    public static string Version { get; } =
         typeof(Branding).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
             ?.InformationalVersion.Split('+')[0] ?? "";
 

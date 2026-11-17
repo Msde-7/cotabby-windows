@@ -21,11 +21,12 @@ public partial class WelcomeWindow : Window
 {
     private readonly AppHost _host;
     private readonly FrameworkElement[] _steps;
-    private readonly (Border Card, Border Badge)[] _templates;
+    private readonly (Border Card, Border Badge, Border Recommended)[] _templates;
+    private readonly Dictionary<OnboardingTemplate, OnboardingTemplateAvailability> _availability;
     private readonly List<ShortcutEditor> _shortcuts = [];
     private readonly List<Border> _capsules = [];
     private int _step;
-    private string _templateModelId;
+    private OnboardingTemplate _template;
 
     // Background model preparation. The sequence number lets a run that was superseded,
     // because the user went back and picked another starting point, drop its late results.
@@ -44,7 +45,15 @@ public partial class WelcomeWindow : Window
         WindowTheme.Follow(this);
 
         _steps = [StepWelcome, StepTemplates, StepProfile, StepKeys, StepDone];
-        _templates = [(QuickCard, QuickBadge), (EverydayCard, EverydayBadge), (PowerCard, PowerBadge)];
+        _templates =
+        [
+            (QuickCard, QuickBadge, QuickRecommended),
+            (EverydayCard, EverydayBadge, EverydayRecommended),
+            (PowerCard, PowerBadge, PowerRecommended),
+        ];
+        ulong memory = InstalledMemory.Bytes();
+        _availability = Enum.GetValues<OnboardingTemplate>()
+            .ToDictionary(template => template, template => OnboardingTemplateRecommender.Availability(template, memory));
         BuildCapsules();
         BuildShortcutRows();
         StartSpinner();
@@ -55,9 +64,13 @@ public partial class WelcomeWindow : Window
         LanguagesHost.Content = new LanguageEditor(host);
         ModeWord.IsChecked = settings.AcceptanceMode == AcceptanceGranularity.Word;
         ModePhrase.IsChecked = settings.AcceptanceMode == AcceptanceGranularity.Phrase;
-        _templateModelId = _templates.Any(template => TemplateId(template.Card) == settings.ActiveModelId)
-            ? settings.ActiveModelId!
-            : TemplateId(EverydayCard);
+        // A second run starts on the tier whose model is already chosen, a first run on the recommended one.
+        var selectedModel = host.SelectedModelId;
+        _template = _availability.Values
+            .Where(a => !a.IsDisabled && OnboardingTemplateRecommender.Plan(a.Template).Model.Id == selectedModel)
+            .Select(a => (OnboardingTemplate?)a.Template)
+            .FirstOrDefault()
+            ?? OnboardingTemplateRecommender.Recommended(memory);
         UpdateTemplateVisuals();
 
         ShowStep(0);
@@ -127,32 +140,40 @@ public partial class WelcomeWindow : Window
         Close();
     }
 
-    private static string TemplateId(Border card) => (string)card.Tag;
+    private static OnboardingTemplate TemplateOf(Border card) => Enum.Parse<OnboardingTemplate>((string)card.Tag);
 
     private void OnTemplateClicked(object sender, MouseButtonEventArgs e)
     {
-        _templateModelId = TemplateId((Border)sender);
+        var template = TemplateOf((Border)sender);
+        // A starting point this PC cannot run stays visible, with its reason, but cannot be picked.
+        if (_availability[template].IsDisabled) return;
+        _template = template;
         UpdateTemplateVisuals();
         UpdateTemplateStatus();
     }
 
     private void UpdateTemplateVisuals()
     {
-        foreach (var (card, badge) in _templates)
+        foreach (var (card, badge, recommended) in _templates)
         {
-            bool selected = TemplateId(card) == _templateModelId;
+            var availability = _availability[TemplateOf(card)];
+            bool selected = availability.Template == _template;
             card.SetResourceReference(Border.BorderBrushProperty, selected ? "AccentBrush" : "CardBorder");
             badge.SetResourceReference(Border.BackgroundProperty, selected ? "AccentTint" : "KeycapBg");
+            recommended.Visibility = Ui.Shown(availability.IsRecommended);
+            card.Opacity = availability.IsDisabled ? 0.45 : 1;
+            card.Cursor = availability.IsDisabled ? Cursors.Arrow : Cursors.Hand;
+            card.ToolTip = availability.Warning;
         }
     }
 
     private void UpdateTemplateStatus()
     {
-        if (ModelCatalog.FindById(_templateModelId) is not { } model)
-        {
-            TemplateStatusText.Text = "";
-            return;
-        }
+        var warning = _availability[_template].Warning;
+        TemplateWarningText.Text = warning ?? "";
+        TemplateWarningText.Visibility = Ui.Shown(warning is not null);
+
+        var model = OnboardingTemplateRecommender.Plan(_template).Model;
         bool ready = ModelDownloader.IsCached(model);
         TemplateStatusText.Text = ready
             ? "Model ready"
@@ -162,10 +183,25 @@ public partial class WelcomeWindow : Window
         TemplateStatusText.SetResourceReference(TextBlock.ForegroundProperty, ready ? "GreenBrush" : "TextSecondary");
     }
 
+    /// <summary>
+    /// Applies the starting point as upstream does: the local engine, its model and completion
+    /// length, multi-line off, and clipboard context on for every tier but Quick.
+    /// </summary>
     private void CommitTemplate()
     {
-        _host.Update(s => s.ActiveModelId = _templateModelId);
-        StartModelEnsure(_templateModelId);
+        var plan = OnboardingTemplateRecommender.Plan(_template);
+        // Every tier's range is one of the curated presets.
+        var preset = WordCountPreset.All.First(p => p.Range == (plan.LowWords, plan.HighWords));
+        _host.Update(s =>
+        {
+            s.Engine = EngineKind.Local;
+            AppHost.PickModel(s, plan.Model.Id);
+            s.CompletionLengthPreset = preset.Id;
+            s.UseCustomWordRange = false;
+            s.AllowMultiLine = plan.AllowMultiLine;
+            s.ClipboardContext = plan.ClipboardContext;
+        });
+        StartModelEnsure(plan.Model.Id);
     }
 
     private async void StartModelEnsure(string modelId)

@@ -17,17 +17,25 @@ internal static class HomePane
         var context = r.Context;
         var status = new StatusLine();
         var words = Ui.Text("", "Mono");
+        // The switch sits beside the status, as on upstream's power card.
+        var enabled = new CheckBox { ToolTip = "Turn Cotabby on or off everywhere" }.Styled("Toggle");
+        enabled.Click += (_, _) => context.Change(s => s.Enabled = enabled.IsChecked == true);
         context.OnRefresh(() =>
         {
             var (ready, text) = context.Host.Status();
             status.Set(ready, text);
+            enabled.IsChecked = context.Settings.Enabled;
             words.Text = $"{context.Host.Coordinator.Metrics.WordsAccepted:N0}";
         });
 
         return new SettingsPane("Home", "\uE80F", "Overview and status",
             new SettingsCard(null, Rows.Custom(Branding.Identity("Write faster, everywhere you type."))),
             new SettingsCard("Status",
-                r.Labeled("Cotabby", "Suggests the next words as you type in any app. Press your accept key to take them.", status),
+                r.Labeled("Cotabby",
+                    "Suggests the next words as you type in any app. Press your accept key to take them. "
+                    + "The switch turns it on or off everywhere.",
+                    Ui.Across(status, enabled))
+                    .Tagged("enable disable on off toggle pause resume active status power"),
                 r.Labeled("Words Completed", "Words you have accepted from suggestions so far.", words)),
             new SettingsCard("Quick Settings", Rows.Custom(QuickLinks(context, otherPanes))),
             new SettingsCard("Macros", Rows.Custom(MacroReference())));

@@ -1,10 +1,12 @@
 using System.Drawing;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using Cotabby.App.Hosting;
 using Cotabby.App.Settings;
 using Cotabby.App.UI;
 using Cotabby.App.UI.Controls;
+using Cotabby.App.UI.Settings.Panes;
 using Cotabby.Core.Models;
 using Cotabby.Core.Suggestions;
 using Cotabby.Inference;
@@ -12,9 +14,14 @@ using H.NotifyIcon;
 
 namespace Cotabby.App.Tray;
 
-/// <summary>Owns the system tray icon and its menu.</summary>
+/// <summary>
+/// Owns the system tray icon and its menu. The menu mirrors upstream's menu bar panel: status,
+/// pause, the context switches, engine, model and length, then links out.
+/// </summary>
 public sealed class TrayController : IDisposable
 {
+    private const string CustomLengthTag = "custom";
+
     private readonly AppHost _host;
     private readonly TaskbarIcon _tray;
     private readonly MenuItem _statusItem = new() { IsEnabled = false };
@@ -22,8 +29,12 @@ public sealed class TrayController : IDisposable
     private readonly MenuItem _enabledItem = new() { Header = "Enabled", IsCheckable = true };
     private readonly MenuItem _pauseMenu = new() { Header = "Pause" };
     private readonly MenuItem _resumeItem = new() { Header = "Resume" };
+    private readonly MenuItem _clipboardItem = new() { Header = "Include Clipboard Context", IsCheckable = true };
+    private readonly MenuItem _screenItem = new() { Header = "Use Screen Context", IsCheckable = true };
+    private readonly MenuItem _engineMenu = new() { Header = "Engine" };
     private readonly MenuItem _modelMenu = new() { Header = "Model" };
     private readonly MenuItem _lengthMenu = new() { Header = "Completion length" };
+    private readonly MenuItem _customLengthItem = new() { Tag = CustomLengthTag };
     private string? _statusOverride;
 
     public TrayController(AppHost host)
@@ -45,6 +56,24 @@ public sealed class TrayController : IDisposable
             item.Click += (_, _) => host.Update(s => s.Pause = PauseState.For(duration, DateTimeOffset.Now));
             _pauseMenu.Items.Add(item);
         }
+
+        _clipboardItem.Click += (_, _) => host.Update(s => s.ClipboardContext = _clipboardItem.IsChecked);
+        _screenItem.Click += (_, _) => host.Update(s => s.ScreenContext = _screenItem.IsChecked);
+        if (!host.ScreenContextAvailable)
+        {
+            _screenItem.IsEnabled = false;
+            _screenItem.Header = "Use Screen Context (unavailable)";
+            _screenItem.ToolTip = "Windows has no text recognition language installed for your languages.";
+            ToolTipService.SetShowOnDisabled(_screenItem, true);
+        }
+
+        foreach (var (engine, label) in new[] { (EngineKind.Local, "Local Model"), (EngineKind.Endpoint, "OpenAI-Compatible Endpoint") })
+        {
+            var item = new MenuItem { Header = label, Tag = engine.ToString() };
+            item.Click += (_, _) => host.Update(s => s.Engine = engine);
+            _engineMenu.Items.Add(item);
+        }
+
         foreach (var preset in WordCountPreset.All)
         {
             var item = new MenuItem { Header = preset.Label, Tag = preset.Id };
@@ -55,11 +84,17 @@ public sealed class TrayController : IDisposable
             });
             _lengthMenu.Items.Add(item);
         }
+        // The custom bounds are edited in Settings. Picking this only switches back to them.
+        _customLengthItem.Click += (_, _) => host.Update(s => s.UseCustomWordRange = true);
+        _lengthMenu.Items.Add(_customLengthItem);
 
         var settingsItem = new MenuItem { Header = "Settings…" };
         settingsItem.Click += (_, _) => SettingsWindow.ShowOrFocus(host);
         var welcomeItem = new MenuItem { Header = "Run welcome again…" };
         welcomeItem.Click += (_, _) => WelcomeWindow.ShowFor(host);
+        var reportItem = new MenuItem { Header = "Report a Bug…" };
+        reportItem.Click += (_, _) => BugReport.Open(host);
+        var versionItem = new MenuItem { Header = $"Cotabby {Branding.Version}", IsEnabled = false };
         var quitItem = new MenuItem { Header = "Quit Cotabby" };
         quitItem.Click += (_, _) => Application.Current.Shutdown();
 
@@ -67,8 +102,11 @@ public sealed class TrayController : IDisposable
         foreach (var item in new Control[]
                  {
                      _statusItem, _wordCountItem, new Separator(),
-                     _enabledItem, _pauseMenu, _resumeItem, _modelMenu, _lengthMenu, new Separator(),
-                     settingsItem, welcomeItem, new Separator(), quitItem,
+                     _enabledItem, _pauseMenu, _resumeItem, new Separator(),
+                     _clipboardItem, _screenItem, new Separator(),
+                     _engineMenu, _modelMenu, _lengthMenu, new Separator(),
+                     settingsItem, welcomeItem, reportItem, new Separator(),
+                     versionItem, quitItem,
                  })
         {
             menu.Items.Add(item);
@@ -79,6 +117,7 @@ public sealed class TrayController : IDisposable
         _tray.TrayLeftMouseUp += (_, _) => SettingsWindow.ShowOrFocus(host);
 
         host.SettingsApplied += Refresh;
+        host.ModelStatusChanged += SetStatus;
         Refresh();
     }
 
@@ -93,6 +132,7 @@ public sealed class TrayController : IDisposable
     {
         var settings = _host.Settings;
         bool paused = settings.Pause?.IsActive(DateTimeOffset.Now) == true;
+        bool local = settings.Engine == EngineKind.Local;
 
         _statusItem.Header = _statusOverride ?? _host.Status().Text;
         _tray.ToolTipText = $"Cotabby · {_statusItem.Header}";
@@ -104,7 +144,22 @@ public sealed class TrayController : IDisposable
         _enabledItem.IsChecked = settings.Enabled;
         _pauseMenu.Visibility = Ui.Shown(settings.Enabled && !paused);
         _resumeItem.Visibility = Ui.Shown(settings.Enabled && paused);
-        // Rebuilt each time so a model dropped into the folder shows up without a restart.
+        _clipboardItem.IsChecked = settings.ClipboardContext;
+        _screenItem.IsChecked = settings.ScreenContext && _host.ScreenContextAvailable;
+
+        Check(_engineMenu, settings.Engine.ToString());
+        // The local model is only loaded for the local engine, as upstream hides its Model row.
+        _modelMenu.Visibility = Ui.Shown(local);
+        if (local) RebuildModelMenu();
+
+        var (low, high) = WordCountPreset.Clamp(settings.CustomLowWords, settings.CustomHighWords);
+        _customLengthItem.Header = $"Custom ({low}–{high} words)";
+        Check(_lengthMenu, settings.UseCustomWordRange ? CustomLengthTag : settings.CompletionLengthPreset);
+    }
+
+    /// <summary>Rebuilt each time so a model dropped into the folder shows up without a restart.</summary>
+    private void RebuildModelMenu()
+    {
         _modelMenu.Items.Clear();
         foreach (var model in ModelCatalog.Available())
         {
@@ -112,18 +167,31 @@ public sealed class TrayController : IDisposable
             item.Click += (_, _) => _ = SwitchModelAsync(model.Id);
             _modelMenu.Items.Add(item);
         }
-        Check(_modelMenu, settings.ActiveModelId);
-        Check(_lengthMenu, settings.UseCustomWordRange ? null : settings.CompletionLengthPreset);
+        // The check follows the model that actually runs, which power switching may have chosen.
+        Check(_modelMenu, _host.EffectiveModelId);
+
+        var folderItem = new MenuItem { Header = "Open Models Folder" };
+        folderItem.Click += (_, _) =>
+        {
+            var folder = ModelCatalog.DefaultLocalDirectory();
+            Directory.CreateDirectory(folder);
+            Ui.OpenPath(folder);
+        };
+        _modelMenu.Items.Add(new Separator());
+        _modelMenu.Items.Add(folderItem);
     }
 
     private static void Check(MenuItem menu, string? selectedTag)
     {
-        foreach (MenuItem item in menu.Items) item.IsChecked = (string)item.Tag == selectedTag;
+        foreach (var item in menu.Items.OfType<MenuItem>())
+        {
+            if (item.Tag is string tag) item.IsChecked = tag == selectedTag;
+        }
     }
 
     private async Task SwitchModelAsync(string id)
     {
-        _host.Update(s => s.ActiveModelId = id);
+        _host.SelectModel(id);
         if (ModelCatalog.FindById(id) is { } model && !ModelDownloader.IsCached(model))
         {
             // Downloads are several GB, so they start from Settings where progress is visible.
@@ -142,5 +210,10 @@ public sealed class TrayController : IDisposable
         }
     }
 
-    public void Dispose() => _tray.Dispose();
+    public void Dispose()
+    {
+        _host.SettingsApplied -= Refresh;
+        _host.ModelStatusChanged -= SetStatus;
+        _tray.Dispose();
+    }
 }

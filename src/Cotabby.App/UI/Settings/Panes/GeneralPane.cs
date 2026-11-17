@@ -26,8 +26,8 @@ internal static class GeneralPane
                 .Tagged("welcome guide tutorial intro help getting started first run")),
         new SettingsCard("Reset",
             r.Action("Reset All Settings",
-                "Restore every Cotabby setting to its original default. "
-                + "This does not change your chosen model or your accepted-word count.",
+                "Restore every Cotabby setting to its original default. This does not change your chosen "
+                + "model, your accepted-word count, Open at Login, or your typing and emoji history.",
                 "Reset All Settings…", () => Reset(r.Context))
                 .Tagged("defaults restore factory clear start over revert wipe erase")));
 

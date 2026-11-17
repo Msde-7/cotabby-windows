@@ -42,7 +42,9 @@ public sealed class AppSettings
     public string? ActiveModelId { get; set; }
     public string EndpointBaseUrl { get; set; } = OpenAICompatibleEndpointConfiguration.DefaultBaseUrl;
     public string EndpointModel { get; set; } = "";
-    public bool EndpointUsesChatApi { get; set; }
+
+    /// <summary>Chat completions by default, as upstream. Files that already store false keep it.</summary>
+    public bool EndpointUsesChatApi { get; set; } = true;
     public int DebounceMs { get; set; } = 20;
 
     /// <summary>Switches the local model with the power source. An empty id keeps the active model.</summary>

@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using Cotabby.App.UI.Controls;
 using Cotabby.Core.Metrics;
+using Cotabby.Core.Suggestions;
 using Cotabby.Win32.Diagnostics;
 
 namespace Cotabby.App.UI.Settings.Panes;
@@ -11,12 +13,25 @@ internal static class PerformancePane
 {
     private const string Missing = "—";
 
+    /// <summary>
+    /// The quality counters as they stood at the last Reset, and when that was. The counters in
+    /// <see cref="SuggestionMetrics"/> only grow, so Reset subtracts this baseline. It lasts as long
+    /// as the app runs, like the counters.
+    /// </summary>
+    private static (long Shown, long Accepted, DateTime Since) _qualityBaseline =
+        (0, 0, Process.GetCurrentProcess().StartTime);
+
     public static SettingsPane Build(Rows r)
     {
         var context = r.Context;
         var metrics = context.Host.Coordinator.Metrics;
 
-        TextBlock shown = Value(), accepted = Value(), rate = Value(), words = Value();
+        TextBlock shown = Value(), accepted = Value(), rate = Value(), words = Value(), since = Value();
+        var resetQuality = new Button
+        {
+            Content = "Reset",
+            ToolTip = "Start counting shown and accepted suggestions again from now.",
+        }.Styled("Btn");
         var latency = Graph("Latency", "OrangeBrush");
         latency.Line.ScaleFormat = ms => $"{ms:N0} ms";
         latency.Line.EmptyMessage = "No suggestions yet";
@@ -26,11 +41,14 @@ internal static class PerformancePane
 
         void Update()
         {
-            long shownCount = metrics.SuggestionsShown;
+            long shownCount = metrics.SuggestionsShown - _qualityBaseline.Shown;
+            long acceptedCount = metrics.SuggestionsAccepted - _qualityBaseline.Accepted;
             shown.Text = $"{shownCount:N0}";
-            accepted.Text = $"{metrics.SuggestionsAccepted:N0}";
-            rate.Text = shownCount == 0 ? "-" : $"{(double)metrics.SuggestionsAccepted / shownCount:P0}";
+            accepted.Text = $"{acceptedCount:N0}";
+            rate.Text = shownCount == 0 ? "-" : $"{(double)acceptedCount / shownCount:P0}";
             words.Text = $"{metrics.WordsAccepted:N0}";
+            since.Text = _qualityBaseline.Since.ToString("g", CultureInfo.CurrentCulture);
+            resetQuality.IsEnabled = shownCount > 0 || acceptedCount > 0;
 
             var samples = metrics.LatenciesMs;
             latency.Line.Show([.. samples.Select(ms => (double?)ms)], MetricSeries.UpperBound(samples.Select(ms => (double)ms), 100));
@@ -39,6 +57,12 @@ internal static class PerformancePane
                 ? "Type somewhere to see how long suggestions take."
                 : $"Median {samples.Order().ElementAt(samples.Count / 2)} ms · {samples.Count} most recent suggestions";
         }
+
+        resetQuality.Click += (_, _) =>
+        {
+            _qualityBaseline = (metrics.SuggestionsShown, metrics.SuggestionsAccepted, DateTime.Now);
+            Update();
+        };
 
         // The metrics change off the UI thread, and only a visible pane needs to follow them.
         void OnMetricsChanged() => chart.Dispatcher.BeginInvoke(Update);
@@ -62,7 +86,11 @@ internal static class PerformancePane
                     + "endpoint such as Ollama runs outside Cotabby, so its work doesn't count toward it. The line "
                     + "below the GPU graph covers every app on this PC.")),
             new SettingsCard("Suggestion Quality",
-                r.Labeled("Suggestions Shown", "How many suggestions appeared since Cotabby started.", shown)
+                r.Labeled("Counting Since",
+                    "When Cotabby started or the counters below were last reset. Words Completed is a lifetime count.",
+                    Ui.Across(since, resetQuality))
+                    .Tagged("quality stats counters reset clear restart since date start"),
+                r.Labeled("Suggestions Shown", "How many suggestions appeared since then.", shown)
                     .Tagged("quality stats counters"),
                 r.Labeled("Suggestions Accepted", "How many of them you accepted at least part of.", accepted)
                     .Tagged("quality stats counters"),

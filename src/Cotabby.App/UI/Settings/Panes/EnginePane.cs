@@ -53,9 +53,11 @@ internal static class EnginePane
                         .Tagged("loaded ready runtime running health loading")),
                 new SettingsCard("Models",
                     r.Stacked("Download Models",
-                        "Curated models you can download and run. Click a downloaded model to switch to it.",
+                        "Curated models you can download and run. Click a downloaded model to switch to it. "
+                        + "With power switching on, the pick is used on the current power source.",
                         new ModelList(context))
-                        .Tagged("selected active choose current default catalog fetch install get library")),
+                        .Tagged("selected active choose current default catalog fetch install get library "
+                            + "delete remove add your own import gguf custom refresh rescan")),
                 new SettingsCard("Folder", ModelsFolder(r))),
             .. new EndpointSection(r).Cards().Select(card => card.VisibleWhen(s => s.Engine == EngineKind.Endpoint)),
         ]);

@@ -33,6 +33,21 @@
                 <Setter Property="Padding" Value="12" />
                 <Setter Property="Cursor" Value="Hand" />
             </Style>
+            <!-- Shown on the one starting point the recommender picks for this PC. -->
+            <Style x:Key="RecommendedPill" TargetType="Border">
+                <Setter Property="CornerRadius" Value="9" />
+                <Setter Property="Background" Value="{StaticResource AccentTintSoft}" />
+                <Setter Property="Padding" Value="7,2" />
+                <Setter Property="HorizontalAlignment" Value="Left" />
+                <Setter Property="Margin" Value="0,8,0,0" />
+                <Setter Property="Visibility" Value="Collapsed" />
+            </Style>
+            <Style x:Key="RecommendedText" TargetType="TextBlock">
+                <Setter Property="Text" Value="Recommended" />
+                <Setter Property="FontSize" Value="10" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+            </Style>
             <Style x:Key="LinkBtn" TargetType="Button">
                 <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
                 <Setter Property="FontSize" Value="13" />
@@ -107,7 +122,7 @@
                     </Grid.ColumnDefinitions>
 
                     <Border x:Name="QuickCard" Style="{StaticResource TemplateCard}"
-                            Margin="0,0,10,0" Tag="tabby-2-nano"
+                            Margin="0,0,10,0" Tag="Quick"
                             MouseLeftButtonUp="OnTemplateClicked">
                         <StackPanel>
                             <Border x:Name="QuickBadge" Width="40" Height="40" CornerRadius="10"
@@ -118,11 +133,14 @@
                             <TextBlock Text="Quick" FontSize="14" FontWeight="SemiBold"
                                        Margin="0,10,0,2" />
                             <TextBlock Style="{StaticResource Caption}" Text="Fast and lightweight" />
+                            <Border x:Name="QuickRecommended" Style="{StaticResource RecommendedPill}">
+                                <TextBlock Style="{StaticResource RecommendedText}" />
+                            </Border>
                         </StackPanel>
                     </Border>
 
                     <Border x:Name="EverydayCard" Style="{StaticResource TemplateCard}"
-                            Grid.Column="1" Margin="0,0,10,0" Tag="tabby-2-mini"
+                            Grid.Column="1" Margin="0,0,10,0" Tag="Everyday"
                             MouseLeftButtonUp="OnTemplateClicked">
                         <StackPanel>
                             <Border x:Name="EverydayBadge" Width="40" Height="40" CornerRadius="10"
@@ -133,16 +151,14 @@
                             <TextBlock Text="Everyday" FontSize="14" FontWeight="SemiBold"
                                        Margin="0,10,0,2" />
                             <TextBlock Style="{StaticResource Caption}" Text="Balanced for daily writing" />
-                            <Border CornerRadius="9" Background="{StaticResource AccentTintSoft}"
-                                    Padding="7,2" HorizontalAlignment="Left" Margin="0,8,0,0">
-                                <TextBlock Text="Recommended" FontSize="10" FontWeight="SemiBold"
-                                           Foreground="{StaticResource AccentBrush}" />
+                            <Border x:Name="EverydayRecommended" Style="{StaticResource RecommendedPill}">
+                                <TextBlock Style="{StaticResource RecommendedText}" />
                             </Border>
                         </StackPanel>
                     </Border>
 
                     <Border x:Name="PowerCard" Style="{StaticResource TemplateCard}"
-                            Grid.Column="2" Tag="tabby-2-base"
+                            Grid.Column="2" Tag="Powerful"
                             MouseLeftButtonUp="OnTemplateClicked">
                         <StackPanel>
                             <Border x:Name="PowerBadge" Width="40" Height="40" CornerRadius="10"
@@ -152,13 +168,18 @@
                             </Border>
                             <TextBlock Text="Powerful" FontSize="14" FontWeight="SemiBold"
                                        Margin="0,10,0,2" />
-                            <TextBlock Style="{StaticResource Caption}"
-                                       Text="Highest quality, needs more memory" />
+                            <TextBlock Style="{StaticResource Caption}" Text="Highest quality" />
+                            <Border x:Name="PowerRecommended" Style="{StaticResource RecommendedPill}">
+                                <TextBlock Style="{StaticResource RecommendedText}" />
+                            </Border>
                         </StackPanel>
                     </Border>
                 </Grid>
                 <TextBlock x:Name="TemplateStatusText" FontSize="12" Margin="2,14,0,0"
                            Foreground="{DynamicResource TextSecondary}" />
+                <!-- Memory advice for the selected starting point, from the recommender. -->
+                <TextBlock x:Name="TemplateWarningText" FontSize="12" Margin="2,4,0,0" TextWrapping="Wrap"
+                           Foreground="{StaticResource OrangeBrush}" Visibility="Collapsed" />
             </StackPanel>
 
             <!-- Step 3. Personalize -->

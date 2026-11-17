@@ -72,6 +72,15 @@ public sealed class AppHost : IAsyncDisposable
     /// <summary>Raised on the UI thread after settings were applied or a model was loaded, so open windows and the tray can refresh.</summary>
     public event Action? SettingsApplied;
 
+    /// <summary>
+    /// Raised on the UI thread with a passing model status, such as loading after a switch back to
+    /// the local engine. Null returns to the normal status.
+    /// </summary>
+    public event Action<string?>? ModelStatusChanged;
+
+    /// <summary>The engine the last apply saw, so a change of engine can load or free the local model.</summary>
+    private EngineKind? _appliedEngine;
+
     public AppHost(
         SynchronizationContext ui, GhostOverlayWindow overlay, GhostOverlayWindow macroPreview,
         EmojiPopupWindow emojiPopup)
@@ -214,14 +223,23 @@ public sealed class AppHost : IAsyncDisposable
         SettingsStore.Save(Settings);
     }
 
-    /// <summary>Restores every preference to its default. The chosen model and onboarding state stay.</summary>
+    /// <summary>
+    /// Restores every preference to its default. Like upstream, app state that is not a preference
+    /// stays: the chosen model, onboarding, the accepted-word count, Open at Login and the typing
+    /// history switches with their excluded apps. Emoji and typing history live in their own files.
+    /// </summary>
     public void ResetSettings()
     {
+        var kept = Settings;
         Settings = new AppSettings
         {
-            ActiveModelId = Settings.ActiveModelId,
-            ShowFirstRunWelcome = Settings.ShowFirstRunWelcome,
+            ActiveModelId = kept.ActiveModelId,
+            ShowFirstRunWelcome = kept.ShowFirstRunWelcome,
             WordsAccepted = Coordinator.Metrics.WordsAccepted,
+            LaunchAtLogin = kept.LaunchAtLogin,
+            TypingHistoryEnabled = kept.TypingHistoryEnabled,
+            TypingHistoryRecording = kept.TypingHistoryRecording,
+            TypingHistoryExcludedApps = [.. kept.TypingHistoryExcludedApps],
         };
         PersistSettings();
     }
@@ -244,8 +262,70 @@ public sealed class AppHost : IAsyncDisposable
         _overlay.ApplyAppearance(Settings);
         _macroPreview.ApplyAppearance(Settings);
         LaunchAtLogin.Set(Settings.LaunchAtLogin);
-        LoadSelectedModelIfChanged();
+        ApplyEngineResidency();
         SettingsApplied?.Invoke();
+    }
+
+    /// <summary>
+    /// Keeps the local model in memory only while the local engine is selected, as upstream does.
+    /// Switching to the endpoint frees it, and switching back loads the selected model when it is
+    /// on disk. The first apply leaves the startup load to the app.
+    /// </summary>
+    private void ApplyEngineResidency()
+    {
+        var previous = _appliedEngine;
+        _appliedEngine = Settings.Engine;
+        if (Settings.Engine == EngineKind.Endpoint)
+        {
+            if (previous == EngineKind.Local) FreeLocalModel();
+        }
+        else if (previous == EngineKind.Endpoint)
+        {
+            LoadAfterEngineSwitch();
+        }
+        else
+        {
+            LoadSelectedModelIfChanged();
+        }
+    }
+
+    private async void FreeLocalModel()
+    {
+        // A status such as "No model yet" is about the local engine, so it goes with it.
+        ModelStatusChanged?.Invoke(null);
+        try
+        {
+            await UnloadModelAsync();
+        }
+        catch (Exception ex)
+        {
+            LogError(ex, "Freeing the local model failed.");
+        }
+    }
+
+    private async void LoadAfterEngineSwitch()
+    {
+        ModelStatusChanged?.Invoke("Loading model…");
+        string? status;
+        try
+        {
+            bool loaded = await TryLoadCachedAsync();
+            status = loaded ? null : "No model yet. Open Settings to download one.";
+        }
+        catch (Exception ex)
+        {
+            LogError(ex, "Loading the model after switching engines failed.");
+            status = "Model load failed: " + ex.Message;
+        }
+        // The endpoint may have been picked again while the model loaded. That switch frees it.
+        ModelStatusChanged?.Invoke(Settings.Engine == EngineKind.Local ? status : null);
+    }
+
+    /// <summary>Frees the local model. The local engine suggests nothing until a model is loaded again.</summary>
+    public async Task UnloadModelAsync()
+    {
+        await Runtime.UnloadAsync().ConfigureAwait(false);
+        _ui.Post(_ => SettingsApplied?.Invoke(), null);
     }
 
     private void OnGlobalToggleKey(object? sender, KeyEventArgs args)
@@ -266,9 +346,13 @@ public sealed class AppHost : IAsyncDisposable
 
     public void LogError(Exception ex, string message) => _logger.LogError(ex, "{Message}", message);
 
-    /// <summary>Loads the selected model if it is already on disk. Never downloads.</summary>
+    /// <summary>
+    /// Loads the selected model if it is already on disk. Never downloads. With the endpoint engine
+    /// selected the local model is not needed, so nothing loads and the result is true.
+    /// </summary>
     public async Task<bool> TryLoadCachedAsync()
     {
+        if (Settings.Engine == EngineKind.Endpoint) return true;
         var model = ResolveActiveModel();
         if (!ModelDownloader.IsCached(model)) return false;
         return await LoadAsync(model).ConfigureAwait(false);
@@ -280,39 +364,79 @@ public sealed class AppHost : IAsyncDisposable
     /// </summary>
     public async Task<bool> EnsureModelReadyAsync(IProgress<ModelDownloader.Progress>? progress, CancellationToken ct)
     {
-        var model = ResolveActiveModel();
-        if (!ModelDownloader.IsCached(model))
+        // The pick downloads even while power switching falls back to another model in the meantime.
+        var selected = ModelCatalog.FindById(SelectedModelId) ?? ResolveActiveModel();
+        if (!ModelDownloader.IsCached(selected))
         {
-            await Downloader.DownloadAsync(model, progress, ct).ConfigureAwait(false);
-            // The selection may have changed during a long download.
-            model = ResolveActiveModel();
-            if (!ModelDownloader.IsCached(model)) return Runtime.IsReady;
+            await Downloader.DownloadAsync(selected, progress, ct).ConfigureAwait(false);
         }
+        // The selection may have changed during a long download.
+        var model = ResolveActiveModel();
+        if (!ModelDownloader.IsCached(model)) return Runtime.IsReady;
         return await LoadAsync(model).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The model a pick by hand changes and the model lists mark: while power switching is on, the
+    /// model chosen for the current power source when it names one, otherwise the active model.
+    /// </summary>
+    public string SelectedModelId =>
+        PowerSlotId() is { } slot && ModelCatalog.FindById(slot) is not null ? slot : ActiveModel().Id;
+
+    /// <summary>The model that runs: the loaded one, or the one the next load picks.</summary>
+    public string EffectiveModelId => Runtime.ActiveModel?.Id ?? (PowerSourceModel() ?? ActiveModel()).Id;
+
+    /// <summary>
+    /// Records a model picked by hand. While power switching is on the pick goes into the current
+    /// power source's slot, as upstream, because the switcher would otherwise put the old one back.
+    /// </summary>
+    public void SelectModel(string id) => Update(s => PickModel(s, id));
+
+    /// <summary>Writes a model picked by hand into <paramref name="settings"/>, as <see cref="SelectModel"/> does.</summary>
+    public static void PickModel(AppSettings settings, string id)
+    {
+        if (!settings.PowerModelSwitching) settings.ActiveModelId = id;
+        else if (PowerStatus.IsOnBattery) settings.BatteryModelId = id;
+        else settings.PluggedInModelId = id;
     }
 
     private async Task<bool> LoadAsync(CotabbyModel model)
     {
         await Runtime.LoadAsync(model, ModelDownloader.LocalPath(model), CancellationToken.None).ConfigureAwait(false);
-        // The tray and any open window show which model is loaded.
-        _ui.Post(_ => SettingsApplied?.Invoke(), null);
+        // The tray and any open window show which model is loaded. A status such as "No model yet",
+        // set before a download from Settings or the first-run window, is stale once one is.
+        _ui.Post(_ =>
+        {
+            if (Runtime.IsReady) ModelStatusChanged?.Invoke(null);
+            SettingsApplied?.Invoke();
+        }, null);
         return Runtime.IsReady;
     }
 
     private CotabbyModel ResolveActiveModel()
     {
-        var model = (Settings.ActiveModelId is { } id ? ModelCatalog.FindById(id) : null) ?? ModelCatalog.All[0];
+        var model = ActiveModel();
         Settings.ActiveModelId = model.Id;
         return PowerSourceModel() ?? model;
     }
 
-    /// <summary>The model chosen for the current power source, when that feature is on and the file is present.</summary>
-    private CotabbyModel? PowerSourceModel()
+    /// <summary>The model the settings name outside power switching, or the first built-in one.</summary>
+    private CotabbyModel ActiveModel() =>
+        (Settings.ActiveModelId is { } id ? ModelCatalog.FindById(id) : null) ?? ModelCatalog.All[0];
+
+    /// <summary>The model id for the current power source, when that feature is on and the slot names one.</summary>
+    private string? PowerSlotId()
     {
         if (!Settings.PowerModelSwitching) return null;
         var id = PowerStatus.IsOnBattery ? Settings.BatteryModelId : Settings.PluggedInModelId;
-        return ModelCatalog.FindById(id) is { } model && ModelDownloader.IsCached(model) ? model : null;
+        return id.Length > 0 ? id : null;
     }
+
+    /// <summary>The model chosen for the current power source, when that feature is on and the file is present.</summary>
+    private CotabbyModel? PowerSourceModel() =>
+        PowerSlotId() is { } id && ModelCatalog.FindById(id) is { } model && ModelDownloader.IsCached(model)
+            ? model
+            : null;
 
     private void OnBatterySaverChanged(bool on)
     {

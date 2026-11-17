@@ -129,6 +129,27 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
         _activeModel = null;
     }
 
+    /// <summary>
+    /// Frees the loaded model and its context, if any. A load in progress finishes first, then
+    /// its model is freed. Safe to call from any thread, and does nothing once disposed.
+    /// </summary>
+    public async Task UnloadAsync()
+    {
+        if (_disposed) return;
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_core is null && _weights is null) return;
+            var model = _activeModel?.Id;
+            UnloadInternal();
+            _logger.LogInformation("Model {Model} unloaded.", model);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;

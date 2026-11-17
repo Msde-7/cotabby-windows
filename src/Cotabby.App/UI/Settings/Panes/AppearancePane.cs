@@ -41,6 +41,11 @@ internal static class AppearancePane
                 ],
                 s => s.DisplayMode, (s, v) => s.DisplayMode = v)
                 .Tagged("mirror card ghost overlay render mode position"),
+            r.Toggle("Show Suggestions While Generating",
+                "Reveal ghost text token by token as the model writes it, and let you accept early. "
+                + "Off shows each suggestion once it's fully written.",
+                s => s.StreamWhileGenerating, (s, v) => s.StreamWhileGenerating = v)
+                .Tagged("stream streaming live tokens progressive incremental early partial typewriter"),
             r.Toggle("Fade In Suggestions",
                 "Let a new suggestion fade in smoothly instead of appearing all at once.",
                 s => s.FadeInSuggestions, (s, v) => s.FadeInSuggestions = v)
