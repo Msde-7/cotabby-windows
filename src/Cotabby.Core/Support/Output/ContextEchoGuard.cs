@@ -15,7 +15,10 @@ namespace Cotabby.Core.Support.Output;
 /// </summary>
 public static class ContextEchoGuard
 {
-    /// <summary>The shortest run of words counted as copying rather than borrowing a phrase.</summary>
+    /// <summary>
+    /// The shortest run of words counted as copying rather than borrowing a phrase. A Chinese or
+    /// Japanese character counts as half a word.
+    /// </summary>
     public const int MinCopiedRun = 6;
 
     /// <summary>The completion cut before the first copied part, or unchanged when nothing was copied.</summary>
@@ -49,9 +52,11 @@ public static class ContextEchoGuard
             }
             // A long run of words lifted from the screen, inside any line.
             var texts = words.Select(w => w.Text).ToList();
-            for (int i = 0; i + MinCopiedRun <= texts.Count; i++)
+            for (int i = 0; i < texts.Count; i++)
             {
-                if (ContainsRun(screenWords, texts, i, MinCopiedRun) && !ContainsRun(ownWords, texts, i, MinCopiedRun))
+                int length = CopiedRunLength(texts, i);
+                if (length == 0) break;
+                if (ContainsRun(screenWords, texts, i, length) && !ContainsRun(ownWords, texts, i, length))
                 {
                     cut = Math.Min(cut, lineStart + words[i].Start);
                     break;
@@ -73,27 +78,67 @@ public static class ContextEchoGuard
     private static string LineKey(List<Word> words) =>
         string.Join(' ', words.Select(w => w.Text.All(char.IsDigit) ? "#" : w.Text));
 
-    /// <summary>Lowercased runs of letters and digits, so OCR's lost punctuation still matches.</summary>
+    /// <summary>
+    /// Lowercased runs of letters and digits, so OCR's lost punctuation still matches. Chinese and
+    /// Japanese put no spaces between words, so each ideograph or kana stands as a word of its own.
+    /// </summary>
     private static List<Word> Words(string text)
     {
         var words = new List<Word>();
         var current = new StringBuilder();
         int start = 0;
-        for (int i = 0; i < text.Length; i++)
+        int i = 0;
+        foreach (var rune in text.EnumerateRunes())
         {
-            if (char.IsLetterOrDigit(text[i]))
+            if (IsUnspacedCharacter(rune))
+            {
+                Flush();
+                words.Add(new Word(rune.ToString(), i));
+            }
+            else if (Rune.IsLetterOrDigit(rune))
             {
                 if (current.Length == 0) start = i;
-                current.Append(char.ToLowerInvariant(text[i]));
+                current.Append(Rune.ToLowerInvariant(rune).ToString());
             }
-            else if (current.Length > 0)
+            else
             {
-                words.Add(new Word(current.ToString(), start));
-                current.Clear();
+                Flush();
             }
+            i += rune.Utf16SequenceLength;
         }
-        if (current.Length > 0) words.Add(new Word(current.ToString(), start));
+        Flush();
         return words;
+
+        void Flush()
+        {
+            if (current.Length == 0) return;
+            words.Add(new Word(current.ToString(), start));
+            current.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Kana and CJK ideographs, which are written without spaces between words. Hangul is left out
+    /// because Korean puts spaces between words.
+    /// </summary>
+    private static bool IsUnspacedCharacter(Rune rune) => Rune.IsLetter(rune) && rune.Value
+        is (>= 0x3040 and <= 0x30FF) or (>= 0x3400 and <= 0x4DBF) or (>= 0x4E00 and <= 0x9FFF)
+        or (>= 0xF900 and <= 0xFAFF) or (>= 0xFF66 and <= 0xFF9F) or (>= 0x20000 and <= 0x3134F);
+
+    /// <summary>
+    /// How many words from <paramref name="from"/> make a copied run, or 0 when the rest of the line
+    /// is too short. A Chinese or Japanese word is usually two characters, so one such character
+    /// counts as half a word and a copied run spans twice as many of them.
+    /// </summary>
+    private static int CopiedRunLength(List<string> words, int from)
+    {
+        double weight = 0;
+        for (int i = from; i < words.Count; i++)
+        {
+            weight += IsUnspacedCharacter(Rune.GetRuneAt(words[i], 0)) ? 0.5 : 1;
+            if (weight >= MinCopiedRun) return i - from + 1;
+        }
+        return 0;
     }
 
     private static bool ContainsRun(List<string> haystack, List<string> needle, int from, int length)

@@ -56,4 +56,27 @@ public sealed class ContextEchoGuardTests
                 " language is English.\nThe user usually writes in English. Match the language of the text before the caret.",
                 "The user usually writes in English. Match the language of the text before the caret.",
                 "I think the"));
+
+    [Fact]
+    public void ALongCopiedRunOfUnspacedCjkTextIsCut() =>
+        Assert.Equal("",
+            ContextEchoGuard.Trim("会議は明日の午後三時から第二会議室で行います", "会議は明日の午後三時から第二会議室で行います。", "了解です。"));
+
+    [Fact]
+    public void AShortCjkPhraseFromTheScreenIsKept() =>
+        Assert.Equal("第二会議室で",
+            ContextEchoGuard.Trim("第二会議室で", "会議は明日の午後三時から第二会議室で行います。", "場所は"));
+
+    [Fact]
+    public void IdeographsOutsideTheBasicPlaneAreWords() =>
+        Assert.Equal("。",
+            ContextEchoGuard.Trim("。𠮷野家で牛丼を食べてから会社に戻ります", "𠮷野家で牛丼を食べてから会社に戻ります", "昼は"));
+
+    [Fact]
+    public void LettersOutsideTheBasicPlaneAreNotSeparators() =>
+        Assert.Equal(" ok.",
+            ContextEchoGuard.Trim(
+                " ok. 𝐝𝐨 𝐲𝐨𝐮 𝐰𝐚𝐧𝐭 𝐭𝐨 𝐬𝐚𝐯𝐞 𝐜𝐡𝐚𝐧𝐠𝐞𝐬",
+                "𝐝𝐨 𝐲𝐨𝐮 𝐰𝐚𝐧𝐭 𝐭𝐨 𝐬𝐚𝐯𝐞 𝐜𝐡𝐚𝐧𝐠𝐞𝐬",
+                "Fine"));
 }
