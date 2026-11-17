@@ -9,7 +9,7 @@ namespace Cotabby.Core.Support;
 /// </summary>
 public sealed class TokenHealingVocabulary
 {
-    private readonly record struct Entry(int Token, byte[] Piece, bool ContainsLineBreak);
+    private readonly record struct Entry(int Token, byte[] Piece, bool ContainsLineBreak, ulong Key);
 
     private readonly Entry[] _entries;
 
@@ -20,9 +20,26 @@ public sealed class TokenHealingVocabulary
         _entries = entries
             .Where(entry => entry.Piece.Length > 0)
             .Select(entry => new Entry(
-                entry.Token, entry.Piece, entry.Piece.AsSpan().IndexOfAny((byte)'\r', (byte)'\n') >= 0))
+                entry.Token, entry.Piece, entry.Piece.AsSpan().IndexOfAny((byte)'\r', (byte)'\n') >= 0,
+                SortKey(entry.Piece)))
             .ToArray();
-        Array.Sort(_entries, (left, right) => left.Piece.AsSpan().SequenceCompareTo(right.Piece));
+        Array.Sort(_entries, (left, right) => left.Key != right.Key
+            ? left.Key.CompareTo(right.Key)
+            : left.Piece.AsSpan().SequenceCompareTo(right.Piece));
+    }
+
+    /// <summary>
+    /// The first eight bytes, big-endian and zero-padded. Unequal keys order two pieces as a byte
+    /// comparison does, so whole pieces are only compared when the keys tie.
+    /// </summary>
+    private static ulong SortKey(byte[] piece)
+    {
+        ulong key = 0;
+        for (int index = 0; index < sizeof(ulong); index++)
+        {
+            key = (key << 8) | (index < piece.Length ? piece[index] : 0UL);
+        }
+        return key;
     }
 
     /// <summary>

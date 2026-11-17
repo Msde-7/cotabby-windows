@@ -59,7 +59,8 @@ public static class PromptSectionBudget
             if (remainingTokens <= 0) break;
             var section = sections[index];
             var content = new GraphemeString(section.Content);
-            int contentTokens = Math.Max(1, estimate(section.Content));
+            int estimated = estimate(section.Content);
+            int contentTokens = Math.Max(1, estimated);
             double charsPerToken = (double)content.Count / contentTokens;
             int remainingChars = (int)Math.Floor(remainingTokens * charsPerToken);
             int cap = Math.Min(Math.Min(section.MaxChars, content.Count), remainingChars);
@@ -69,7 +70,8 @@ public static class PromptSectionBudget
             kept[index] = section with { Content = truncated };
             // A truncated slice can be token-denser than the section average, so floor at zero.
             // Over-deduction must never read as a hard stop for a section that would still fit.
-            remainingTokens = Math.Max(0, remainingTokens - estimate(truncated));
+            int used = ReferenceEquals(truncated, section.Content) ? estimated : estimate(truncated);
+            remainingTokens = Math.Max(0, remainingTokens - used);
         }
         return kept.OfType<PromptSection>().ToList();
     }

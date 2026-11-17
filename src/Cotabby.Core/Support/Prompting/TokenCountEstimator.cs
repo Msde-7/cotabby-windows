@@ -14,12 +14,25 @@ public static class TokenCountEstimator
     {
         // Split on punctuation as well as whitespace. Real subword tokenizers break "can't", "end."
         // and "func()" into multiple tokens, so gluing punctuation to a word would undercount code.
+        var graphemes = new GraphemeString(text);
         int total = 0;
-        foreach (var word in new GraphemeString(text).Split(g => g.IsWhitespace || g.IsPunctuation))
+        int word = 0;
+        for (int index = 0; index < graphemes.Count; index++)
         {
-            int length = GraphemeString.CountOf(text[word]);
-            total += Math.Max(1, (int)Math.Round(length / 4.0, MidpointRounding.AwayFromZero));
+            var grapheme = graphemes[index];
+            if (grapheme.IsWhitespace || grapheme.IsPunctuation)
+            {
+                total += WordTokens(word);
+                word = 0;
+            }
+            else
+            {
+                word++;
+            }
         }
-        return total;
+        return total + WordTokens(word);
     }
+
+    private static int WordTokens(int graphemes) =>
+        graphemes == 0 ? 0 : Math.Max(1, (int)Math.Round(graphemes / 4.0, MidpointRounding.AwayFromZero));
 }

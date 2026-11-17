@@ -59,6 +59,7 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
     private readonly ClipboardContextSource? _clipboard;
     private readonly SuggestionDismissalMemory _dismissals = new();
     private readonly ImeCompositionTracker _ime = new();
+    private readonly SendOrPostCallback _handleEvent;
 
     private volatile SuggestionSettings _settings = SuggestionSettings.Default;
     private bool? _batterySaverWasOn;
@@ -135,6 +136,7 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
         _clock = clock ?? TimeProvider.System;
         _typos = typos;
         _clipboard = clipboard is null ? null : new ClipboardContextSource(clipboard, _clock);
+        _handleEvent = state => HandleEvent((KeyboardEvent)state!);
     }
 
     public SuggestionMetrics Metrics { get; } = new();
@@ -272,6 +274,6 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
     private void Post(Action action)
     {
         if (SynchronizationContext.Current == _ui) action();
-        else _ui.Post(_ => action(), null);
+        else _ui.Post(static state => ((Action)state!)(), action);
     }
 }

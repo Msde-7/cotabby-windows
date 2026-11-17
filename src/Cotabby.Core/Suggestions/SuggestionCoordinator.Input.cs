@@ -55,7 +55,7 @@ public sealed partial class SuggestionCoordinator
                 args.Suppress = true;
                 // The accept is queued before the work is cancelled. Cancelling can end a streamed
                 // request at once, and its cleanup must not reach the UI context ahead of the accept.
-                Post(() => Accept(all, ev.IsRepeat));
+                PostAccept(all, ev.IsRepeat);
                 _work.Cancel();
                 return;
             }
@@ -69,8 +69,12 @@ public sealed partial class SuggestionCoordinator
             return;
         }
 
-        Post(() => HandleEvent(ev));
+        if (SynchronizationContext.Current == _ui) HandleEvent(ev);
+        else _ui.Post(_handleEvent, ev);
     }
+
+    // Kept out of OnKeyEvent so its locals are not captured, which would allocate on every hook callback.
+    private void PostAccept(bool all, bool isRepeat) => Post(() => Accept(all, isRepeat));
 
     private void HandleEvent(KeyboardEvent ev)
     {
