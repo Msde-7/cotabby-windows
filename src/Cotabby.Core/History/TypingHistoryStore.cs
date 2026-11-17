@@ -378,7 +378,7 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
         // The focus session is left out on purpose: leaving a field and coming back is the same
         // document and should stay one record.
         string fieldKey = FieldKey(field);
-        string text = field.PrecedingText + field.TrailingText;
+        string text = field.Text;
         // Unchanged text in the same field is the common case. Answer it before the settings check.
         if (_active is { } same && same.FieldKey == fieldKey && same.RawText == text) return false;
         if (!isAllowed())
@@ -387,7 +387,7 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
             return _records.Count != countBefore;
         }
 
-        int typedLength = field.PrecedingText.Length;
+        int typedLength = field.PrecedingLength;
         if (_active is { } active && active.FieldKey == fieldKey && !HoldsNewDocument(active, field, text))
         {
             active.RawText = text;
@@ -437,7 +437,7 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
     }
 
     /// <summary>A window cut where it would split a surrogate pair keeps one unit less.</summary>
-    private static bool MayBeTruncated(FocusedField field) => field.PrecedingText.Length >= CaptureWindowChars - 1;
+    private static bool MayBeTruncated(FocusedField field) => field.PrecedingLength >= CaptureWindowChars - 1;
 
     /// <summary>Terminal text is shell commands and output, where secrets are common.</summary>
     private static bool IsTerminal(FocusedField field) =>
@@ -458,7 +458,7 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
         return recent with
         {
             RawText = text,
-            RawTypedLength = field.PrecedingText.Length,
+            RawTypedLength = field.PrecedingLength,
             WindowTitle = field.WindowTitle,
         };
     }

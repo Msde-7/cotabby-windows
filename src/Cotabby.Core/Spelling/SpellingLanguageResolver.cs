@@ -81,19 +81,30 @@ internal sealed class LanguageVocabularyScorer(Func<SpellingDictionaryLanguage, 
         string sample, IReadOnlyList<SpellingDictionaryLanguage> languages)
     {
         var votes = languages.ToDictionary(language => language, _ => 0.0);
+        var writersByScript = new Dictionary<Script, (SpellingDictionaryLanguage Language, Dictionary<string, double> Vocabulary)[]>();
+        Span<double> shares = stackalloc double[languages.Count];
         int voters = 0;
         foreach (var word in Words(sample))
         {
             var script = ScriptOf(word);
-            var writers = languages.Where(language => ScriptOf(language) == script).ToArray();
-            var shares = writers.Select(language => Vocabulary(language).GetValueOrDefault(word)).ToArray();
-            double total = shares.Sum();
+            if (!writersByScript.TryGetValue(script, out var writers))
+            {
+                writers = languages.Where(language => ScriptOf(language) == script)
+                    .Select(language => (language, Vocabulary(language))).ToArray();
+                writersByScript[script] = writers;
+            }
+            double total = 0;
+            for (int index = 0; index < writers.Length; index++)
+            {
+                shares[index] = writers[index].Vocabulary.GetValueOrDefault(word);
+                total += shares[index];
+            }
             if (total == 0 && writers.Length != 1) continue;
 
             voters++;
             for (int index = 0; index < writers.Length; index++)
             {
-                votes[writers[index]] += total == 0 ? 1 : shares[index] / total;
+                votes[writers[index].Language] += total == 0 ? 1 : shares[index] / total;
             }
         }
         return votes.ToDictionary(vote => vote.Key, vote => voters == 0 ? 0 : vote.Value / voters);

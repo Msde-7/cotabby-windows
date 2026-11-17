@@ -30,7 +30,7 @@ public static partial class PromptContextSanitizer
             }
             else if (ScalarSets.IsAlphanumeric(scalar) || scalar.Value is '@' or '.')
             {
-                line.Append(scalar.ToString());
+                AppendScalar(line, scalar);
             }
             else if (line.Length > 0 && line[^1] != ' ')
             {
@@ -177,7 +177,7 @@ public static partial class PromptContextSanitizer
         var token = new StringBuilder();
         foreach (var scalar in text.ToLowerInvariant().EnumerateRunes())
         {
-            if (ScalarSets.IsAlphanumeric(scalar)) token.Append(scalar.ToString());
+            if (ScalarSets.IsAlphanumeric(scalar)) AppendScalar(token, scalar);
             else FlushToken(token, tokens, minimumLength);
         }
         FlushToken(token, tokens, minimumLength);
@@ -202,7 +202,18 @@ public static partial class PromptContextSanitizer
 
     private static void FlushToken(StringBuilder token, HashSet<string> tokens, int minimumLength)
     {
-        if (token.Length > 0 && GraphemeString.CountOf(token.ToString()) >= minimumLength) tokens.Add(token.ToString());
+        if (token.Length > 0 && token.ToString() is var text && GraphemeString.CountOf(text) >= minimumLength) tokens.Add(text);
         token.Clear();
+    }
+
+    private static void AppendScalar(StringBuilder builder, Rune scalar)
+    {
+        if (scalar.IsBmp)
+        {
+            builder.Append((char)scalar.Value);
+            return;
+        }
+        int offset = scalar.Value - 0x10000;
+        builder.Append((char)(0xD800 + (offset >> 10))).Append((char)(0xDC00 + (offset & 0x3FF)));
     }
 }

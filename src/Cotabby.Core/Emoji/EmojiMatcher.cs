@@ -1,3 +1,5 @@
+using Cotabby.Core.Text;
+
 namespace Cotabby.Core.Emoji;
 
 /// <summary>
@@ -41,7 +43,7 @@ public sealed class EmojiMatcher(EmojiCatalog catalog)
     private readonly record struct Hit(int Tier, int TokenLength);
 
     private readonly record struct ScoredMatch(
-        EmojiMatch Match,
+        EmojiEntry Entry,
         int Tier,
         int FavoriteBucket,
         int TokenLength,
@@ -60,11 +62,11 @@ public sealed class EmojiMatcher(EmojiCatalog catalog)
         var synonyms = EmojiSynonymCatalog.BoostedAliases(query);
         var indexed = catalog.Indexed;
         var scored = new List<ScoredMatch>();
-        var matchedIndices = new HashSet<int>();
+        var matched = new bool[indexed.Count];
         for (int index = 0; index < indexed.Count; index++)
         {
             if (LexicalHit(query, synonyms, indexed[index]) is not { } hit) continue;
-            matchedIndices.Add(index);
+            matched[index] = true;
             scored.Add(MakeScored(indexed[index], index, hit, usage));
         }
 
@@ -73,14 +75,14 @@ public sealed class EmojiMatcher(EmojiCatalog catalog)
         {
             for (int index = 0; index < indexed.Count; index++)
             {
-                if (matchedIndices.Contains(index)) continue;
+                if (matched[index]) continue;
                 if (FuzzyHit(query, indexed[index]) is not { } hit) continue;
                 scored.Add(MakeScored(indexed[index], index, hit, usage));
             }
         }
 
         scored.Sort(Compare);
-        return scored.Take(limit).Select(candidate => candidate.Match).ToArray();
+        return scored.Take(limit).Select(candidate => new EmojiMatch(candidate.Entry)).ToArray();
     }
 
     /// <summary>Suggestions for a bare colon. The user's recents come first, padded with popular emoji.</summary>
@@ -95,7 +97,7 @@ public sealed class EmojiMatcher(EmojiCatalog catalog)
     {
         var primaryAlias = indexed.LowerAliases.Count > 0 ? indexed.LowerAliases[0] : indexed.LowerName;
         return new ScoredMatch(
-            new EmojiMatch(indexed.Entry),
+            indexed.Entry,
             hit.Tier,
             usage.IsFavorite(primaryAlias) ? 0 : 1,
             hit.TokenLength,
@@ -117,15 +119,18 @@ public sealed class EmojiMatcher(EmojiCatalog catalog)
         (HashSet<string> Exact, HashSet<string> Prefix) synonyms,
         EmojiCatalog.IndexedEntry indexed)
     {
+        // Indexed loops: foreach over an IReadOnlyList allocates an enumerator per entry, per keystroke.
         Hit? best = null;
-        foreach (var alias in indexed.LowerAliases)
+        var aliases = indexed.LowerAliases;
+        for (int index = 0; index < aliases.Count; index++)
         {
-            best = Better(best, AliasHit(query, alias));
-            best = Better(best, SynonymHit(synonyms, alias));
+            best = Better(best, AliasHit(query, aliases[index]));
+            best = Better(best, SynonymHit(synonyms, aliases[index]));
         }
-        foreach (var keyword in indexed.LowerKeywords)
+        var keywords = indexed.LowerKeywords;
+        for (int index = 0; index < keywords.Count; index++)
         {
-            best = Better(best, KeywordOrNameHit(query, keyword));
+            best = Better(best, KeywordOrNameHit(query, keywords[index]));
         }
         return Better(best, KeywordOrNameHit(query, indexed.LowerName));
     }
@@ -166,10 +171,12 @@ public sealed class EmojiMatcher(EmojiCatalog catalog)
     private static Hit? FuzzyHit(string query, EmojiCatalog.IndexedEntry indexed)
     {
         int? bestLength = null;
-        foreach (var candidate in indexed.LowerAliases.Append(indexed.LowerName))
+        var aliases = indexed.LowerAliases;
+        for (int index = 0; index < aliases.Count; index++)
         {
-            if (IsFuzzyMatch(query, candidate)) bestLength = Math.Min(bestLength ?? int.MaxValue, candidate.Length);
+            if (IsFuzzyMatch(query, aliases[index])) bestLength = Math.Min(bestLength ?? int.MaxValue, aliases[index].Length);
         }
+        if (IsFuzzyMatch(query, indexed.LowerName)) bestLength = Math.Min(bestLength ?? int.MaxValue, indexed.LowerName.Length);
         return bestLength is { } length ? new Hit(TierFuzzy, length) : null;
     }
 
@@ -180,7 +187,7 @@ public sealed class EmojiMatcher(EmojiCatalog catalog)
     private static bool IsFuzzyMatch(string query, string candidate)
     {
         int bound = query.Length <= 4 ? 1 : 2;
-        if (Math.Abs(candidate.Length - query.Length) <= bound && OsaDistance(query, candidate) <= bound)
+        if (Math.Abs(candidate.Length - query.Length) <= bound && EditDistance.DamerauOsa(query.AsSpan(), candidate.AsSpan(), bound) >= 0)
         {
             return true;
         }
@@ -197,35 +204,5 @@ public sealed class EmojiMatcher(EmojiCatalog catalog)
             if (matched == needle.Length) return true;
         }
         return false;
-    }
-
-    /// <summary>Optimal string alignment distance, Levenshtein plus adjacent transpositions as one edit.</summary>
-    private static int OsaDistance(string source, string target)
-    {
-        if (source.Length == 0) return target.Length;
-        if (target.Length == 0) return source.Length;
-
-        var distance = new int[source.Length + 1, target.Length + 1];
-        for (int row = 0; row <= source.Length; row++) distance[row, 0] = row;
-        for (int column = 0; column <= target.Length; column++) distance[0, column] = column;
-
-        for (int row = 1; row <= source.Length; row++)
-        {
-            for (int column = 1; column <= target.Length; column++)
-            {
-                int cost = source[row - 1] == target[column - 1] ? 0 : 1;
-                int value = Math.Min(
-                    Math.Min(distance[row - 1, column] + 1, distance[row, column - 1] + 1),
-                    distance[row - 1, column - 1] + cost);
-                if (row > 1 && column > 1
-                    && source[row - 1] == target[column - 2]
-                    && source[row - 2] == target[column - 1])
-                {
-                    value = Math.Min(value, distance[row - 2, column - 2] + 1);
-                }
-                distance[row, column] = value;
-            }
-        }
-        return distance[source.Length, target.Length];
     }
 }

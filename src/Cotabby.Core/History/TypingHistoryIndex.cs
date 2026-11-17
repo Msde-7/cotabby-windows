@@ -18,11 +18,29 @@ public sealed record TypingHistoryQuery(string Text, string BundleIdentifier, st
     /// </summary>
     public static string StableText(string precedingText, int wordsPerBlock = 8, int maxWords = 48)
     {
-        var words = precedingText.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        int completeBlocks = words.Length / wordsPerBlock * wordsPerBlock;
+        // Words are counted in place and only the kept ones are copied: this runs per request on
+        // up to a whole capture window of text.
+        int wordCount = 0;
+        bool inWord = false;
+        foreach (char character in precedingText)
+        {
+            bool isSpace = char.IsWhiteSpace(character);
+            if (!isSpace && !inWord) wordCount++;
+            inWord = !isSpace;
+        }
+        int completeBlocks = wordCount / wordsPerBlock * wordsPerBlock;
         if (completeBlocks == 0) return "";
         int start = Math.Max(0, completeBlocks - maxWords);
-        return string.Join(' ', words[start..completeBlocks]);
+        var words = new string[completeBlocks - start];
+        int position = precedingText.Length;
+        for (int word = wordCount - 1; word >= start; word--)
+        {
+            while (char.IsWhiteSpace(precedingText[position - 1])) position--;
+            int end = position;
+            while (position > 0 && !char.IsWhiteSpace(precedingText[position - 1])) position--;
+            if (word < completeBlocks) words[word - start] = precedingText[position..end];
+        }
+        return string.Join(' ', words);
     }
 }
 

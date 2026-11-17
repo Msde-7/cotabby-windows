@@ -121,6 +121,7 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
         var suggestions = new List<SymSpellSuggestion>();
         var consideredSuggestions = new HashSet<string>(StringComparer.Ordinal);
         var consideredDeletes = new HashSet<string>(StringComparer.Ordinal);
+        bool inputIsOneUnitPerGrapheme = GraphemeString.IsOneUnitPerGrapheme(input);
 
         int inputPrefixLength = Math.Min(inputCharacters.Length, PrefixLength);
         var candidates = new List<string[]> { inputCharacters[..inputPrefixLength] };
@@ -132,12 +133,23 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
                 foreach (int wordIndex in bucket.Indices)
                 {
                     var suggestion = _wordsList[wordIndex];
-                    var suggestionCharacters = Characters(suggestion);
-                    // Cheap length prune before the quadratic distance computation.
-                    if (Math.Abs(suggestionCharacters.Length - inputCharacters.Length) > maxDistance) continue;
-                    if (!consideredSuggestions.Add(suggestion)) continue;
-
-                    int distance = DamerauOsa(inputCharacters, suggestionCharacters, maxDistance);
+                    int distance;
+                    // When both words are one UTF-16 unit per grapheme, compare units and skip
+                    // splitting the word into grapheme strings.
+                    if (inputIsOneUnitPerGrapheme && GraphemeString.IsOneUnitPerGrapheme(suggestion))
+                    {
+                        // Cheap length prune before the quadratic distance computation.
+                        if (Math.Abs(suggestion.Length - input.Length) > maxDistance) continue;
+                        if (!consideredSuggestions.Add(suggestion)) continue;
+                        distance = EditDistance.DamerauOsa(input.AsSpan(), suggestion.AsSpan(), maxDistance);
+                    }
+                    else
+                    {
+                        var suggestionCharacters = Characters(suggestion);
+                        if (Math.Abs(suggestionCharacters.Length - inputCharacters.Length) > maxDistance) continue;
+                        if (!consideredSuggestions.Add(suggestion)) continue;
+                        distance = DamerauOsa(inputCharacters, suggestionCharacters, maxDistance);
+                    }
                     if (distance >= 0) suggestions.Add(new(suggestion, distance, _words[suggestion]));
                 }
             }
@@ -164,42 +176,8 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
     /// Bounded Damerau optimal-string-alignment distance over grapheme clusters, which allows an
     /// adjacent transposition. Returns -1 when the distance exceeds <paramref name="maxDistance"/>.
     /// </summary>
-    public static int DamerauOsa(ReadOnlySpan<string> source, ReadOnlySpan<string> target, int maxDistance)
-    {
-        if (source.Length == 0) return target.Length <= maxDistance ? target.Length : -1;
-        if (target.Length == 0) return source.Length <= maxDistance ? source.Length : -1;
-        if (Math.Abs(source.Length - target.Length) > maxDistance) return -1;
-
-        var previousPrevious = new int[target.Length + 1];
-        var previous = new int[target.Length + 1];
-        var current = new int[target.Length + 1];
-        for (int column = 0; column <= target.Length; column++) previous[column] = column;
-
-        for (int row = 1; row <= source.Length; row++)
-        {
-            current[0] = row;
-            int rowMinimum = row;
-            for (int column = 1; column <= target.Length; column++)
-            {
-                int cost = source[row - 1] == target[column - 1] ? 0 : 1;
-                int value = Math.Min(
-                    Math.Min(previous[column] + 1, current[column - 1] + 1), previous[column - 1] + cost);
-                if (row > 1 && column > 1
-                    && source[row - 1] == target[column - 2] && source[row - 2] == target[column - 1])
-                {
-                    value = Math.Min(value, previousPrevious[column - 2] + cost);
-                }
-                current[column] = value;
-                rowMinimum = Math.Min(rowMinimum, value);
-            }
-            // Later rows can only add to the running minimum, so a row over budget ends the search.
-            if (rowMinimum > maxDistance) return -1;
-            (previousPrevious, previous, current) = (previous, current, previousPrevious);
-        }
-
-        int result = previous[target.Length];
-        return result <= maxDistance ? result : -1;
-    }
+    public static int DamerauOsa(ReadOnlySpan<string> source, ReadOnlySpan<string> target, int maxDistance) =>
+        EditDistance.DamerauOsa(source, target, maxDistance);
 
     /// <summary>
     /// The hashes of all delete variants of a word's prefix, capped at <see cref="PrefixLength"/>,

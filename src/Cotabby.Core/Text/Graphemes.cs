@@ -176,7 +176,7 @@ internal readonly struct GraphemeString : IEnumerable<Grapheme>
     private const char CombiningStart = '̀';
 
     /// <summary>Below U+0300 only a carriage return can begin a multi-unit cluster.</summary>
-    private static bool IsOneUnitPerGrapheme(string text)
+    internal static bool IsOneUnitPerGrapheme(string text)
     {
         foreach (char unit in text)
         {

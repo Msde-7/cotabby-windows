@@ -93,9 +93,11 @@ public static class OcrTextHygiene
     /// Removes lines that only echo the focused field, which the capture usually includes. Lines
     /// shorter than <paramref name="minMatch"/> stay, so a stray "to" is not matched everywhere.
     /// </summary>
-    public static IReadOnlyList<OcrLine> Strip(IEnumerable<OcrLine> lines, string fieldText, int minMatch = 4)
+    public static IReadOnlyList<OcrLine> Strip(IEnumerable<OcrLine> lines, string fieldText, int minMatch = 4) =>
+        StripNormalized(lines, Normalize(fieldText), minMatch);
+
+    private static IReadOnlyList<OcrLine> StripNormalized(IEnumerable<OcrLine> lines, string field, int minMatch)
     {
-        string field = Normalize(fieldText);
         if (field.Length == 0) return lines.ToList();
         return lines.Where(l =>
         {
@@ -104,18 +106,26 @@ public static class OcrTextHygiene
         }).ToList();
     }
 
-    private static string Normalize(string text) =>
+    /// <summary>Lowercased, with whitespace runs collapsed to one space, as <see cref="Strip"/> compares text.</summary>
+    internal static string Normalize(string text) =>
         string.Join(' ', text.ToLowerInvariant().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
     /// <summary>Runs every guard, cheapest first, then bounds the lines and characters.</summary>
-    public static string Clean(IEnumerable<OcrLine> lines, string fieldText, int maxLines = 40, int maxChars = 2000)
+    public static string Clean(IEnumerable<OcrLine> lines, string fieldText, int maxLines = 40, int maxChars = 2000) =>
+        CleanNormalized(lines, Normalize(fieldText), maxLines, maxChars);
+
+    /// <summary>
+    /// <see cref="Clean"/> against field text already passed through <see cref="Normalize"/>, so a
+    /// caller cleaning line by line normalizes the field once.
+    /// </summary>
+    internal static string CleanNormalized(IEnumerable<OcrLine> lines, string normalizedField, int maxLines = 40, int maxChars = 2000)
     {
         IEnumerable<OcrLine> filtered = DropLowConfidence(lines);
         filtered = DropReplacementCharacter(filtered);
         filtered = DropHighSymbolDensity(filtered);
         filtered = DropDigitSubstitution(filtered);
         filtered = DropLowWordCharacterRatio(filtered);
-        filtered = Strip(filtered, fieldText);
+        filtered = StripNormalized(filtered, normalizedField, minMatch: 4);
 
         string joined = string.Join('\n', filtered
             .Select(l => ScalarSets.TrimWhitespaceAndNewlines(l.Text))
@@ -139,10 +149,11 @@ public static class VisualContextExcerptSelector
         if (maxCharacters <= 0) return "";
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var candidates = new List<(int Index, string Text, double Score)>();
+        string field = OcrTextHygiene.Normalize(fieldText);
         for (int index = 0; index < lines.Count; index++)
         {
             var line = lines[index];
-            string text = PromptContextSanitizer.Sanitize(OcrTextHygiene.Clean([line], fieldText, maxChars: maxCharacters));
+            string text = PromptContextSanitizer.Sanitize(OcrTextHygiene.CleanNormalized([line], field, maxChars: maxCharacters));
             if (text.Length == 0 || !seen.Add(text.ToLowerInvariant())) continue;
             double score;
             if (line.Bounds is { } bounds && focusBounds is { } focus)

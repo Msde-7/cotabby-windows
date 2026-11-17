@@ -19,10 +19,13 @@ public sealed record FocusedField
     public required int CaretOffset { get; init; }
 
     /// <summary>The text before the caret. A caret offset outside the text is clamped.</summary>
-    public string PrecedingText => Text[..Math.Clamp(CaretOffset, 0, Text.Length)];
+    public string PrecedingText => Text[..PrecedingLength];
 
     /// <summary>The text after the caret.</summary>
-    public string TrailingText => Text[Math.Clamp(CaretOffset, 0, Text.Length)..];
+    public string TrailingText => Text[PrecedingLength..];
+
+    /// <summary>The length of <see cref="PrecedingText"/>, without copying it out of <see cref="Text"/>.</summary>
+    public int PrecedingLength => Math.Clamp(CaretOffset, 0, Text.Length);
 
     /// <summary>Caret screen rectangle in physical pixels (DPI-aware).</summary>
     public required ScreenRect CaretRect { get; init; }
