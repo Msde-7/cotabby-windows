@@ -16,12 +16,6 @@ public sealed class TokenHealingPlan
 
     public byte[] ReplayBytes { get; }
 
-    private TokenHealingPlan(IReadOnlyList<int> promptTokens, byte[] replayBytes)
-    {
-        PromptTokens = promptTokens;
-        ReplayBytes = replayBytes;
-    }
-
     /// <param name="prompt">The prompt text the tokens encode.</param>
     /// <param name="tokens">The prompt's tokens.</param>
     /// <param name="singleLine">When true, a line break is never moved into the replay.</param>
