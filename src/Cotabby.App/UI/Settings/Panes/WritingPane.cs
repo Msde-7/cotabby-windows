@@ -122,6 +122,13 @@ internal static class WritingPane
                     + "this context is sent to that server.",
                     s => s.IncludeAppContext, (s, v) => s.IncludeAppContext = v)
                     .Tagged("application window title surface"),
+                r.Toggle("Include Screen Context",
+                    "Read the text on screen around the field, such as the conversation or document you are "
+                    + "replying to. It is read on this PC and never saved. With an endpoint selected, a short "
+                    + "excerpt from just above the field is sent to that server.",
+                    s => s.ScreenContext, (s, v) => s.ScreenContext = v)
+                    .Tagged("ocr screenshot visible window conversation nearby text vision read screen")
+                    .EnabledWhen(_ => context.Host.ScreenContextAvailable),
                 r.Stacked("Extended Context",
                     "Notes about you that the model keeps in mind, such as a glossary, names or style notes. "
                     + "They are sent with every suggestion, so long notes slow completions down.",

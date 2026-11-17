@@ -76,6 +76,12 @@ public sealed record SuggestionSettings
     /// <summary>Lets recently copied text that relates to the writing into the prompt.</summary>
     public bool ClipboardContext { get; init; }
 
+    /// <summary>Lets text recognized on screen around the field into the prompt.</summary>
+    public bool ScreenContext { get; init; } = true;
+
+    /// <summary>Shows a suggestion as it generates instead of once it is complete.</summary>
+    public bool StreamWhileGenerating { get; init; }
+
     /// <summary>Tells the model what kind of app and window the text is written in.</summary>
     public bool SurfaceContext { get; init; } = true;
 

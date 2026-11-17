@@ -26,6 +26,22 @@ internal static partial class OverlayWindowInterop
         SetWindowLong(hwnd, GWL_EXSTYLE,
             GetWindowLong(hwnd, GWL_EXSTYLE) | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
 
+    /// <summary>
+    /// Leaves the window out of screenshots and screen capture, so reading the screen for context
+    /// never reads Cotabby's own suggestion back. It also keeps the suggestion out of screen shares.
+    /// </summary>
+    public static void SetExcludedFromCapture(IntPtr hwnd, bool excluded)
+    {
+        if (hwnd != IntPtr.Zero) SetWindowDisplayAffinity(hwnd, excluded ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE);
+    }
+
+    private const uint WDA_NONE = 0x0;
+    private const uint WDA_EXCLUDEFROMCAPTURE = 0x11;
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
+
     public static void PlaceTopmost(IntPtr hwnd, double x, double y, double width, double height) =>
         SetWindowPos(hwnd, HWND_TOPMOST, (int)x, (int)y, (int)width, (int)height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 

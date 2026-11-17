@@ -94,12 +94,17 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
             : Duration.Automatic;
         _fontKey = null;
         ApplyPalette();
+        _excludedFromCapture = settings.ScreenContext;
+        if (_source is not null) OverlayWindowInterop.SetExcludedFromCapture(_source.Handle, _excludedFromCapture);
     }
+
+    private bool _excludedFromCapture;
 
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
         _source = (HwndSource)PresentationSource.FromVisual(this)!;
         OverlayWindowInterop.MakeClickThrough(_source.Handle);
+        OverlayWindowInterop.SetExcludedFromCapture(_source.Handle, _excludedFromCapture);
     }
 
     public void Show(

@@ -30,6 +30,9 @@ public static class BaseCompletionPromptRenderer
     /// <param name="clipboardContext">Distilled clipboard text.</param>
     /// <param name="surfaceLines">Composed description of the writing surface, one fact group per line.</param>
     /// <param name="historyExamples">Passages of the user's own earlier writing.</param>
+    /// <param name="screenContext">Recognized text near the field on screen.</param>
+    /// <param name="maxScreenCharacters">Cap on the screen section, smaller for the endpoint.</param>
+    /// <param name="screenPriority">Budget priority of the screen section, lower for the endpoint.</param>
     /// <param name="contextBudget">Character budget, used when no token budget is given.</param>
     /// <param name="tokenBudget">When given, sections fill against estimated tokens instead of characters.</param>
     public static string Prompt(
@@ -41,6 +44,9 @@ public static class BaseCompletionPromptRenderer
         string? clipboardContext = null,
         IReadOnlyList<string>? surfaceLines = null,
         IReadOnlyList<string>? historyExamples = null,
+        string? screenContext = null,
+        int maxScreenCharacters = 4000,
+        int screenPriority = 45,
         int contextBudget = DefaultContextBudget,
         int? tokenBudget = null)
     {
@@ -73,6 +79,11 @@ public static class BaseCompletionPromptRenderer
         if (NonEmpty(clipboardContext) is { } clip)
         {
             sections.Add(ContextSection("clipboard", $"On the clipboard: {clip}", priority: 35, maxChars: 400));
+        }
+        if (NonEmpty(screenContext) is { } screen)
+        {
+            sections.Add(ContextSection(
+                "screen", $"Nearby on screen: {screen}", priority: screenPriority, maxChars: maxScreenCharacters));
         }
         string followingText = new GraphemeString(trailingText).Prefix(MaxFollowingCharacters);
         if (!ScalarSets.IsBlank(followingText))

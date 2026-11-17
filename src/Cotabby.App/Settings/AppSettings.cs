@@ -59,6 +59,7 @@ public sealed class AppSettings
     public bool SuggestWithinWords { get; set; } = true;
     public bool PredictAheadWhileTyping { get; set; } = true;
     public bool PerformanceTracking { get; set; }
+    public bool StreamWhileGenerating { get; set; }
     public bool ShowFollowingWords { get; set; } = true;
     public bool AcceptPunctuationWithWord { get; set; } = true;
     public bool AddSpaceAfterAccept { get; set; }
@@ -75,6 +76,9 @@ public sealed class AppSettings
 
     /// <summary>Tells the model which app and window the text is being written in.</summary>
     public bool IncludeAppContext { get; set; } = true;
+
+    /// <summary>Reads the text on screen around the field so suggestions fit the conversation or document.</summary>
+    public bool ScreenContext { get; set; } = true;
     public string ExtendedContext { get; set; } = "";
 
     // Typing history. Both switches are off by default.
@@ -168,6 +172,8 @@ public sealed class AppSettings
         UserName = UserName,
         ExtendedContext = ExtendedContext,
         ClipboardContext = ClipboardContext,
+        ScreenContext = ScreenContext,
+        StreamWhileGenerating = StreamWhileGenerating,
         Languages = LanguageCatalog.Normalize(Languages),
     };
 }

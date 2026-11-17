@@ -1,3 +1,4 @@
+using Cotabby.Core.Support;
 using Cotabby.Core.Context;
 using Cotabby.Core.Focus;
 using Cotabby.Core.Text;
@@ -62,9 +63,10 @@ public static class SuggestionRequestFactory
 
     /// <param name="clipboardContext">Clipboard text that already passed the relevance filter, or null.</param>
     /// <param name="historyExamples">Passages of the user's past writing, dropped for the endpoint.</param>
+    /// <param name="screenContext">Recognized screen text for this field, or null.</param>
     public static SuggestionRequest Build(
         FocusedField field, string requestId, SuggestionSettings settings, string? clipboardContext = null,
-        IReadOnlyList<string>? historyExamples = null)
+        IReadOnlyList<string>? historyExamples = null, string? screenContext = null)
     {
         string trailing = field.TrailingText;
         bool singleLine = field.IsSingleLine || !settings.AllowMultiLine;
@@ -81,6 +83,7 @@ public static class SuggestionRequestFactory
             LanguageInstruction = LanguageCatalog.PromptInstruction(settings.Languages) ?? "",
             ExtendedContext = settings.ExtendedContext.Trim(),
             ClipboardContext = ActiveClipboardContext(clipboardContext, settings, prefix),
+            ScreenContext = ActiveScreenContext(screenContext, settings),
             SurfaceLines = settings.SurfaceContext ? SurfaceLines(field) : [],
             WordRange = settings.WordRange,
             // Typing history stays on this PC. The provider already returns nothing for the
@@ -99,6 +102,32 @@ public static class SuggestionRequestFactory
 
         return ClippedText(ClipboardContentDistiller.Distill(sanitized, prefix), MaxClipboardContextCharacters);
     }
+
+    /// <summary>
+    /// The screen excerpt bounded for the engine. CJK and code cost far more tokens per character
+    /// than English, so the local excerpt is also held to an estimated token allowance that leaves
+    /// room for the caret text and the other context.
+    /// </summary>
+    internal static string ActiveScreenContext(string? rawContext, SuggestionSettings settings)
+    {
+        if (!settings.ScreenContext || rawContext is null) return "";
+        int limit = VisualContextConfiguration.For(settings.UsesEndpoint).MaxSummaryCharacters;
+        string sanitized = PromptContextSanitizer.Sanitize(rawContext, limit);
+        if (!settings.UsesEndpoint)
+        {
+            while (sanitized.Length > 0 && ScreenTokenCost(sanitized) > MaxLocalScreenTokens)
+            {
+                var graphemes = new GraphemeString(sanitized);
+                sanitized = ScalarSets.TrimWhitespaceAndNewlines(graphemes.Prefix(graphemes.Count * 9 / 10));
+            }
+        }
+        return PromptContextSanitizer.ContainsAlphanumericSignal(sanitized) ? sanitized : "";
+    }
+
+    private const int MaxLocalScreenTokens = 1200;
+
+    private static int ScreenTokenCost(string text) =>
+        TokenCountEstimator.Estimate(text) + text.EnumerateRunes().Count(r => !r.IsAscii) * 2;
 
     private static string ClippedText(string text, int maxCharacters)
     {

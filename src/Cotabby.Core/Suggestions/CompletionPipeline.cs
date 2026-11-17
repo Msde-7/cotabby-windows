@@ -24,6 +24,9 @@ public static class CompletionPipeline
             clipboardContext: request.ClipboardContext,
             surfaceLines: request.SurfaceLines,
             historyExamples: forEndpoint ? [] : request.HistoryExamples,
+            screenContext: request.ScreenContext,
+            maxScreenCharacters: forEndpoint ? 500 : 4000,
+            screenPriority: forEndpoint ? 30 : 45,
             tokenBudget: tokenBudget);
 
     /// <summary>The endpoint prompt, budgeted like the local one so the whole output fits beside it.</summary>

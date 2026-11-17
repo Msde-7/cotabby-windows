@@ -142,6 +142,20 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     /// <summary>The user's typing history, read for prompt examples. Null runs without it.</summary>
     public ISuggestionHistoryProvider? History { get; set; }
 
+    /// <summary>Text recognized on screen around the focused field. Null runs without it.</summary>
+    public ScreenContextSource? ScreenContext
+    {
+        get => _screen;
+        set
+        {
+            if (_screen is not null) _screen.FirstExcerptReady -= OnFirstScreenExcerpt;
+            _screen = value;
+            if (value is not null) value.FirstExcerptReady += OnFirstScreenExcerpt;
+        }
+    }
+
+    private ScreenContextSource? _screen;
+
     /// <summary>Records what the user types. It sees each fresh read of the focused field.</summary>
     public ITypingHistoryObserver? HistoryRecorder { get; set; }
 
@@ -170,7 +184,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         {
             _settings = value;
             UpdateDebounce(value, lastLatencyMs: null);
-            Post(() => CancelSession("settings changed"));
+            Post(() =>
+            {
+                CancelSession("settings changed");
+                TrackScreen(_focus.Current, value);
+            });
         }
     }
 
@@ -211,6 +229,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         _hook.KeyEvent -= OnKeyEvent;
         _focus.FocusChanged -= OnFocusChanged;
         _prefetch?.Cancel();
+        ScreenContext = null;
         _focus.Stop();
         _hook.Stop();
         await _work.DisposeAsync().ConfigureAwait(false);
@@ -223,6 +242,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             RecordHistory(field);
             int pid = field?.ProcessId ?? 0;
             _focusIdentity = field is null ? "" : FocusIdentity(field);
+            TrackScreen(field);
             bool sameHost = pid != 0 && (_focusedPid == 0 || pid == _focusedPid);
             _focusedPid = pid;
             if (sameHost && (_sessionField is null || _sessionField.FieldId == field!.FieldId)) return;
@@ -398,6 +418,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 if (_keySequence == sequence) SetPublishBaseline(field);
             });
 
+            TrackScreen(field, settings);
             if (SuggestionAvailability.DisabledReason(settings, field) is { } reason)
             {
                 _logger.LogDebug("Request {ReqId} skipped: {Reason}", requestId, reason);
@@ -525,7 +546,33 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
     private SuggestionRequest BuildRequest(FocusedField field, string requestId, SuggestionSettings settings) =>
         SuggestionRequestFactory.Build(
             field, requestId, settings, settings.ClipboardContext ? _clipboard?.For(field) : null,
-            History?.HistoryExamples(field, settings.UsesEndpoint));
+            History?.HistoryExamples(field, settings.UsesEndpoint),
+            settings.ScreenContext ? _screen?.For(field) : null);
+
+    /// <summary>Keeps screen capture running for a field suggestions may appear in, and stops it everywhere else.</summary>
+    private void TrackScreen(FocusedField? field, SuggestionSettings? settings = null)
+    {
+        if (_screen is not { } screen) return;
+        settings ??= _settings;
+        if (field is null || !settings.ScreenContext || field.IsSecure || !IsAvailableIn(field))
+        {
+            screen.Stop();
+            return;
+        }
+        screen.Track(field, settings.UsesEndpoint);
+    }
+
+    /// <summary>
+    /// A field focused with text already in it gets its first suggestion once the screen has been
+    /// read, so that suggestion can use it. Typing in the meantime already asked for one.
+    /// </summary>
+    private void OnFirstScreenExcerpt(FocusedField field) => Post(() =>
+    {
+        if (_disposed || _session is not null || _prediction is not null || !_work.IsIdle) return;
+        if (FocusIdentity(field) != _focusIdentity) return;
+        SetPublishBaseline(null);
+        SchedulePrediction(typed: null);
+    });
 
     /// <summary>
     /// Generates what follows a suggestion that is nearly typed through, so the suggestion after it is

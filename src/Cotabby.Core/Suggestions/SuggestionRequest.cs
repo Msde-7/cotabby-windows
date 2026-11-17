@@ -35,6 +35,9 @@ public sealed record SuggestionRequest
     /// <summary>Recently copied text that relates to what is being written, or empty.</summary>
     public string ClipboardContext { get; init; } = "";
 
+    /// <summary>Text recognized on screen near the field, already cleaned and bounded, or empty.</summary>
+    public string ScreenContext { get; init; } = "";
+
     /// <summary>Lines describing the app and field being written in.</summary>
     public IReadOnlyList<string> SurfaceLines { get; init; } = [];
 

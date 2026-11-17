@@ -14,6 +14,15 @@ public sealed class SuggestionWorkController : IAsyncDisposable
 
     public SuggestionWorkController(TimeSpan debounce) => Debounce = debounce;
 
+    /// <summary>True when no work is waiting out the debounce or running.</summary>
+    public bool IsIdle
+    {
+        get
+        {
+            lock (_gate) return _inFlight is null;
+        }
+    }
+
     /// <summary>Quiet time after the last submit before work starts.</summary>
     public TimeSpan Debounce { get; set; }
 

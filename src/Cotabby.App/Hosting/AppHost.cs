@@ -3,6 +3,7 @@ using Cotabby.App.Emoji;
 using Cotabby.App.Macros;
 using Cotabby.App.Overlay;
 using Cotabby.App.Settings;
+using Cotabby.Core.Context;
 using Cotabby.Core.Focus;
 using Cotabby.Core.History;
 using Cotabby.Core.Input;
@@ -21,6 +22,7 @@ using Cotabby.Win32.Power;
 using Cotabby.Win32.Security;
 using Cotabby.Win32.Spelling;
 using Cotabby.Win32.Text;
+using Cotabby.Win32.Visual;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
@@ -50,6 +52,10 @@ public sealed class AppHost : IAsyncDisposable
     private readonly GhostOverlayWindow _overlay;
     private readonly MacroController _macros;
     private readonly OpenAICompatibleSuggestionEngine _endpoint;
+    private readonly ScreenContextSource? _screenContext;
+
+    /// <summary>False when Windows has no OCR language for the user's languages, so screen context cannot run.</summary>
+    public bool ScreenContextAvailable { get; }
 
     public SuggestionCoordinator Coordinator { get; }
     public LlamaRuntimeManager Runtime { get; }
@@ -150,6 +156,14 @@ public sealed class AppHost : IAsyncDisposable
         Coordinator.InlineCaptureActive = () => EmojiPicker.IsCapturing || _macros.IsCapturing;
         Coordinator.History = TypingHistory;
         Coordinator.HistoryRecorder = TypingHistory;
+        var screenReader = new WindowsScreenTextReader(loggers.CreateLogger<WindowsScreenTextReader>());
+        ScreenContextAvailable = screenReader.IsAvailable;
+        if (screenReader.IsAvailable)
+        {
+            _screenContext = new ScreenContextSource(
+                screenReader, () => focus.Refresh(), loggers.CreateLogger<ScreenContextSource>());
+            Coordinator.ScreenContext = _screenContext;
+        }
         EmojiPicker.CanCapture = _macros.CanCapture = Coordinator.IsAvailableIn;
         EmojiPicker.CommitKeyFor = _macros.CommitKeyFor = Coordinator.AcceptWordKeyFor;
         Coordinator.Metrics.Restore(Settings.WordsAccepted);
@@ -337,6 +351,7 @@ public sealed class AppHost : IAsyncDisposable
         _macros.Dispose();
         _spelling.Dispose();
         await Coordinator.DisposeAsync().ConfigureAwait(false);
+        _screenContext?.Dispose();
         // Write the field being typed in now. The debounced background save may not have run yet.
         TypingHistory.Flush();
         await Runtime.DisposeAsync().ConfigureAwait(false);

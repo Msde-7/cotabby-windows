@@ -35,6 +35,8 @@ public partial class EmojiPopupWindow : Window
         {
             _source = (HwndSource)PresentationSource.FromVisual(this)!;
             OverlayWindowInterop.MakeClickThrough(_source.Handle);
+            // The picker only shows while typing a shortcode, which screen context must not read back.
+            OverlayWindowInterop.SetExcludedFromCapture(_source.Handle, true);
         };
     }
 
