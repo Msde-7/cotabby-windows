@@ -1,72 +1,66 @@
-using System.Runtime.InteropServices;
+using Windows.System.Power;
 
 namespace Cotabby.Win32.Power;
 
 /// <summary>
 /// Tracks battery saver, which Windows 11 24H2 renamed Energy Saver and allows on mains power.
-/// It subscribes to both status settings, and polls instead when Windows refuses the subscription.
 /// </summary>
-public sealed partial class BatterySaverMonitor : IDisposable
+/// <remarks>
+/// The state comes from <see cref="PowerManager.EnergySaverStatus"/>, which reports Disabled, Off
+/// or On. An earlier version decoded the raw GUID_ENERGY_SAVER_STATUS notification and counted any
+/// value above zero as on, but Windows sends 1 there when Energy Saver is off, so Cotabby paused
+/// itself on PCs where Energy Saver had never been turned on. The legacy battery saver flag is
+/// still read too, and a slow poll covers a missed change event.
+/// </remarks>
+public sealed class BatterySaverMonitor : IDisposable
 {
-    private const uint DeviceNotifyCallback = 2;
-    private const uint PbtPowerSettingChange = 0x8013;
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
-    private static readonly Guid PowerSavingStatus = new("e00958c0-c213-4ace-ac77-fecced2eeea5");
-    private static readonly Guid EnergySaverStatus = new("550e8400-e29b-41d4-a716-446655440000");
 
-    private readonly DeviceNotifyCallbackRoutine _callback;
-    private readonly IntPtr _parameters;
-    private readonly IntPtr[] _registrations;
-    private readonly Timer? _poll;
-    private volatile bool _energySaverOn;
+    private readonly object _gate = new();
+    private readonly Timer _poll;
+    private readonly bool _subscribed;
     private bool _last;
     private int _disposed;
 
     public BatterySaverMonitor()
     {
         _last = IsOn;
-        _callback = OnNotify;
-        _parameters = Marshal.AllocHGlobal(Marshal.SizeOf<DeviceNotifySubscribeParameters>());
-        Marshal.StructureToPtr(
-            new DeviceNotifySubscribeParameters { Callback = Marshal.GetFunctionPointerForDelegate(_callback) },
-            _parameters,
-            fDeleteOld: false);
-
-        _registrations = [Register(PowerSavingStatus), Register(EnergySaverStatus)];
-        if (_registrations[0] == IntPtr.Zero)
+        try
         {
-            _poll = new Timer(_ => Check(), null, PollInterval, PollInterval);
+            PowerManager.EnergySaverStatusChanged += OnStatusChanged;
+            _subscribed = true;
         }
+        catch (Exception)
+        {
+            // Without the event the poll still notices a change, only later.
+        }
+        _poll = new Timer(_ => Check(), null, PollInterval, PollInterval);
     }
 
     /// <summary>Raised on a thread-pool or system thread with the new state.</summary>
     public event Action<bool>? Changed;
 
-    public bool IsOn => _energySaverOn || PowerStatus.IsBatterySaverOn;
+    public bool IsOn => EnergySaverOn() || PowerStatus.IsBatterySaverOn;
 
-    private IntPtr Register(Guid setting) =>
-        PowerSettingRegisterNotification(ref setting, DeviceNotifyCallback, _parameters, out var handle) == 0
-            ? handle
-            : IntPtr.Zero;
-
-    private uint OnNotify(IntPtr context, uint type, IntPtr setting)
+    private static bool EnergySaverOn()
     {
-        if (type != PbtPowerSettingChange) return 0;
-        // POWERBROADCAST_SETTING: the setting's GUID, the data length, then the data.
-        if (setting != IntPtr.Zero && Marshal.PtrToStructure<Guid>(setting) == EnergySaverStatus
-            && Marshal.ReadInt32(setting, 16) >= sizeof(int))
+        try
         {
-            _energySaverOn = Marshal.ReadInt32(setting, 20) > 0;
+            return PowerManager.EnergySaverStatus == EnergySaverStatus.On;
         }
-        Check();
-        return 0;
+        catch (Exception)
+        {
+            return false;
+        }
     }
+
+    private void OnStatusChanged(object? sender, object e) => Check();
 
     private void Check()
     {
         if (Volatile.Read(ref _disposed) != 0) return;
         bool on = IsOn;
-        lock (_callback)
+        lock (_gate)
         {
             if (on == _last) return;
             _last = on;
@@ -77,28 +71,16 @@ public sealed partial class BatterySaverMonitor : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-        _poll?.Dispose();
-        foreach (var registration in _registrations)
+        _poll.Dispose();
+        if (_subscribed)
         {
-            if (registration != IntPtr.Zero) PowerSettingUnregisterNotification(registration);
+            try
+            {
+                PowerManager.EnergySaverStatusChanged -= OnStatusChanged;
+            }
+            catch (Exception)
+            {
+            }
         }
-        Marshal.FreeHGlobal(_parameters);
     }
-
-    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
-    private delegate uint DeviceNotifyCallbackRoutine(IntPtr context, uint type, IntPtr setting);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct DeviceNotifySubscribeParameters
-    {
-        public IntPtr Callback;
-        public IntPtr Context;
-    }
-
-    [LibraryImport("powrprof.dll")]
-    private static partial uint PowerSettingRegisterNotification(
-        ref Guid settingGuid, uint flags, IntPtr recipient, out IntPtr registrationHandle);
-
-    [LibraryImport("powrprof.dll")]
-    private static partial uint PowerSettingUnregisterNotification(IntPtr registrationHandle);
 }

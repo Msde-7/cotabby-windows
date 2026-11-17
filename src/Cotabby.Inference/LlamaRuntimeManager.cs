@@ -75,16 +75,33 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
                 "Loading model {Model} from {Path} (ctx={Ctx})…",
                 model.Id, path, model.ContextLength);
 
-            var weights = await LLamaWeights.LoadFromFileAsync(parameters, ct).ConfigureAwait(false);
-            // The context is created once per loaded model. Creating one costs seconds on Vulkan
-            // because of pipeline compilation.
-            var context = weights.CreateContext(parameters, _loggerFactory.CreateLogger<LLamaContext>());
-            var core = new LlamaRuntimeCore(weights, context, _loggerFactory.CreateLogger<LlamaRuntimeCore>());
+            // The previous model is already gone, so anything built here that never becomes the
+            // active model is freed on failure or cancellation. Weights and a context hold
+            // gigabytes of native and GPU memory that the garbage collector cannot see.
+            LLamaWeights? weights = null;
+            LLamaContext? context = null;
+            LlamaRuntimeCore? core = null;
+            try
+            {
+                weights = await LLamaWeights.LoadFromFileAsync(parameters, ct).ConfigureAwait(false);
+                // The context is created once per loaded model. Creating one costs seconds on Vulkan
+                // because of pipeline compilation.
+                context = weights.CreateContext(parameters, _loggerFactory.CreateLogger<LLamaContext>());
+                core = new LlamaRuntimeCore(weights, context, _loggerFactory.CreateLogger<LlamaRuntimeCore>());
 
-            // The first generation on a fresh Vulkan context compiles shaders and reserves buffers,
-            // which takes two to four seconds. Paying that here keeps the first real suggestion fast.
-            _ = await core.GenerateAsync(
-                "Hello", new LlamaGenerationOptions { MaxTokens = 4, SingleLine = true }, ct).ConfigureAwait(false);
+                // The first generation on a fresh Vulkan context compiles shaders and reserves buffers,
+                // which takes two to four seconds. Paying that here keeps the first real suggestion fast.
+                _ = await core.GenerateAsync(
+                    "Hello", new LlamaGenerationOptions { MaxTokens = 4, SingleLine = true }, ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                // The core owns the context, so it is disposed through the core once one exists.
+                if (core is not null) core.Dispose();
+                else context?.Dispose();
+                weights?.Dispose();
+                throw;
+            }
 
             _weights = weights;
             _core = core;

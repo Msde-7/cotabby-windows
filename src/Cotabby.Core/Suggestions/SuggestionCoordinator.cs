@@ -344,12 +344,17 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
 
         if (PausedReason() is { } reason)
         {
+            _logger.LogDebug("Key ignored: {Reason}", reason);
             CancelSession(reason);
             return;
         }
 
         TrackForHostPublish(ev);
-        if (HoldsForComposition(ev)) return;
+        if (HoldsForComposition(ev))
+        {
+            _logger.LogDebug("Key held for the input method (language {Language}, composing {Composing}).", _ime.LanguageId, _ime.IsComposing);
+            return;
+        }
         _cadence.Record(_focusIdentity, ev.Kind == KeyKind.Character ? ev.Character.ToString() : "", Now());
 
         if (_session is { } session)
@@ -387,6 +392,7 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         }
         else if (KeepsPrediction(ev))
         {
+            _logger.LogDebug("Key kept by the running prediction.");
             return;
         }
         else if (SuggestionAvailability.ClearsSuggestion(ev))
@@ -397,6 +403,10 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
         if (SuggestionAvailability.SchedulesPrediction(ev))
         {
             SchedulePrediction(ev.Kind == KeyKind.Character ? ev.Character : null);
+        }
+        else
+        {
+            _logger.LogDebug("Key {Kind} asks for no suggestion.", ev.Kind);
         }
     }
 
@@ -488,7 +498,11 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
             var quiet = _work.Debounce - _clock.GetElapsedTime(submittedAt);
             if (quiet > TimeSpan.Zero) await Task.Delay(quiet, _clock, ct).ConfigureAwait(false);
             RecordHistory(field);
-            if (field is null) return;
+            if (field is null)
+            {
+                _logger.LogDebug("Request {ReqId} skipped: no supported field has focus.", requestId);
+                return;
+            }
             Post(() =>
             {
                 if (_keySequence == sequence) SetPublishBaseline(field);
@@ -511,13 +525,25 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                 _logger.LogDebug("Request {ReqId} skipped: the app shows its own suggestion.", requestId);
                 return;
             }
-            if (!SuggestionAvailability.HasTextToContinue(field)) return;
+            if (!SuggestionAvailability.HasTextToContinue(field))
+            {
+                _logger.LogDebug("Request {ReqId} skipped: nothing to continue.", requestId);
+                return;
+            }
 
             string preceding = field.PrecedingText;
             if (await HandleTypoAsync(requestId, settings, field, sequence, ct).ConfigureAwait(false)) return;
             // A completion inside a token would duplicate or splice what follows the caret.
-            if (!SuggestionRequestFactory.ShouldGenerate(preceding, field.TrailingText, settings.SuggestWithinWords)) return;
-            if (!_engine.IsReady) return;
+            if (!SuggestionRequestFactory.ShouldGenerate(preceding, field.TrailingText, settings.SuggestWithinWords))
+            {
+                _logger.LogDebug("Request {ReqId} skipped: the caret is inside a word or token.", requestId);
+                return;
+            }
+            if (!_engine.IsReady)
+            {
+                _logger.LogDebug("Request {ReqId} skipped: the engine is not ready.", requestId);
+                return;
+            }
 
             var stopwatch = Stopwatch.StartNew();
             string text;
@@ -544,7 +570,12 @@ public sealed class SuggestionCoordinator : IAsyncDisposable
                     }
                     if (streaming is not null) QueuePartial(streaming, partial);
                 };
-                text = await GenerateAsync(BuildRequest(field, requestId, settings), ct, onPartial).ConfigureAwait(false);
+                var request = BuildRequest(field, requestId, settings);
+                _logger.LogDebug(
+                    "Request {ReqId} context: screen={Screen} clipboard={Clipboard} history={History} surface={Surface}",
+                    requestId, request.ScreenContext.Length, request.ClipboardContext.Length,
+                    request.HistoryExamples.Count, request.SurfaceLines.Count);
+                text = await GenerateAsync(request, ct, onPartial).ConfigureAwait(false);
                 // A cancelled request says nothing about how fast the engine is.
                 if (!ct.IsCancellationRequested) UpdateDebounce(settings, (int)stopwatch.ElapsedMilliseconds);
             }

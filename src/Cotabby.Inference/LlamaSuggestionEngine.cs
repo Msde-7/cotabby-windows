@@ -18,6 +18,11 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
 {
     private readonly LlamaRuntimeManager _runtime;
     private readonly ILogger<LlamaSuggestionEngine> _logger;
+    private readonly Lock _prewarmLock = new();
+
+    // Guarded by _prewarmLock. Removed from here before its owner disposes it, so a cancel made
+    // under the lock never reaches a disposed source.
+    private CancellationTokenSource? _prewarm;
 
     public LlamaSuggestionEngine(LlamaRuntimeManager runtime, ILogger<LlamaSuggestionEngine> logger)
     {
@@ -29,9 +34,59 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
 
     public bool SpacingIsExact => true;
 
+    /// <summary>
+    /// Evaluates the prompt <paramref name="request"/> would generate from, without sampling, so
+    /// the first real request in a field only evaluates what was typed since. The prompt is
+    /// rendered exactly as <see cref="GenerateAsync"/> renders it.
+    /// </summary>
+    /// <remarks>
+    /// Best effort: failures are logged and swallowed, because a missed prewarm costs nothing the
+    /// cold path would not pay anyway. A newer prewarm or any generation cancels the one in
+    /// flight, so a real request never waits behind a prewarm for longer than one short chunk.
+    /// </remarks>
+    public async Task PrewarmAsync(SuggestionRequest request, CancellationToken ct)
+    {
+        var core = _runtime.Core;
+        if (core is null) return;
+        string prompt = RenderPrompt(request, core);
+        if (prompt.Length == 0) return;
+
+        using var prewarm = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        lock (_prewarmLock)
+        {
+            _prewarm?.Cancel();
+            _prewarm = prewarm;
+        }
+        try
+        {
+            await core.PrewarmAsync(prompt, OptionsFor(request), prewarm.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+            // The model was unloaded meanwhile.
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Req {ReqId}: prewarm skipped.", request.RequestId);
+        }
+        finally
+        {
+            lock (_prewarmLock)
+            {
+                if (_prewarm == prewarm) _prewarm = null;
+            }
+        }
+    }
+
     public async Task<string> GenerateAsync(
         SuggestionRequest request, CancellationToken ct, Action<string>? onPartial = null)
     {
+        // A prewarm still running must not make this request wait behind it for the gate.
+        CancelPrewarm();
+
         var core = _runtime.Core;
         if (core is null)
         {
@@ -39,17 +94,8 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
             return string.Empty;
         }
 
-        var options = new LlamaGenerationOptions
-        {
-            MaxTokens = request.MaxTokens,
-            SingleLine = request.SingleLine,
-            SentenceStopMinimumWords = request.WordRange?.LowWords ?? 0,
-        };
-
-        // The whole output allowance of the request has to fit beside the prompt.
-        string prompt = CompletionPipeline.Prompt(
-            request,
-            PromptTokenBudget.ForRequest(PromptTokenBudget.Configured(core.ContextWindowTokens), request.MaxTokens));
+        var options = OptionsFor(request);
+        string prompt = RenderPrompt(request, core);
         if (prompt.Length == 0) return string.Empty;
         if (onPartial is not null)
         {
@@ -84,4 +130,26 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
         }
         return normalized.Text;
     }
+
+    private void CancelPrewarm()
+    {
+        lock (_prewarmLock)
+        {
+            _prewarm?.Cancel();
+            _prewarm = null;
+        }
+    }
+
+    /// <summary>The prompt for <paramref name="request"/>. The whole output allowance has to fit beside it.</summary>
+    private static string RenderPrompt(SuggestionRequest request, LlamaRuntimeCore core) =>
+        CompletionPipeline.Prompt(
+            request,
+            PromptTokenBudget.ForRequest(PromptTokenBudget.Configured(core.ContextWindowTokens), request.MaxTokens));
+
+    private static LlamaGenerationOptions OptionsFor(SuggestionRequest request) => new()
+    {
+        MaxTokens = request.MaxTokens,
+        SingleLine = request.SingleLine,
+        SentenceStopMinimumWords = request.WordRange?.LowWords ?? 0,
+    };
 }

@@ -233,6 +233,9 @@ public static class OpenAICompatibleSseDecoder
         if (payload.StartsWith("data:", StringComparison.Ordinal))
         {
             payload = payload["data:".Length..].TrimStart();
+            // Some servers and proxies send an empty data line as a keep-alive. It carries no
+            // chunk, and treating it as malformed would end an otherwise healthy stream.
+            if (payload.Length == 0) return OpenAICompatibleSseEvent.Ignore;
         }
         if (payload == "[DONE]") return OpenAICompatibleSseEvent.Done;
 

@@ -296,6 +296,108 @@ public sealed class ModelDownloaderTests : IDisposable
         Assert.False(File.Exists(FinalPath + ".part"));
     }
 
+    private static HttpResponseMessage RangeNotSatisfiable(long? serverLength)
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.RequestedRangeNotSatisfiable) { Content = new ByteArrayContent([]) };
+        if (serverLength is { } length) response.Content.Headers.ContentRange = new ContentRangeHeaderValue(length);
+        return response;
+    }
+
+    /// <summary>
+    /// A short partial the server answers with 416 belongs to another version of the file. It is
+    /// discarded and the download starts over instead of failing on every attempt.
+    /// </summary>
+    [Theory]
+    [InlineData(3L)]
+    [InlineData(null)]
+    public async Task Download_StartsOverWhenTheServerCannotResumeAShortPartial(long? serverLength)
+    {
+        WritePartial(Gguf[..5]);
+        var handler = new Handler(request => request.Headers.Range is null
+            ? Body(HttpStatusCode.OK, Gguf)
+            : RangeNotSatisfiable(serverLength));
+
+        await Download(handler);
+
+        Assert.Equal([5L, null], handler.RangeStarts);
+        Assert.Equal(Gguf, File.ReadAllBytes(FinalPath));
+    }
+
+    [Fact]
+    public async Task Download_PromotesAPartialTheServerReportsAsWhole()
+    {
+        // Without a catalog size the server's length is the only proof the partial is complete.
+        var model = _model with { ApproxSizeBytes = 0 };
+        WritePartial(Gguf);
+        var handler = new Handler(_ => RangeNotSatisfiable(Gguf.Length));
+
+        await Download(handler, model);
+
+        Assert.Equal([(long)Gguf.Length], handler.RangeStarts);
+        Assert.True(ModelDownloader.IsCached(model));
+    }
+
+    private static readonly string ETag = '"' + "v1" + '"';
+
+    private static HttpResponseMessage WithETag(HttpResponseMessage response)
+    {
+        response.Headers.ETag = new EntityTagHeaderValue(ETag);
+        return response;
+    }
+
+    [Fact]
+    public async Task Resume_IsConditionalOnTheFileThePartialCameFrom()
+    {
+        using var cts = new CancellationTokenSource();
+        var first = new Handler(request => WithETag(Serve(Gguf, request, sendOnly: 6, stall: cts.Cancel)));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Download(first, _model, cts.Token));
+
+        var ifRange = new List<string?>();
+        var handler = new Handler(request =>
+        {
+            lock (ifRange) ifRange.Add(request.Headers.IfRange?.ToString());
+            return Serve(Gguf, request);
+        });
+        await Download(handler);
+
+        Assert.Equal([ETag], ifRange);
+        Assert.Equal(Gguf, File.ReadAllBytes(FinalPath));
+        Assert.False(File.Exists(FinalPath + ".part.validator"));
+    }
+
+    [Fact]
+    public async Task Resume_StartsOverWhenTheFileChanged()
+    {
+        WritePartial(Gguf[..5]);
+        _models.Write("test.gguf.part.validator", System.Text.Encoding.UTF8.GetBytes(ETag));
+        // A server whose file no longer matches If-Range sends the whole new file.
+        var handler = new Handler(request => request.Headers.IfRange?.ToString() == ETag
+            ? Body(HttpStatusCode.OK, Gguf)
+            : throw new InvalidOperationException("the resume must be conditional"));
+
+        await Download(handler);
+
+        Assert.Equal(Gguf, File.ReadAllBytes(FinalPath));
+    }
+
+    [Fact]
+    public async Task Segmented_EveryRangeAfterTheProbeIsConditional()
+    {
+        var ifRange = new List<(long? From, string? IfRange)>();
+        var handler = new Handler(request =>
+        {
+            lock (ifRange) ifRange.Add((request.Headers.Range?.Ranges.First().From, request.Headers.IfRange?.ToString()));
+            return WithETag(Serve(Large, request));
+        });
+
+        await DownloadSegmented(handler, LargeModel);
+
+        Assert.Equal(Large, File.ReadAllBytes(FinalPath));
+        Assert.Equal<(long?, string?)>((0L, null), ifRange[0]);
+        Assert.Equal([16L, 32L, 48L], ifRange.Skip(1).Select(entry => entry.From).Order());
+        Assert.All(ifRange.Skip(1), entry => Assert.Equal(ETag, entry.IfRange));
+    }
+
     [Fact]
     public async Task Download_RetriesOnceAfterADroppedConnection()
     {

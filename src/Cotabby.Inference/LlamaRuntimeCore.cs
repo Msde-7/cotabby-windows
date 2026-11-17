@@ -13,7 +13,10 @@ public sealed record LlamaGenerationOptions
     public required int MaxTokens { get; init; }
     public bool SingleLine { get; init; }
 
-    /// <summary>Receives the text generated so far after each token, on the decode thread.</summary>
+    /// <summary>
+    /// Receives the text generated so far after each token, on the decode thread. If it throws,
+    /// the exception is logged, the decode carries on and the callback is not called again.
+    /// </summary>
     public Action<string>? OnPartial { get; init; }
 
     /// <summary>
@@ -44,6 +47,15 @@ public sealed class LlamaRuntimeCore : IDisposable
 
     /// <summary>Minimum tokens generated before a sentence end may stop decoding.</summary>
     private const int SentenceStopMinimumTokens = 2;
+
+    /// <summary>
+    /// Prewarm evaluates in chunks this small so a cancelled prewarm, and the real request
+    /// waiting behind it, only wait for one short decode.
+    /// </summary>
+    private const int PrewarmChunkTokens = 64;
+
+    /// <summary>The single sequence every prompt and decode lives in.</summary>
+    private static readonly LLamaSeqId Sequence = (LLamaSeqId)0;
 
     private readonly LLamaWeights _weights;
     private readonly LLamaContext _context;
@@ -78,24 +90,70 @@ public sealed class LlamaRuntimeCore : IDisposable
     public Task<string> GenerateAsync(string prompt, LlamaGenerationOptions options, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var tokens = _context.NativeHandle.Tokenize(prompt, add_bos: Vocab.ShouldAddBOS, special: false, Encoding.UTF8);
-        var healing = new TokenHealingPlan(
-            prompt, Array.ConvertAll(tokens, token => (int)token), options.SingleLine, token => TokenPiece(token));
-        var promptTokens = healing.PromptTokens.Select(token => (LLamaToken)token).ToArray();
-        return GenerateAsync(promptTokens, healing.ReplayBytes, options, ct);
+        return RunExclusiveAsync(
+            () =>
+            {
+                var (promptTokens, healingPrefix) = PreparePrompt(prompt, options);
+                return Generate(promptTokens, healingPrefix, options, ct);
+            },
+            whenDisposed: string.Empty,
+            ct);
     }
 
-    private async Task<string> GenerateAsync(
-        LLamaToken[] promptTokens, byte[] healingPrefix, LlamaGenerationOptions options, CancellationToken ct)
+    /// <summary>
+    /// Evaluates <paramref name="prompt"/> into memory without sampling, so a later generation for
+    /// the same text only evaluates what was typed since. The prompt is prepared with the default
+    /// generation options. Prefer the overload that takes the options the generation will use,
+    /// which keeps the healing and the context window identical.
+    /// </summary>
+    public Task PrewarmAsync(string prompt, CancellationToken ct) =>
+        PrewarmAsync(prompt, new LlamaGenerationOptions { MaxTokens = 0 }, ct);
+
+    /// <summary>
+    /// Evaluates <paramref name="prompt"/> into memory without sampling, reusing the prefix
+    /// already there exactly as a generation does, so a later <see cref="GenerateAsync"/> with the
+    /// same <paramref name="options"/> and the same head only evaluates the rest.
+    /// </summary>
+    /// <remarks>
+    /// Best effort and low priority. It evaluates in small chunks and checks
+    /// <paramref name="ct"/> between them, so a cancelled prewarm gives up the gate within one
+    /// chunk. Whatever was evaluated before the cancellation stays in memory for reuse. It
+    /// completes normally when cancelled. A model that cannot keep a prefix has nothing to warm.
+    /// </remarks>
+    public async Task PrewarmAsync(string prompt, LlamaGenerationOptions options, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_canReusePrefix || ct.IsCancellationRequested) return;
+        try
+        {
+            await RunExclusiveAsync(
+                () =>
+                {
+                    var (promptTokens, _) = PreparePrompt(prompt, options);
+                    Prewarm(promptTokens, ct);
+                    return true;
+                },
+                whenDisposed: false,
+                ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="work"/> on the thread pool while holding the gate. Everything that
+    /// touches the context, tokenizing included, runs inside, after the disposal check, so an
+    /// unload can never free the context under it.
+    /// </summary>
+    private async Task<T> RunExclusiveAsync<T>(Func<T> work, T whenDisposed, CancellationToken ct)
+    {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             // The model can be unloaded while this request waited for its turn.
-            if (_disposed) return string.Empty;
-            return await Task.Run(() => Generate(promptTokens, healingPrefix, options, ct), CancellationToken.None)
-                .ConfigureAwait(false);
+            if (_disposed) return whenDisposed;
+            return await Task.Run(work, CancellationToken.None).ConfigureAwait(false);
         }
         finally
         {
@@ -103,67 +161,156 @@ public sealed class LlamaRuntimeCore : IDisposable
         }
     }
 
-    private string Generate(
-        LLamaToken[] promptTokens, byte[] healingPrefix, LlamaGenerationOptions options, CancellationToken ct)
+    /// <summary>
+    /// Tokenizes and heals the prompt, then fits it beside the whole decode. A byte-fallback
+    /// vocabulary can replay one token per healed byte, so the replay has its own allowance and
+    /// cannot consume the output budget. Must run under the gate.
+    /// </summary>
+    private (LLamaToken[] Tokens, byte[] HealingPrefix) PreparePrompt(string prompt, LlamaGenerationOptions options)
     {
         var handle = _context.NativeHandle;
-        var seq = (LLamaSeqId)0;
+        var tokens = handle.Tokenize(prompt, add_bos: Vocab.ShouldAddBOS, special: false, Encoding.UTF8);
+        var healing = new TokenHealingPlan(
+            prompt, Array.ConvertAll(tokens, token => (int)token), options.SingleLine, TokenPiece);
+        var promptTokens = healing.PromptTokens.Select(token => (LLamaToken)token).ToArray();
+
+        int maxPromptTokens = Math.Max(1, (int)handle.ContextSize - options.MaxTokens - healing.ReplayBytes.Length);
+        bool startsWithBos = promptTokens.Length > 0 && Vocab.BOS is { } bos && promptTokens[0] == bos;
+        return (PromptWindow.Fit(promptTokens, maxPromptTokens, startsWithBos), healing.ReplayBytes);
+    }
+
+    private void Prewarm(LLamaToken[] promptTokens, CancellationToken ct)
+    {
+        if (promptTokens.Length == 0) return;
         var sw = Stopwatch.StartNew();
-
-        // The whole decode is reserved before the prompt is admitted. A byte-fallback vocabulary
-        // can replay one token per healed byte, so the replay has its own allowance and cannot
-        // consume the output budget.
-        int maxPromptTokens = Math.Max(1, (int)handle.ContextSize - options.MaxTokens - healingPrefix.Length);
-        if (promptTokens.Length > maxPromptTokens)
+        try
         {
-            promptTokens = promptTokens[^maxPromptTokens..];
+            int chunk = Math.Min((int)_context.NativeHandle.BatchSize, PrewarmChunkTokens);
+            var outcome = EvaluatePrompt(promptTokens, refreshLastToken: false, chunk, ct, out int reused, out _);
+            _logger.LogDebug(
+                "Prompt prewarm: {Outcome} in {Ms} ms (reuse {Reuse}/{Total}).",
+                outcome, sw.ElapsedMilliseconds, reused, promptTokens.Length);
         }
-        if (promptTokens.Length == 0) return string.Empty;
+        catch
+        {
+            ForgetPromptAfterFailure();
+            throw;
+        }
+    }
 
-        // The longest common token prefix with the previous prompt stays in memory and only the
-        // divergent tail is evaluated. A model that cannot shift is cleared and evaluated fully.
+    private enum PromptEvaluation
+    {
+        Ready,
+        Cancelled,
+        Failed,
+    }
+
+    /// <summary>
+    /// Brings memory to hold exactly <paramref name="promptTokens"/>. The longest common token
+    /// prefix with the remembered prompt stays in memory and only the divergent tail is evaluated.
+    /// A model that cannot shift, or a memory that refuses the cut, is cleared and evaluated fully.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="_lastPromptTokens"/> follows memory after every chunk, so a cancelled evaluation
+    /// leaves a valid prefix that the next request reuses instead of starting over.
+    /// </remarks>
+    /// <param name="refreshLastToken">
+    /// Evaluate the final token again even when it is already in memory, because a generation
+    /// needs its logits.
+    /// </param>
+    private PromptEvaluation EvaluatePrompt(
+        LLamaToken[] promptTokens, bool refreshLastToken, int chunkSize, CancellationToken ct,
+        out int reused, out int lastLogitsIndex)
+    {
+        var handle = _context.NativeHandle;
         int evalFrom = 0;
         if (_canReusePrefix)
         {
             int limit = Math.Min(_lastPromptTokens.Length, promptTokens.Length);
             while (evalFrom < limit && _lastPromptTokens[evalFrom] == promptTokens[evalFrom]) evalFrom++;
-            // At least the final token is evaluated again so the logits are fresh.
-            evalFrom = Math.Min(evalFrom, promptTokens.Length - 1);
+            if (refreshLastToken) evalFrom = Math.Min(evalFrom, promptTokens.Length - 1);
         }
-        if (evalFrom > 0) handle.MemorySequenceRemove(seq, evalFrom, -1);
-        else handle.MemoryClear(true);
-
-        var batch = new LLamaBatch();
-        int batchSize = (int)handle.BatchSize;
-        int lastLogitsIndex = 0;
-        for (int i = evalFrom; i < promptTokens.Length; i += batchSize)
+        if (evalFrom > 0 && !TryTrimMemory(evalFrom))
         {
-            if (ct.IsCancellationRequested)
-            {
-                // Memory now holds part of this prompt, which no longer matches the remembered one.
-                ForgetPrompt();
-                return string.Empty;
-            }
+            // Decoding the tail onto state that still holds the old tokens would corrupt it.
+            _logger.LogDebug("Memory refused to drop the tail after token {From}. Evaluating the prompt fully.", evalFrom);
+            evalFrom = 0;
+        }
+        if (evalFrom == 0) handle.MemoryClear(true);
+        _lastPromptTokens = promptTokens[..evalFrom];
+
+        reused = evalFrom;
+        lastLogitsIndex = 0;
+        var batch = new LLamaBatch();
+        for (int i = evalFrom; i < promptTokens.Length; i += chunkSize)
+        {
+            if (ct.IsCancellationRequested) return PromptEvaluation.Cancelled;
             batch.Clear();
-            int end = Math.Min(promptTokens.Length, i + batchSize);
+            int end = Math.Min(promptTokens.Length, i + chunkSize);
             for (int j = i; j < end; j++)
             {
-                batch.Add(promptTokens[j], j, seq, logits: j == promptTokens.Length - 1);
+                batch.Add(promptTokens[j], j, Sequence, logits: j == promptTokens.Length - 1);
             }
             var result = handle.Decode(batch);
             if (result != DecodeResult.Ok)
             {
                 _logger.LogWarning("Prompt decode failed with {Result}. Clearing memory.", result);
                 ForgetPrompt();
-                return string.Empty;
+                return PromptEvaluation.Failed;
             }
+            _lastPromptTokens = promptTokens[..end];
             lastLogitsIndex = end - i - 1;
         }
+        return PromptEvaluation.Ready;
+    }
+
+    /// <summary>
+    /// Drops every position from <paramref name="from"/> on and reports whether memory now ends
+    /// before it. LLamaSharp's <c>MemorySequenceRemove</c> discards the result of
+    /// <c>llama_memory_seq_rm</c>, which is false when a recurrent or hybrid memory refuses a
+    /// partial removal and leaves its state untouched, so the highest remaining position is the
+    /// check.
+    /// </summary>
+    private bool TryTrimMemory(int from)
+    {
+        var handle = _context.NativeHandle;
+        handle.MemorySequenceRemove(Sequence, from, -1);
+        return handle.MemorySequenceMaxPosition(Sequence).Value < from;
+    }
+
+    private string Generate(
+        LLamaToken[] promptTokens, byte[] healingPrefix, LlamaGenerationOptions options, CancellationToken ct)
+    {
+        if (promptTokens.Length == 0) return string.Empty;
+        try
+        {
+            return Decode(promptTokens, healingPrefix, options, ct);
+        }
+        catch
+        {
+            // Memory may now hold sampled or half-evaluated tokens that the remembered prompt
+            // does not describe, and reusing it would decode onto the wrong state.
+            ForgetPromptAfterFailure();
+            throw;
+        }
+    }
+
+    private string Decode(
+        LLamaToken[] promptTokens, byte[] healingPrefix, LlamaGenerationOptions options, CancellationToken ct)
+    {
+        var handle = _context.NativeHandle;
+        var sw = Stopwatch.StartNew();
+
+        var evaluation = EvaluatePrompt(
+            promptTokens, refreshLastToken: true, (int)handle.BatchSize, ct, out int evalFrom, out int lastLogitsIndex);
+        if (evaluation != PromptEvaluation.Ready) return string.Empty;
         long prefillMs = sw.ElapsedMilliseconds;
 
+        var batch = new LLamaBatch();
         var buffer = new TokenHealingBuffer(healingPrefix);
         var sampledIds = new List<int>(options.MaxTokens + healingPrefix.Length);
         var scratch = new byte[512];
+        var onPartial = options.OnPartial;
         string generatedText = string.Empty;
         int tokensGenerated = 0;
         int replayTokens = 0;
@@ -177,7 +324,7 @@ public sealed class LlamaRuntimeCore : IDisposable
             if (sampledIds.Count > 0)
             {
                 batch.Clear();
-                batch.Add((LLamaToken)sampledIds[^1], promptTokens.Length + sampledIds.Count - 1, seq, logits: true);
+                batch.Add((LLamaToken)sampledIds[^1], promptTokens.Length + sampledIds.Count - 1, Sequence, logits: true);
                 if (handle.Decode(batch) != DecodeResult.Ok) { stopReason = "accept_failed"; break; }
                 lastLogitsIndex = 0;
             }
@@ -216,7 +363,20 @@ public sealed class LlamaRuntimeCore : IDisposable
             }
             generatedText = buffer.Text;
             tokensGenerated++;
-            options.OnPartial?.Invoke(generatedText);
+            if (onPartial is not null)
+            {
+                // The callback is the caller's code running on the decode thread. Its failure must
+                // not abort the decode or skip the memory bookkeeping below.
+                try
+                {
+                    onPartial(generatedText);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Partial result callback failed. No further partials for this decode.");
+                    onPartial = null;
+                }
+            }
 
             if (DecodeStopPolicy.Verdict(
                     generatedText, tokensGenerated,
@@ -228,16 +388,9 @@ public sealed class LlamaRuntimeCore : IDisposable
             if (tokensGenerated >= options.MaxTokens) break;
         }
 
-        // Only the prompt stays in memory so the next request can reuse it.
-        if (_canReusePrefix)
-        {
-            handle.MemorySequenceRemove(seq, promptTokens.Length, -1);
-            _lastPromptTokens = promptTokens;
-        }
-        else
-        {
-            _lastPromptTokens = [];
-        }
+        // Only the prompt stays in memory so the next request can reuse it. A memory that refuses
+        // to drop the sampled tokens is forgotten, so the next request clears it.
+        _lastPromptTokens = _canReusePrefix && TryTrimMemory(promptTokens.Length) ? promptTokens : [];
 
         _logger.LogInformation(
             "Constrained decode: {Tokens} tokens (+{Replay} replayed) in {Ms} ms (prefill {Prefill} ms, reuse {Reuse}/{Total}), stop={Stop}.",
@@ -355,8 +508,25 @@ public sealed class LlamaRuntimeCore : IDisposable
 
     private void ForgetPrompt()
     {
-        _context.NativeHandle.MemoryClear(true);
         _lastPromptTokens = [];
+        _context.NativeHandle.MemoryClear(true);
+    }
+
+    /// <summary>
+    /// Forgets the prompt while an exception is already propagating. The remembered prompt is
+    /// dropped first, so even if clearing fails the next request clears memory before reuse, and
+    /// a clearing failure is logged rather than hiding the original exception.
+    /// </summary>
+    private void ForgetPromptAfterFailure()
+    {
+        try
+        {
+            ForgetPrompt();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Clearing memory after a failed decode also failed.");
+        }
     }
 
     public void Dispose()

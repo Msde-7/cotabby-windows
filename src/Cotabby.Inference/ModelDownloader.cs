@@ -50,6 +50,18 @@ public sealed class ModelDownloader
 
     private static string SegmentsPath(CotabbyModel model) => LocalPath(model) + ".segments";
 
+    /// <summary>
+    /// The ETag or Last-Modified of the response the .part file came from, sent as If-Range on a
+    /// resume so bytes of a re-uploaded file are never appended to bytes of the old one.
+    /// </summary>
+    private static string ValidatorPath(CotabbyModel model) => PartPath(model) + ".validator";
+
+    private static void DeletePart(CotabbyModel model)
+    {
+        File.Delete(PartPath(model));
+        File.Delete(ValidatorPath(model));
+    }
+
     private static void DeleteSegments(CotabbyModel model)
     {
         var path = SegmentsPath(model);
@@ -99,7 +111,7 @@ public sealed class ModelDownloader
     public static void DiscardPartial(CotabbyModel model)
     {
         if (IsDownloading(model)) return;
-        File.Delete(PartPath(model));
+        DeletePart(model);
         DeleteSegments(model);
     }
 
@@ -177,8 +189,10 @@ public sealed class ModelDownloader
             }
             catch (RangesRefusedException)
             {
-                // Parts kept from an earlier session cannot be finished without ranges, so start over.
-                _logger.LogWarning("The server for {Model} stopped answering range requests. Using one stream.", model.Id);
+                // Parts kept from an earlier session cannot be finished without ranges, or once the
+                // file they came from has changed, so start over.
+                _logger.LogWarning(
+                    "The server for {Model} stopped answering range requests or the file changed. Using one stream.", model.Id);
                 Directory.Delete(segmentsPath, recursive: true);
                 segmented = false;
             }
@@ -186,6 +200,7 @@ public sealed class ModelDownloader
         }
 
         Promote(partPath, finalPath, expected);
+        File.Delete(ValidatorPath(model));
         _logger.LogInformation("Model {Model} downloaded to {Path}.", model.Id, finalPath);
     }
 
@@ -215,12 +230,51 @@ public sealed class ModelDownloader
 
     private async Task DownloadSingleAsync(CotabbyModel model, long? expected, IProgress<Progress>? progress, CancellationToken ct)
     {
+        long resumeFrom = FileLength(PartPath(model));
+
+        var response = resumeFrom > 0
+            ? await GetAsync(model, resumeFrom, null, ReadValidator(model), ct).ConfigureAwait(false)
+            : await GetAsync(model, null, null, null, ct).ConfigureAwait(false);
+        if (resumeFrom > 0 && response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
+        {
+            long? serverLength = response.Content.Headers.ContentRange?.Length;
+            response.Dispose();
+            if (IsCompletePartial(resumeFrom, serverLength, expected)) return;
+
+            // The kept bytes run to or past the end of the file the server has now, while the file
+            // is not complete, so they belong to another version of it. Resuming can never finish.
+            _logger.LogWarning(
+                "The server for {Model} cannot resume at byte {From}. Starting the download over.", model.Id, resumeFrom);
+            DeletePart(model);
+            resumeFrom = 0;
+            response = await GetAsync(model, null, null, null, ct).ConfigureAwait(false);
+        }
+
+        using (response)
+        {
+            await ReceiveSingleAsync(model, response, resumeFrom, expected, progress, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Whether a partial the server answered with 416 is the whole file. The server's
+    /// <c>Content-Range: bytes */length</c> decides when it sends one. Otherwise the catalog size
+    /// does, and without either the partial is assumed whole and left to the GGUF check.
+    /// </summary>
+    private static bool IsCompletePartial(long kept, long? serverLength, long? expected) =>
+        serverLength is { } length ? kept == length : expected is not { } size || kept >= size;
+
+    private async Task ReceiveSingleAsync(
+        CotabbyModel model, HttpResponseMessage response, long resumeFrom, long? expected,
+        IProgress<Progress>? progress, CancellationToken ct)
+    {
         var partPath = PartPath(model);
-        long resumeFrom = FileLength(partPath);
-
-        using var response = await GetAsync(model, resumeFrom > 0 ? resumeFrom : null, null, ct).ConfigureAwait(false);
-        if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable) return;
-
+        if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
+        {
+            // Only a request without a range gets here, so the server will not send the file at all.
+            // Retrying cannot help, so this is not an IOException.
+            throw new InvalidDataException("The server refused to send the model file.");
+        }
         response.EnsureSuccessStatusCode();
         // A server that ignores the range sends the whole file again, so the partial is discarded.
         bool resumed = response.StatusCode == HttpStatusCode.PartialContent;
@@ -232,10 +286,12 @@ public sealed class ModelDownloader
         long? total = response.Content.Headers.ContentLength + resumeFrom;
         if (total is { } offered && expected is { } size && offered != size)
         {
-            File.Delete(partPath);
+            DeletePart(model);
             throw new InvalidDataException(
                 $"The server is offering {offered} bytes; expected {size}. The model file may have changed.");
         }
+        // A fresh start records which version of the file the partial holds.
+        if (!resumed) WriteValidator(model, ValidatorOf(response));
 
         var tracker = new DownloadProgressTracker(resumeFrom, total ?? expected, progress);
         await using (var source = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false))
@@ -259,7 +315,8 @@ public sealed class ModelDownloader
         public long Size => End - Start + 1;
     }
 
-    private sealed record SegmentPlan(long Total, List<Segment> Segments);
+    /// <summary>The segment layout, and the validator of the file version the segments come from.</summary>
+    private sealed record SegmentPlan(long Total, List<Segment> Segments, string? Validator = null);
 
     private static string SegmentFile(CotabbyModel model, int index) => Path.Combine(SegmentsPath(model), index.ToString());
 
@@ -301,12 +358,14 @@ public sealed class ModelDownloader
     private async Task<bool> TryStartSegmentsAsync(CotabbyModel model, long total, IProgress<Progress>? progress, CancellationToken ct)
     {
         var plan = Plan(total, Connections);
-        var first = await GetAsync(model, 0, plan.Segments[0].End, ct).ConfigureAwait(false);
+        var first = await GetAsync(model, 0, plan.Segments[0].End, null, ct).ConfigureAwait(false);
         if (!IsRange(first, 0, plan.Segments[0].End, total))
         {
             first.Dispose();
             return false;
         }
+        // Every other segment, now and after a pause, must come from this same version of the file.
+        plan = plan with { Validator = ValidatorOf(first) };
 
         try
         {
@@ -358,7 +417,7 @@ public sealed class ModelDownloader
                 if (response is null || have > 0)
                 {
                     response?.Dispose();
-                    response = await GetAsync(model, from, segment.End, stop.Token).ConfigureAwait(false);
+                    response = await GetAsync(model, from, segment.End, plan.Validator, stop.Token).ConfigureAwait(false);
                 }
                 if (!IsRange(response, from, segment.End, plan.Total))
                 {
@@ -453,11 +512,52 @@ public sealed class ModelDownloader
 
     // ---------- Shared ----------
 
-    private async Task<HttpResponseMessage> GetAsync(CotabbyModel model, long? from, long? to, CancellationToken ct)
+    /// <summary>
+    /// Sends a GET, for a range when <paramref name="from"/> is set. With a
+    /// <paramref name="validator"/> the range is conditional: a server whose file no longer
+    /// matches it answers with the whole new file instead of a slice to splice onto the old one.
+    /// </summary>
+    private async Task<HttpResponseMessage> GetAsync(
+        CotabbyModel model, long? from, long? to, string? validator, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, model.DownloadUrl);
-        if (from is not null) request.Headers.Range = new RangeHeaderValue(from, to);
+        if (from is not null)
+        {
+            request.Headers.Range = new RangeHeaderValue(from, to);
+            if (validator is not null && RangeConditionHeaderValue.TryParse(validator, out var condition))
+            {
+                request.Headers.IfRange = condition;
+            }
+        }
         return await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The strong ETag of a response, or else its Last-Modified date. If-Range only accepts a
+    /// strong validator, so a weak ETag is never used.
+    /// </summary>
+    private static string? ValidatorOf(HttpResponseMessage response) =>
+        response.Headers.ETag is { IsWeak: false } tag ? tag.ToString()
+        : response.Content.Headers.LastModified is { } modified ? modified.ToString("R")
+        : null;
+
+    private static string? ReadValidator(CotabbyModel model)
+    {
+        try
+        {
+            var path = ValidatorPath(model);
+            return File.Exists(path) && File.ReadAllText(path).Trim() is { Length: > 0 } validator ? validator : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static void WriteValidator(CotabbyModel model, string? validator)
+    {
+        if (validator is null) File.Delete(ValidatorPath(model));
+        else File.WriteAllText(ValidatorPath(model), validator);
     }
 
     private static FileStream OpenForAppend(string path, bool append) => new(

@@ -47,6 +47,10 @@ public class OpenAICompatibleApiClientTests : IDisposable
         { "event: completion", Mode.Completions, SseEvent.Ignore },
         { "id: 42", Mode.Completions, SseEvent.Ignore },
         { "retry: 1000", Mode.Completions, SseEvent.Ignore },
+        // An empty data line is a keep-alive some proxies send, not a malformed chunk.
+        { "data:", Mode.Completions, SseEvent.Ignore },
+        { "data: ", Mode.ChatCompletions, SseEvent.Ignore },
+        { "data:\r", Mode.Completions, SseEvent.Ignore },
         // The terminator is recognized with or without the space, the prefix or a CRLF remnant.
         { "data: [DONE]", Mode.Completions, SseEvent.Done },
         { "data:[DONE]", Mode.ChatCompletions, SseEvent.Done },
