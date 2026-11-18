@@ -31,6 +31,11 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
     /// <summary>How often a visible suggestion checks that the caret is still where it was offered.</summary>
     private const int SessionWatchMs = 250;
 
+    /// <summary>How often it checks once no key has come for <see cref="SessionWatchIdleAfter"/>.</summary>
+    private const int SessionWatchIdleMs = 1000;
+
+    private static readonly TimeSpan SessionWatchIdleAfter = TimeSpan.FromSeconds(3);
+
     /// <summary>How many characters the host may still owe when the field is compared with what was typed.</summary>
     private const int PublishLagChars = 8;
 
@@ -126,6 +131,9 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
     private int _expectedDelta;
     private bool _publishAwaitsChange;
     private long _keySequence;
+
+    /// <summary>When the last key went down, as a timestamp of the clock. Written on the hook thread.</summary>
+    private long _lastKeyAt;
     private int _focusedPid;
 
     /// <summary>What the hook thread may accept right now.</summary>
@@ -300,6 +308,16 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
     }
 
     private double Now() => _clock.GetTimestamp() / (double)_clock.TimestampFrequency;
+
+    /// <summary>Logs the failure of work nothing waits for, which would otherwise go unseen.</summary>
+    private void LogFailure(Task task, string what)
+    {
+        if (task.IsCompletedSuccessfully) return;
+        task.ContinueWith(
+            (failed, state) => _logger.LogWarning(failed.Exception?.InnerException ?? failed.Exception, "{What} failed.", state),
+            what, CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
 
     private void Post(Action action)
     {

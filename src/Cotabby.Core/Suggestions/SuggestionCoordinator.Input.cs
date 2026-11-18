@@ -41,6 +41,7 @@ public sealed partial class SuggestionCoordinator
     {
         var ev = args.Event;
         if (!ev.IsKeyDown || args.Suppress) return;
+        Volatile.Write(ref _lastKeyAt, _clock.GetTimestamp());
 
         if (InlineCaptureActive?.Invoke() == true)
         {
@@ -215,7 +216,7 @@ public sealed partial class SuggestionCoordinator
                     _streamingRequestId = null;
                     _expectedPreceding += ev.Character;
                     _overlay.Update(next.VisibleText);
-                    _ = ReanchorAsync(next.RequestId, HostPublishPollMs);
+                    LogFailure(ReanchorAsync(next.RequestId, HostPublishPollMs), "Moving the suggestion to the caret");
                     PrefetchContinuation(next);
                     return;
                 case SuggestionSessionReconciler.Outcome.Advance:

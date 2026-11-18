@@ -26,7 +26,7 @@ public sealed partial class SuggestionCoordinator
             new PublishWait(_publishBaseline, _expectedDelta, typed, requiresTextChange, _publishAwaitsChange),
             _keySequence, _clock.GetTimestamp());
         // The debounce runs alongside the wait for the host to show the key, not after it.
-        _ = _work.Submit(ct => PredictAsync(work, ct), TimeSpan.Zero);
+        LogFailure(_work.Submit(ct => PredictAsync(work, ct), TimeSpan.Zero), "Request " + work.RequestId);
     }
 
     /// <summary>What one prediction was asked with, taken on the UI context when it was scheduled.</summary>

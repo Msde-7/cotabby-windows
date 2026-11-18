@@ -79,28 +79,58 @@ public sealed partial class SuggestionCoordinator
     /// </summary>
     private async Task WatchSessionAsync(string requestId)
     {
+        bool failedBefore = false;
+        long shownAt = _clock.GetTimestamp();
         while (!_disposed)
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(SessionWatchMs), _clock).ConfigureAwait(false);
-            var live = _focus.Refresh();
-            var watching = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            Post(() =>
+            await Task.Delay(SessionWatchInterval(shownAt), _clock).ConfigureAwait(false);
+            try
             {
-                bool current = _session?.RequestId == requestId;
-                if (current && live?.HostIsPredicting == true)
+                var live = _focus.Refresh();
+                var watching = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                Post(() =>
                 {
-                    CancelSession("the app shows its own suggestion");
-                    current = false;
-                }
-                else if (current && !IsStillAtOffer(live))
-                {
-                    CancelSession("the caret left the suggestion");
-                    current = false;
-                }
-                watching.SetResult(current);
-            });
-            if (!await watching.Task.ConfigureAwait(false)) return;
+                    // A check that throws would otherwise leave this loop waiting forever.
+                    try
+                    {
+                        bool current = _session?.RequestId == requestId;
+                        if (current && live?.HostIsPredicting == true)
+                        {
+                            CancelSession("the app shows its own suggestion");
+                            current = false;
+                        }
+                        else if (current && !IsStillAtOffer(live))
+                        {
+                            CancelSession("the caret left the suggestion");
+                            current = false;
+                        }
+                        watching.SetResult(current);
+                    }
+                    catch (Exception ex)
+                    {
+                        watching.SetException(ex);
+                    }
+                });
+                if (!await watching.Task.ConfigureAwait(false)) return;
+            }
+            catch (Exception ex)
+            {
+                // The next check runs as usual, and ends the watch once the suggestion is gone.
+                if (!failedBefore) _logger.LogWarning(ex, "Checking suggestion {ReqId} against the field failed.", requestId);
+                failedBefore = true;
+            }
         }
+    }
+
+    /// <summary>
+    /// Every read of the field costs the host a round trip, so a suggestion nobody has typed near
+    /// for a while is checked less often. A key, or a new suggestion, brings the checks back.
+    /// </summary>
+    private TimeSpan SessionWatchInterval(long shownAt)
+    {
+        long active = Math.Max(shownAt, Volatile.Read(ref _lastKeyAt));
+        return TimeSpan.FromMilliseconds(
+            _clock.GetElapsedTime(active) < SessionWatchIdleAfter ? SessionWatchMs : SessionWatchIdleMs);
     }
 
     private bool IsStillAtOffer(FocusedField? live) =>

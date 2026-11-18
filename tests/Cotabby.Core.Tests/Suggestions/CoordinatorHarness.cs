@@ -3,7 +3,6 @@ using Cotabby.Core.Context;
 using Cotabby.Core.Input;
 using Cotabby.Core.Spelling;
 using Cotabby.Core.Suggestions;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Cotabby.Core.Tests.Suggestions;
 
@@ -20,6 +19,7 @@ public abstract class CoordinatorHarness : IAsyncDisposable
     private protected FakeFocus Focus { get; } = new();
     private protected ScriptedEngine Engine { get; } = new();
     private protected RecordingOverlay Overlay { get; } = new();
+    private protected RecordingLogger<SuggestionCoordinator> Log { get; } = new();
     protected SuggestionCoordinator Coordinator { get; }
     protected bool BatterySaver { get; set; }
 
@@ -29,7 +29,7 @@ public abstract class CoordinatorHarness : IAsyncDisposable
         Coordinator = new SuggestionCoordinator(
             Hook, Focus, Engine, Overlay, Focus,
             _work,
-            NullLogger<SuggestionCoordinator>.Instance, _pump,
+            Log, _pump,
             batterySaverOn: () => BatterySaver,
             clock: clock,
             typos: typos,
@@ -73,6 +73,9 @@ public abstract class CoordinatorHarness : IAsyncDisposable
         await Settled();
         Assert.Equal("", Overlay.Text);
     }
+
+    /// <summary>Exceptions that escaped work posted to the UI context.</summary>
+    protected IReadOnlyCollection<Exception> UiFailures => _pump.Failures;
 
     /// <summary>Completes once the UI context has handled every key pressed and everything posted so far.</summary>
     protected Task KeysHandled() => _pump.Drained();

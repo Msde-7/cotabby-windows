@@ -107,7 +107,7 @@ public sealed partial class SuggestionCoordinator
         double pause = _cadence.RemainingDelay(identity, field.PrecedingText, Now());
         if (pause > 0)
         {
-            _ = RetryPartialAsync(stream, partial, pause);
+            LogFailure(RetryPartialAsync(stream, partial, pause), "Showing a streamed partial after the pause");
             return;
         }
 

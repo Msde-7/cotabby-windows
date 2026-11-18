@@ -5,6 +5,7 @@ using Cotabby.Core.Input;
 using Cotabby.Core.Insertion;
 using Cotabby.Core.Overlay;
 using Cotabby.Core.Suggestions;
+using Microsoft.Extensions.Logging;
 
 namespace Cotabby.Core.Tests.Suggestions;
 
@@ -95,10 +96,14 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
     /// <summary>The font the host reports, which only a read for its text layout carries.</summary>
     public string? HostFontName { get; set; }
 
+    /// <summary>When set, a read for the host's text layout throws it, as a host that stopped answering can.</summary>
+    public Exception? HostTextReadFailure { get; set; }
+
     public FocusedField? Refresh(bool readHostText = false)
     {
         Interlocked.Increment(ref _refreshes);
         if (!readHostText) return Current;
+        if (HostTextReadFailure is { } failure) throw failure;
         Interlocked.Increment(ref _hostTextReads);
         return HostFontName is { } font ? Current! with { HostFontName = font } : Current;
     }
@@ -321,7 +326,32 @@ internal sealed class RecordingOverlay : IOverlayPresenter
         lock (_gate) _text = text;
     }
 
-    public void Hide() => Update("");
+    /// <summary>When set, the next Hide throws it after clearing the text.</summary>
+    public Exception? HideFailure { get; set; }
+
+    public void Hide()
+    {
+        Update("");
+        if (HideFailure is { } failure)
+        {
+            HideFailure = null;
+            throw failure;
+        }
+    }
+}
+
+/// <summary>Keeps every log entry for the test to look at.</summary>
+internal sealed class RecordingLogger<T> : ILogger<T>
+{
+    public ConcurrentQueue<(LogLevel Level, Exception? Exception, string Message)> Entries { get; } = new();
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    public void Log<TState>(
+        LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+        Entries.Enqueue((logLevel, exception, formatter(state, exception)));
 }
 
 /// <summary>Runs posted work in order on one dedicated thread, like a UI dispatcher.</summary>
@@ -335,10 +365,24 @@ internal sealed class PumpContext : SynchronizationContext, IDisposable
         new Thread(() =>
         {
             SetSynchronizationContext(this);
-            foreach (var (callback, state) in _queue.GetConsumingEnumerable()) callback(state);
+            foreach (var (callback, state) in _queue.GetConsumingEnumerable())
+            {
+                // The app's dispatcher logs a failed callback and carries on, so this does too.
+                try
+                {
+                    callback(state);
+                }
+                catch (Exception ex)
+                {
+                    Failures.Enqueue(ex);
+                }
+            }
         })
         { IsBackground = true }.Start();
     }
+
+    /// <summary>Exceptions that escaped posted callbacks.</summary>
+    public ConcurrentQueue<Exception> Failures { get; } = new();
 
     /// <summary>How many callbacks were posted so far.</summary>
     public long Posted => Interlocked.Read(ref _posted);
@@ -370,4 +414,13 @@ internal sealed class ManualClock : TimeProvider
     public override long GetTimestamp() => Interlocked.Read(ref _milliseconds);
 
     public void Advance(TimeSpan by) => Interlocked.Add(ref _milliseconds, (long)by.TotalMilliseconds);
+
+    /// <summary>Every delay and timer asked of this clock, in order. They still run on real time.</summary>
+    public ConcurrentQueue<TimeSpan> Timers { get; } = new();
+
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+    {
+        Timers.Enqueue(dueTime);
+        return System.CreateTimer(callback, state, dueTime, period);
+    }
 }

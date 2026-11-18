@@ -233,6 +233,33 @@ public sealed class SuggestionCoordinatorTests : CoordinatorHarness
     }
 
     [Fact]
+    public async Task AFailureWhileWatchingTheSuggestion_IsLoggedOnTheWatch()
+    {
+        Type("hello");
+        await Shown(" world again");
+        var failure = new InvalidOperationException("the overlay window is gone");
+        Overlay.HideFailure = failure;
+
+        Focus.Replace(Focus.Current! with { CaretOffset = 2 });
+
+        await Eventually(() => Log.Entries.Any(e => e.Exception == failure), "the failure is logged");
+        Assert.Empty(UiFailures);
+    }
+
+    [Fact]
+    public async Task AFailureMovingTheSuggestionToTheCaret_IsLogged()
+    {
+        Type("hello");
+        await Shown(" world again");
+        var failure = new InvalidOperationException("the host stopped answering");
+        Focus.HostTextReadFailure = failure;
+
+        Type(" ");
+
+        await Eventually(() => Log.Entries.Any(e => e.Exception == failure), "the failure is logged");
+    }
+
+    [Fact]
     public async Task AcceptAfterTheCaretMoved_InsertsNothing()
     {
         Type("hello");
