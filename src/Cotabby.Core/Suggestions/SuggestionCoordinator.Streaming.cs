@@ -66,6 +66,10 @@ public sealed partial class SuggestionCoordinator
             {
                 return;
             }
+            // Upstream trims the unfinished word from the checked text, where the shown count is
+            // measured. The trim above keeps the checks off a fragment, but the leading space they
+            // decide can shift the raw text by one, so the checked text is trimmed again.
+            completion = Trimmed(completion, GraphemeString.CountOf(rendered));
             if (!StreamedGhostTextPolicy.IsRenderableExtension(completion.Predicted, rendered.Length > 0 ? rendered : null)) return;
             Post(() => ShowPartial(stream, partial, completion));
         }
@@ -73,6 +77,14 @@ public sealed partial class SuggestionCoordinator
         {
             _logger.LogDebug(ex, "A streamed partial of {ReqId} was skipped.", stream.RequestId);
         }
+    }
+
+    private static FinalCompletion Trimmed(FinalCompletion completion, int shownCount)
+    {
+        string predicted = StreamedGhostTextPolicy.CompletedBufferedPrediction(completion.Predicted, shownCount);
+        if (predicted.Length == completion.Predicted.Length) return completion;
+        return new FinalCompletion(
+            completion.Visible.Length <= predicted.Length ? completion.Visible : predicted, predicted);
     }
 
     /// <summary>

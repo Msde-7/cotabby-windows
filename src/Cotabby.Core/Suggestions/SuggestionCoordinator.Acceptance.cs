@@ -174,8 +174,10 @@ public sealed partial class SuggestionCoordinator
     /// it is not cancelled, because a cancelled edit would leave the word deleted. An offered fix is
     /// only applied in the field it was offered in, still holding the text it was offered for.
     /// </summary>
+    /// <param name="keySequence">For an automatic fix, the key it was decided after. A later key skips it.</param>
     private async Task ApplyCorrectionAsync(
-        TypoCorrection correction, bool requiresTrailingSpace, (FocusedField Field, string Preceding)? offered = null)
+        TypoCorrection correction, bool requiresTrailingSpace, (FocusedField Field, string Preceding)? offered = null,
+        long? keySequence = null)
     {
         try
         {
@@ -188,8 +190,14 @@ public sealed partial class SuggestionCoordinator
             var plan = TypoCorrectionReplacementPlanner.Plan(
                 field.PrecedingText, correction.Word, correction.CorrectedWord, requiresTrailingSpace);
             if (plan is not { } fix) return;
-            await _inserter.ReplaceAsync(field, fix.DeletingUtf16Count, fix.ReplacementText, CancellationToken.None)
-                .ConfigureAwait(false);
+            // The user kept typing after the word: deleting it now would take their new keys with it.
+            if (keySequence is { } decidedAt && Interlocked.Read(ref _keySequence) != decidedAt) return;
+            if (!await _inserter.ReplaceAsync(field, fix.DeletingUtf16Count, fix.ReplacementText, CancellationToken.None)
+                    .ConfigureAwait(false))
+            {
+                _logger.LogInformation("The typo fix could not be applied.");
+                return;
+            }
             // The edit publishes asynchronously. Predicting before it lands could offer the same fix again.
             Post(() =>
             {

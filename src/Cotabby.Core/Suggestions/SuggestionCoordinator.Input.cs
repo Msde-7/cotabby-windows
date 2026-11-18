@@ -184,6 +184,9 @@ public sealed partial class SuggestionCoordinator
                 case SuggestionSessionReconciler.Outcome.Ignore:
                     return;
                 case SuggestionSessionReconciler.Outcome.Advance when result.Next is { VisibleText.Length: > 0 } next:
+                    // Typing freezes a streamed suggestion, so the rest of its answer could only be
+                    // dropped. Its generation would hold the engine for nothing.
+                    if (IsStreaming(session.RequestId)) _work.Cancel();
                     _session = next;
                     _streamingRequestId = null;
                     _expectedPreceding += ev.Character;
@@ -224,7 +227,8 @@ public sealed partial class SuggestionCoordinator
 
     private void TrackForHostPublish(KeyboardEvent ev)
     {
-        _keySequence++;
+        // Read off the UI context before an automatic typo fix.
+        Interlocked.Increment(ref _keySequence);
         if (ev.HasNonShiftModifier || ev.Kind is not (KeyKind.Character or KeyKind.Backspace))
         {
             // Enter, navigation and shortcuts change the text in ways a count cannot predict, so the

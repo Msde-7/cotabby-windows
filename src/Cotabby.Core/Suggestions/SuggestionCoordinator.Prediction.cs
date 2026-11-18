@@ -123,7 +123,14 @@ public sealed partial class SuggestionCoordinator
                 // An endpoint is billed per request, so it gets no lookahead.
                 if (settings.PredictAheadWhileTyping && !settings.UsesEndpoint)
                 {
-                    prediction = _prediction = new TypingPrediction(field, sequence, ct);
+                    // Set from the pool. Each new request clears it on the UI context first, so a
+                    // request cancelled meanwhile must not put its own back over the newer one's.
+                    var created = new TypingPrediction(field, sequence, ct);
+                    if (Interlocked.CompareExchange(ref _prediction, created, null) is null)
+                    {
+                        if (ct.IsCancellationRequested) Interlocked.CompareExchange(ref _prediction, null, created);
+                        else prediction = created;
+                    }
                 }
                 if (settings.StreamWhileGenerating) stream = new PartialStream(requestId, field, settings, sequence, stopwatch, ct);
                 var predicting = prediction;
@@ -284,8 +291,8 @@ public sealed partial class SuggestionCoordinator
                 _lastAutoFixedText = preceding;
                 ct.ThrowIfCancellationRequested();
                 await ApplyCorrectionAsync(
-                    new TypoCorrection(decision.Word!, decision.CorrectedWord!), requiresTrailingSpace: true)
-                    .ConfigureAwait(false);
+                    new TypoCorrection(decision.Word!, decision.CorrectedWord!), requiresTrailingSpace: true,
+                    keySequence: sequence).ConfigureAwait(false);
                 return true;
 
             case TypoGateAction.OfferCorrection:

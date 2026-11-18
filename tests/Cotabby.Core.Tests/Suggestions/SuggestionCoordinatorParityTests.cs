@@ -25,6 +25,23 @@ public sealed class SuggestionCoordinatorParityTests : CoordinatorHarness
     }
 
     [Fact]
+    public async Task Streaming_TypingThroughAPartialStopsItsGeneration()
+    {
+        Coordinator.Settings = SuggestionSettings.Default with { StreamWhileGenerating = true, PredictAheadWhileTyping = false };
+        Engine.Hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Engine.Completion = r => r.Prefix == "hello" ? " world again" : "";
+
+        Type("hello");
+        await Eventually(() => Overlay.Text.TrimEnd() == " world", "the partial shows");
+
+        // The suggestion freezes at what was streamed, so the rest of the answer could only be dropped.
+        Type(" ");
+
+        await Eventually(() => Engine.Cancelled.Contains("hello"), "the streamed generation is cancelled");
+        Assert.StartsWith("world", Overlay.Text);
+    }
+
+    [Fact]
     public async Task Streaming_AcceptingAPartialFreezesItAndInsertsWhatShows()
     {
         Coordinator.Settings = SuggestionSettings.Default with { StreamWhileGenerating = true, PredictAheadWhileTyping = false };
