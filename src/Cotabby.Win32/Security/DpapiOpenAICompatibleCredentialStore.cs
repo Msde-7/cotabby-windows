@@ -1,7 +1,8 @@
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
-using Cotabby.Inference.OpenAICompatible;
+using Cotabby.Core.Suggestions;
+using Cotabby.Core.Support;
 
 namespace Cotabby.Win32.Security;
 

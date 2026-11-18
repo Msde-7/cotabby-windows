@@ -24,7 +24,6 @@ using Cotabby.Win32.Security;
 using Cotabby.Win32.Spelling;
 using Cotabby.Win32.Text;
 using Cotabby.Win32.Visual;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
 
@@ -42,8 +41,11 @@ public sealed class AppHost : IAsyncDisposable
     /// <summary>Debug logs include typed and suggested text, so they are opt-in.</summary>
     private static readonly bool DebugLogging = Environment.GetEnvironmentVariable("COTABBY_DEBUG_LOG") == "1";
 
-    private readonly ServiceProvider _services;
-    private readonly IKeyboardHook _hook;
+    private readonly FileLoggerProvider _fileLog;
+    private readonly ILoggerFactory _loggers;
+    private readonly HttpClient _http;
+    private readonly KeyboardHook _hook;
+    private readonly UiaFocusTracker _focus;
     private readonly SuggestionEngineRouter _router;
     private readonly SynchronizationContext _ui;
     private readonly ILogger _logger;
@@ -105,34 +107,45 @@ public sealed class AppHost : IAsyncDisposable
         _macroPreview = macroPreview;
         _saveTimer = new Timer(_ => _ui.Post(_ => SavePending(), null));
 
-        _services = BuildServices();
+        _fileLog = new FileLoggerProvider(LogPath);
+        _loggers = LoggerFactory.Create(b =>
+        {
+            b.SetMinimumLevel(DebugLogging ? LogLevel.Debug : LogLevel.Information);
+            b.AddDebug();
+            b.AddProvider(_fileLog);
+        });
+        var loggers = _loggers;
+        // GGUF downloads are large, so the timeout is generous.
+        _http = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "Cotabby-Windows/0.2 (+https://github.com/Msde-7/cotabby-windows)");
 
-        SettingsStore = _services.GetRequiredService<SettingsStore>();
+        SettingsStore = new SettingsStore();
         Settings = SettingsStore.Load();
         // The Run key is written only where it disagrees with the setting, so running another copy,
         // such as a dev build, does not repoint Open at Login to it. Defaults that stand in for a
         // file that could not be read are not the user's choice, so they leave the key alone.
         _launchAtLoginApplied = SettingsStore.CouldNotRead ? Settings.LaunchAtLogin : LaunchAtLogin.IsRegistered();
-        Runtime = _services.GetRequiredService<LlamaRuntimeManager>();
-        Downloader = _services.GetRequiredService<ModelDownloader>();
-        EndpointClient = _services.GetRequiredService<OpenAICompatibleApiClient>();
-        EndpointCredentials = _services.GetRequiredService<IOpenAICompatibleCredentialStore>();
+        Runtime = new LlamaRuntimeManager(loggers.CreateLogger<LlamaRuntimeManager>(), loggers);
+        Downloader = new ModelDownloader(_http, loggers.CreateLogger<ModelDownloader>());
+        EndpointClient = new OpenAICompatibleApiClient();
+        EndpointCredentials = new DpapiOpenAICompatibleCredentialStore();
 
-        var loggers = _services.GetRequiredService<ILoggerFactory>();
         _spelling = new SymSpellCorrector(logger: loggers.CreateLogger<SymSpellCorrector>());
         _logger = loggers.CreateLogger("Cotabby.App");
         if (SettingsStore.CouldNotRead)
         {
             _logger.LogWarning("{Path} could not be read. Running on the defaults without saving over it.", SettingsStore.Path);
         }
-        _hook = _services.GetRequiredService<IKeyboardHook>();
-        var focus = _services.GetRequiredService<IFocusTracker>();
-        var inserter = _services.GetRequiredService<ITextInserter>();
+        _hook = new KeyboardHook(loggers.CreateLogger<KeyboardHook>());
+        var focus = _focus = new UiaFocusTracker(loggers.CreateLogger<UiaFocusTracker>());
+        var clipboard = new ClipboardTextReader();
+        var inserter = new SendInputTextInserter(loggers.CreateLogger<SendInputTextInserter>(), clipboard, focus);
 
         _endpoint = new OpenAICompatibleSuggestionEngine(
             EndpointClient, EndpointCredentials, Settings.EndpointSettings,
             loggers.CreateLogger<OpenAICompatibleSuggestionEngine>());
-        var llama = _services.GetRequiredService<LlamaSuggestionEngine>();
+        var llama = new LlamaSuggestionEngine(Runtime, loggers.CreateLogger<LlamaSuggestionEngine>());
         _router = new SuggestionEngineRouter(llama, _endpoint)
         {
             Completed = RecordRequest,
@@ -161,7 +174,7 @@ public sealed class AppHost : IAsyncDisposable
             batterySaverOn: () => _batterySaver.IsOn,
             typos: new TypoCorrectionAdvisor(
                 _spelling, new SpellingLanguageResolver(), new WindowsSpellChecker(_spelling)),
-            clipboard: _services.GetRequiredService<ClipboardTextReader>());
+            clipboard: clipboard);
         _batterySaver.Changed += OnBatterySaverChanged;
         Coordinator.InlineCaptureActive = () => EmojiPicker.IsCapturing || _macros.IsCapturing;
         Coordinator.History = TypingHistory;
@@ -181,36 +194,6 @@ public sealed class AppHost : IAsyncDisposable
         Coordinator.Metrics.Restore(Settings.WordsAccepted);
 
         ApplySettings();
-    }
-
-    private static ServiceProvider BuildServices()
-    {
-        var sc = new ServiceCollection();
-        sc.AddLogging(b =>
-        {
-            b.SetMinimumLevel(DebugLogging ? LogLevel.Debug : LogLevel.Information);
-            b.AddDebug();
-            b.AddProvider(new FileLoggerProvider(LogPath));
-        });
-        sc.AddSingleton(_ =>
-        {
-            // GGUF downloads are large, so the timeout is generous.
-            var http = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
-            http.DefaultRequestHeaders.UserAgent.ParseAdd(
-                "Cotabby-Windows/0.2 (+https://github.com/Msde-7/cotabby-windows)");
-            return http;
-        });
-        sc.AddSingleton<SettingsStore>();
-        sc.AddSingleton<IFocusTracker, UiaFocusTracker>();
-        sc.AddSingleton<IKeyboardHook, KeyboardHook>();
-        sc.AddSingleton<ClipboardTextReader>();
-        sc.AddSingleton<ITextInserter, SendInputTextInserter>();
-        sc.AddSingleton<LlamaRuntimeManager>();
-        sc.AddSingleton<ModelDownloader>();
-        sc.AddSingleton<LlamaSuggestionEngine>();
-        sc.AddSingleton<OpenAICompatibleApiClient>(_ => new OpenAICompatibleApiClient());
-        sc.AddSingleton<IOpenAICompatibleCredentialStore>(_ => new DpapiOpenAICompatibleCredentialStore());
-        return sc.BuildServiceProvider();
     }
 
     /// <summary>Pushes <see cref="Settings"/> into the running app and saves them.</summary>
@@ -571,8 +554,15 @@ public sealed class AppHost : IAsyncDisposable
         Step("typing history", TypingHistory.Flush);
         await StepAsync("model runtime", () => Runtime.DisposeAsync().AsTask()).ConfigureAwait(false);
         Step("endpoint client", EndpointClient.Dispose);
+        Step("keyboard hook", _hook.Dispose);
+        Step("focus tracker", _focus.Dispose);
+        Step("http client", _http.Dispose);
         // Last, because it closes the log.
-        await StepAsync("services", () => _services.DisposeAsync().AsTask()).ConfigureAwait(false);
+        Step("logging", () =>
+        {
+            _loggers.Dispose();
+            _fileLog.Dispose();
+        });
 
         void Step(string name, Action step)
         {

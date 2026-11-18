@@ -5,8 +5,7 @@ namespace Cotabby.Core.Support;
 /// disk and the temporary file is then moved over the old one. A crash or power cut mid-write
 /// leaves either the old file or the new one, never a torn mix that reads back as empty.
 /// </summary>
-/// <remarks>The same helper as Cotabby.Win32's, which Core cannot reference.</remarks>
-internal static class AtomicFile
+public static class AtomicFile
 {
     public static void WriteAllBytes(string path, ReadOnlySpan<byte> bytes)
     {
@@ -15,6 +14,8 @@ internal static class AtomicFile
         using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
         {
             stream.Write(bytes);
+            // The bytes reach the disk before the rename. Otherwise a power loss right after the
+            // move can leave the name pointing at a file whose contents were never written.
             stream.Flush(flushToDisk: true);
         }
         File.Move(temporary, path, overwrite: true);

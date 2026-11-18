@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Cotabby.Core.Support;
 
 namespace Cotabby.Core.History;
 
@@ -83,17 +84,7 @@ public sealed class TypingHistoryVault(string filePath, ITypingHistoryKeyStore k
             aes.Encrypt(nonce, plain, sealedBytes.AsSpan(NonceSize, plain.Length), sealedBytes.AsSpan(NonceSize + plain.Length));
         }
 
-        if (Path.GetDirectoryName(filePath) is { Length: > 0 } directory) Directory.CreateDirectory(directory);
-        string temporary = filePath + ".tmp";
-        // The bytes reach the disk before the rename. Otherwise a power loss right after the move
-        // can leave the archive name pointing at a file whose contents were never written.
-        using (var file = new FileStream(
-            temporary, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 4096, FileOptions.WriteThrough))
-        {
-            file.Write(sealedBytes);
-            file.Flush(flushToDisk: true);
-        }
-        File.Move(temporary, filePath, overwrite: true);
+        AtomicFile.WriteAllBytes(filePath, sealedBytes);
     }
 
     /// <summary>

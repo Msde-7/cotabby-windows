@@ -12,7 +12,6 @@ using Cotabby.Core.Spelling;
 using Cotabby.Core.Suggestions;
 using Cotabby.Inference.OpenAICompatible;
 using Cotabby.Core.Support;
-using Cotabby.Win32.Security;
 
 namespace Cotabby.App.Settings;
 

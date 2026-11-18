@@ -1,6 +1,7 @@
 using System.IO;
 using System.Security.Cryptography;
 using Cotabby.Core.History;
+using Cotabby.Core.Support;
 
 namespace Cotabby.Win32.Security;
 

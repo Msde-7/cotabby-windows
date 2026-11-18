@@ -10,7 +10,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Cotabby.Core\Cotabby.Core.csproj" />
-    <ProjectReference Include="..\Cotabby.Inference\Cotabby.Inference.csproj" />
   </ItemGroup>
 
 </Project>
