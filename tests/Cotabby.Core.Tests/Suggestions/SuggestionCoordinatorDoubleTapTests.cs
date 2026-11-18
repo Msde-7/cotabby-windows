@@ -28,7 +28,8 @@ public sealed class SuggestionCoordinatorDoubleTapTests : CoordinatorHarness
             AcceptAll = doubleTap ? KeyBinding.Unbound : KeyBinding.Backtick,
             ShortcutOverrides = overrides,
         };
-        Engine.Completion = _ => completion;
+        // Nothing follows the suggestion, so whatever shows after it is used up came from it.
+        Engine.Completion = request => request.Prefix == "Hello" ? completion : "";
         Type("Hello");
         await Shown(completion);
     }
@@ -52,6 +53,8 @@ public sealed class SuggestionCoordinatorDoubleTapTests : CoordinatorHarness
         Assert.True(Hook.Press(Keys.Tab()));
 
         await Inserted("Hello world again tomorrow");
+        await Settled();
+        Assert.Equal([" world", " again tomorrow"], Focus.Insertions);
         Assert.Equal("", Overlay.Text);
     }
 

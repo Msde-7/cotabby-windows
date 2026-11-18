@@ -29,6 +29,17 @@ public sealed class SuggestionAnchorCacheTests
     }
 
     [Fact]
+    public void TheCutFallsBetweenWhatTheUserSeesAsCharacters()
+    {
+        var cache = MakeCache();
+        // An accent typed as a combining mark is one character with its letter, so the plain letter
+        // is not on the way to it and nothing starts with the lone mark.
+        cache.Record("1", "caf", "e\u0301 au lait");
+        Assert.Null(cache.Remainder("1", "cafe"));
+        Assert.Equal(" au lait", cache.Remainder("1", "cafe\u0301"));
+    }
+
+    [Fact]
     public void TypeThroughThenBackspaceRollbackBothResolveFromOneAnchor()
     {
         var cache = MakeCache();

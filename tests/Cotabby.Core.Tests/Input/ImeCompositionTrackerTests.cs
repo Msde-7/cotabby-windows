@@ -120,6 +120,17 @@ public sealed class ImeCompositionTrackerTests
     }
 
     [Fact]
+    public void KoreanHanjaKeepsTheSyllableComposingWhileItsCandidatesShow()
+    {
+        var tracker = Converting(Korean);
+        tracker.Key(Char('g'));
+        var hanja = new KeyboardEvent { Kind = KeyKind.Other, Character = '\0', IsKeyDown = true, VirtualKey = 0x19 };
+
+        Assert.False(tracker.Key(hanja));
+        Assert.True(tracker.IsComposing);
+    }
+
+    [Fact]
     public void TheInputMethodLeavingNativeModeEndsTheComposition()
     {
         var tracker = Converting(Japanese);

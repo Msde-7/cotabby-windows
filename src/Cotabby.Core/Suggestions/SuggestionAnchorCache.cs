@@ -1,3 +1,5 @@
+using Cotabby.Core.Text;
+
 namespace Cotabby.Core.Suggestions;
 
 /// <summary>
@@ -85,12 +87,15 @@ public sealed class SuggestionAnchorCache
     /// <summary>
     /// The <c>k</c> with <paramref name="live"/> equal to the tail of the anchor text plus the
     /// first <c>k</c> suggested characters, with <c>k</c> short of the whole suggestion, or null.
+    /// Like upstream, characters are graphemes, so the remainder never starts inside one.
     /// </summary>
     private static int? ConsumedPrefixLength(string live, string anchorTail, string fullText)
     {
         string composed = anchorTail + fullText;
-        for (int consumed = 0; consumed < fullText.Length; consumed++)
+        var graphemes = new GraphemeString(fullText);
+        for (int index = 0; index < graphemes.Count; index++)
         {
+            int consumed = graphemes.Offset(index);
             int end = anchorTail.Length + consumed;
             int start = Math.Max(0, end - PrefixTailLength);
             if (end - start != live.Length) continue;

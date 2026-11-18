@@ -13,6 +13,9 @@ public sealed class ImeCompositionTracker
     private const int LangKorean = 0x12;
     private const int LangChinese = 0x04;
 
+    /// <summary>Hanja on a Korean keyboard, Kanji on a Japanese one.</summary>
+    private const int VkHanja = 0x19;
+
     /// <summary>True while keys typed into the input method have not been committed to the field.</summary>
     public bool IsComposing { get; private set; }
 
@@ -64,6 +67,9 @@ public sealed class ImeCompositionTracker
             case KeyKind.Escape:
                 EndComposition();
                 return was && ev.Kind == KeyKind.Enter;
+            // Korean Hanja opens a candidate list for the syllable being composed, which stays open.
+            case KeyKind.Other when ev.VirtualKey == VkHanja && (LanguageId & 0x3FF) == LangKorean:
+                return false;
             case KeyKind.Other when IsModeKey(ev.VirtualKey):
                 EndComposition();
                 return was;
