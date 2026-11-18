@@ -1,3 +1,7 @@
+using System.Globalization;
+using System.Text;
+using Cotabby.Core.Text;
+
 namespace Cotabby.Core.Insertion;
 
 /// <summary>The keys that finish an edit the host only partly applied.</summary>
@@ -11,6 +15,11 @@ public readonly record struct EditRepairPlan(int Backspaces, string Text);
 /// outcomes that can be told apart for certain are repaired: some backspaces missing, the text
 /// missing, or the end of the text missing. Anything else is left as it is, since a wrong repair
 /// would damage the user's text.
+/// <para>
+/// Backspaces are counted as hosts apply them: one per code point, except that an emoji with
+/// everything joined to it and a CRLF line break each go with one key. A letter and its combining
+/// marks take one key per mark, as typing put them there.
+/// </para>
 /// </summary>
 public static class EditRepair
 {
@@ -21,11 +30,12 @@ public static class EditRepair
     /// <returns>The keys still needed, or null when the edit landed or its outcome is unclear.</returns>
     public static EditRepairPlan? Plan(string before, int deleteCount, string text, string live)
     {
-        before = Normalized(before);
+        if (deleteCount < 0 || deleteCount > before.Length) return null;
+        // Split before normalizing, since the count is of the text as it was read.
+        var deleted = Keys(before[^deleteCount..]);
+        string kept = Normalized(before[..^deleteCount]);
         live = Normalized(live);
         text = Normalized(text);
-        if (deleteCount < 0 || deleteCount > before.Length) return null;
-        string kept = before[..^deleteCount];
         if (live == kept + text) return null;
 
         // Every backspace landed, and the text did not, or only its start did.
@@ -36,13 +46,61 @@ public static class EditRepair
         }
 
         // Some backspaces were lost. Whatever of the text landed is taken back and typed again.
-        for (int lost = 1; lost <= deleteCount; lost++)
+        int textKeys = BackspaceCount(text);
+        string partlyDeleted = kept;
+        for (int lost = 1; lost <= deleted.Count; lost++)
         {
-            string partlyDeleted = before[..^(deleteCount - lost)];
-            if (live == partlyDeleted + text) return new EditRepairPlan(text.Length + lost, text);
+            partlyDeleted += Normalized(deleted[lost - 1]);
+            if (live == partlyDeleted + text) return new EditRepairPlan(textKeys + lost, text);
             if (live == partlyDeleted) return new EditRepairPlan(lost, text);
         }
         return null;
+    }
+
+    /// <summary>Backspaces that delete <paramref name="text"/> when it ends just before the caret.</summary>
+    public static int BackspaceCount(string text) => Keys(text).Count;
+
+    /// <summary>
+    /// Backspaces that delete the last <paramref name="deleteCount"/> UTF-16 units of
+    /// <paramref name="preceding"/>. Units past its start count one key each.
+    /// </summary>
+    public static int BackspacesFor(string preceding, int deleteCount)
+    {
+        int known = Math.Clamp(deleteCount, 0, preceding.Length);
+        return BackspaceCount(preceding[^known..]) + Math.Max(0, deleteCount - known);
+    }
+
+    /// <summary>The pieces of <paramref name="text"/> that one Backspace each removes, in order.</summary>
+    private static List<string> Keys(string text)
+    {
+        var keys = new List<string>();
+        foreach (var grapheme in new GraphemeString(text))
+        {
+            var cluster = grapheme.Span;
+            if (cluster.Length == 1 || DeletedWhole(cluster))
+            {
+                keys.Add(cluster.ToString());
+                continue;
+            }
+            for (int at = 0; at < cluster.Length;)
+            {
+                int length = char.IsSurrogatePair(cluster[at], at + 1 < cluster.Length ? cluster[at + 1] : '\0') ? 2 : 1;
+                keys.Add(cluster.Slice(at, length).ToString());
+                at += length;
+            }
+        }
+        return keys;
+    }
+
+    /// <summary>
+    /// A CRLF pair and an emoji with its skin tone, joined parts, presentation selector or keycap
+    /// are deleted whole. Flags are pairs of regional indicators, which are symbols too.
+    /// </summary>
+    private static bool DeletedWhole(ReadOnlySpan<char> cluster)
+    {
+        if (cluster is "\r\n") return true;
+        Rune.DecodeFromUtf16(cluster, out var first, out _);
+        return Rune.GetUnicodeCategory(first) == UnicodeCategory.OtherSymbol || cluster.IndexOfAny('\uFE0F', '\u20E3') >= 0;
     }
 
     /// <summary>Chromium shows a typed space at the end of a line as U+00A0 for a while.</summary>

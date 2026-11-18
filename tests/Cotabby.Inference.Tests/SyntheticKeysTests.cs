@@ -17,6 +17,7 @@ public class SyntheticKeysTests
     private static SyntheticKey Up(ushort vk) => SyntheticKey.Up(vk);
     private static SyntheticKey CharDown(char c) => new(0, c, KeyUp: false);
     private static SyntheticKey CharUp(char c) => new(0, c, KeyUp: true);
+    private static SyntheticKey Restore(ushort vk) => SyntheticKey.Restore(vk);
 
     [Fact]
     public void Modifiers_CoverBothSidesOfShiftCtrlAltAndWin()
@@ -33,10 +34,12 @@ public class SyntheticKeysTests
     }
 
     [Fact]
-    public void Text_ReleasesHeldModifiersFirstAndNeverPressesThemAgain()
+    public void Text_ReleasesHeldModifiersFirstAndPressesThemAgainAfter()
     {
+        // Shift still held after the accept keeps capitalizing the next letter the user types.
         Assert.Equal(
-            [Up(LeftCtrl), Up(RightShift), CharDown('o'), CharUp('o'), CharDown('k'), CharUp('k')],
+            [Up(LeftCtrl), Up(RightShift), CharDown('o'), CharUp('o'), CharDown('k'), CharUp('k'),
+             Restore(LeftCtrl), Restore(RightShift)],
             SyntheticKeys.Text([LeftCtrl, RightShift], "ok"));
     }
 
@@ -44,7 +47,7 @@ public class SyntheticKeysTests
     public void Backspaces_ReleaseHeldModifiersSoCtrlDoesNotDeleteAWord()
     {
         Assert.Equal(
-            [Up(LeftCtrl), Down(Backspace), Up(Backspace), Down(Backspace), Up(Backspace)],
+            [Up(LeftCtrl), Down(Backspace), Up(Backspace), Down(Backspace), Up(Backspace), Restore(LeftCtrl)],
             SyntheticKeys.Backspaces([LeftCtrl], 2));
         Assert.Equal([Down(Backspace), Up(Backspace)], SyntheticKeys.Backspaces(NoneHeld, 1));
     }
@@ -53,7 +56,7 @@ public class SyntheticKeysTests
     public void Paste_ReleasesHeldModifiersBeforeCtrlV()
     {
         Assert.Equal(
-            [Up(RightShift), Up(LeftCtrl), Down(Ctrl), Down(V), Up(V), Up(Ctrl)],
+            [Up(RightShift), Up(LeftCtrl), Down(Ctrl), Down(V), Up(V), Up(Ctrl), Restore(RightShift), Restore(LeftCtrl)],
             SyntheticKeys.Paste([RightShift, LeftCtrl]));
         Assert.Equal([Down(Ctrl), Down(V), Up(V), Up(Ctrl)], SyntheticKeys.Paste(NoneHeld));
     }
@@ -63,9 +66,17 @@ public class SyntheticKeysTests
     {
         const ushort inert = 0xE8;
 
+        // The inert key goes in again after Win is pressed back, so letting go of Win later opens nothing.
         Assert.Equal(
-            [Down(inert), Up(inert), Up(LeftWin), Down(Ctrl), Down(V), Up(V), Up(Ctrl)],
+            [Down(inert), Up(inert), Up(LeftWin), Down(Ctrl), Down(V), Up(V), Up(Ctrl), Restore(LeftWin), Down(inert), Up(inert)],
             SyntheticKeys.Paste([LeftWin]));
+    }
+
+    [Fact]
+    public void Restore_IsAKeyDownMarkedAsAPressBack()
+    {
+        Assert.Equal(new SyntheticKey(LeftCtrl, '\0', KeyUp: false, Restores: true), Restore(LeftCtrl));
+        Assert.False(Down(LeftCtrl).Restores);
     }
 
     [Fact]

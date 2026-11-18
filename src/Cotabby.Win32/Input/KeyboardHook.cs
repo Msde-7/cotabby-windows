@@ -52,7 +52,10 @@ public sealed class KeyboardHook : IKeyboardHook
     private readonly char[] _translated = new char[8];
 
     // Keys currently down, used to tell auto-repeat from a second press.
-    private readonly HashSet<uint> _heldKeys = new();
+    private readonly HeldKeys _heldKeys = new();
+
+    // A dead key was typed and the character it combines with has not come yet.
+    private bool _afterDeadKey;
 
     // The key being classified, read by one cached translate delegate instead of a closure per key.
     private uint _pendingVk;
@@ -311,8 +314,13 @@ public sealed class KeyboardHook : IKeyboardHook
 
             // Cotabby's own SendInput is marked. Reacting to it would loop. Input that other
             // software injects is a person typing through it and is handled like a key press.
-            if ((data.flags & LLKHF_INJECTED) != 0 && data.dwExtraInfo == CotabbyInputMarker)
+            if ((data.flags & LLKHF_INJECTED) != 0
+                && (data.dwExtraInfo == CotabbyInputMarker || data.dwExtraInfo == CotabbyRestoreMarker))
             {
+                // A modifier pressed again after a batch is dropped when the user let go of it
+                // before the press arrived, so it is not left down. Events reach the hook in order,
+                // so the release has been seen by now.
+                if (data.dwExtraInfo == CotabbyRestoreMarker && !_heldKeys.IsHeld(data.vkCode)) return new IntPtr(1);
                 return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
             }
 
@@ -327,8 +335,8 @@ public sealed class KeyboardHook : IKeyboardHook
             _pendingVk = data.vkCode;
             _pendingScanCode = data.scanCode;
             var key = KeyClassifier.Classify((int)data.vkCode, CurrentModifiers(), isDown, _translatePending);
-            bool isRepeat = isDown && !_heldKeys.Add(data.vkCode);
-            if (isUp) _heldKeys.Remove(data.vkCode);
+            bool isRepeat = isDown && _heldKeys.Down(data.vkCode, data.time);
+            if (isUp) _heldKeys.Up(data.vkCode);
 
             var evt = new KeyboardEvent
             {
@@ -400,15 +408,13 @@ public sealed class KeyboardHook : IKeyboardHook
     {
         // The touch keyboard, the emoji panel and text-sending tools type through VK_PACKET, which
         // carries the UTF-16 unit in the scan code. Half of a surrogate pair is no character alone.
-        if (vk == VK_PACKET)
-        {
-            char unit = (char)(scanCode & 0xFFFF);
-            return char.IsSurrogate(unit) ? ' ' : unit;
-        }
+        if (vk == VK_PACKET) return KeyTranslation.FromPacket((char)(scanCode & 0xFFFF));
         GetKeyboardState(_keyState);
         var layout = GetKeyboardLayout(GetWindowThreadProcessId(GetForegroundWindow(), out _));
+        // The state is kept so the host still applies a dead key, which also means the key after
+        // it translates here as its plain letter while the host shows an accented one.
         int count = ToUnicodeEx(
             vk, scanCode, _keyState, _translated, _translated.Length, TOUNICODE_KEEP_STATE, layout);
-        return count > 0 ? _translated[0] : '\0';
+        return KeyTranslation.FromLayout(count, _translated[0], ref _afterDeadKey);
     }
 }

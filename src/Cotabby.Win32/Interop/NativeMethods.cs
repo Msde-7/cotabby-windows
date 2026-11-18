@@ -25,6 +25,12 @@ internal static partial class NativeMethods
     /// </summary>
     public static readonly IntPtr CotabbyInputMarker = new(0x43544259);
 
+    /// <summary>
+    /// dwExtraInfo on a modifier Cotabby presses again after a batch, because the user still held
+    /// it. The hook drops that press when the user let go of the key before it arrived. "CTBZ".
+    /// </summary>
+    public static readonly IntPtr CotabbyRestoreMarker = new(0x4354425A);
+
     public const int VK_SHIFT = 0x10;
     public const int VK_CONTROL = 0x11;
     public const int VK_MENU = 0x12; // Alt

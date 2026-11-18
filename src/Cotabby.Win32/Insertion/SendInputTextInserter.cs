@@ -79,14 +79,16 @@ public sealed class SendInputTextInserter : ITextInserter
         try
         {
             string? before = ReadPreceding(target);
-            if (deleteCount > 0)
+            // The count is in UTF-16 units, and a host takes an emoji or a line break with one key.
+            int backspaces = EditRepair.BackspacesFor(before ?? target.PrecedingText, deleteCount);
+            if (backspaces > 0)
             {
                 // One backspace per call, a moment apart. A burst of them sent in one call was seen to
                 // lose a key in Windows 11 Notepad, which left a character the edit meant to remove.
-                for (int i = 0; i < deleteCount; i++)
+                for (int i = 0; i < backspaces; i++)
                 {
                     if (!Send(target, () => KeySender.SendBackspaces(1), "backspaces")) return false;
-                    if (i < deleteCount - 1) await Task.Delay(BackspaceSpacingMs, ct).ConfigureAwait(false);
+                    if (i < backspaces - 1) await Task.Delay(BackspaceSpacingMs, ct).ConfigureAwait(false);
                 }
                 await Task.Delay(DeleteSettleMs, ct).ConfigureAwait(false);
             }

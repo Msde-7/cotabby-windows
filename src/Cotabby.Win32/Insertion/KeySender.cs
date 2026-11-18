@@ -8,8 +8,9 @@ namespace Cotabby.Win32.Insertion;
 /// the whole batch cannot be interleaved with other input.
 /// </summary>
 /// <remarks>
-/// Every event carries <see cref="CotabbyInputMarker"/>, which is how the keyboard hook tells
-/// Cotabby's own keys from injected input it should handle. Each method returns false when
+/// Every event carries <see cref="CotabbyInputMarker"/>, or <see cref="CotabbyRestoreMarker"/> on a
+/// modifier pressed again, which is how the keyboard hook tells Cotabby's own keys from injected
+/// input it should handle. Each method returns false when
 /// Windows did not take the whole batch.
 /// </remarks>
 public static class KeySender
@@ -48,7 +49,7 @@ public static class KeySender
                         wVk = key.VirtualKey,
                         wScan = key.Character,
                         dwFlags = flags,
-                        dwExtraInfo = CotabbyInputMarker,
+                        dwExtraInfo = key.Restores ? CotabbyRestoreMarker : CotabbyInputMarker,
                     },
                 },
             };
