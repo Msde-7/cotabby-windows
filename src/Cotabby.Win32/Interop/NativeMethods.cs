@@ -246,10 +246,7 @@ internal static partial class NativeMethods
 
     // Clipboard
 
-    public const uint CF_TEXT = 1;
-    public const uint CF_DIB = 8;
     public const uint CF_UNICODETEXT = 13;
-    public const uint CF_HDROP = 15;
     public const uint GMEM_MOVEABLE = 0x0002;
 
     [LibraryImport("user32.dll")]
@@ -295,6 +292,20 @@ internal static partial class NativeMethods
 
     [LibraryImport("kernel32.dll")]
     public static partial nuint GlobalSize(IntPtr hMem);
+
+    /// <summary>The format after <paramref name="format"/> on the open clipboard, 0 for the first. 0 at the end.</summary>
+    [LibraryImport("user32.dll")]
+    public static partial uint EnumClipboardFormats(uint format);
+
+    [LibraryImport("gdi32.dll")]
+    public static partial uint GetEnhMetaFileBits(IntPtr hemf, uint size, Span<byte> data);
+
+    [LibraryImport("gdi32.dll")]
+    public static partial IntPtr SetEnhMetaFileBits(uint size, ReadOnlySpan<byte> data);
+
+    [LibraryImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool DeleteEnhMetaFile(IntPtr hemf);
 
     // Accessibility priming and window styles
 

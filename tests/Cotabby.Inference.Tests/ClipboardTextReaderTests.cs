@@ -65,14 +65,25 @@ public class ClipboardTextReaderTests
         Copy(new string('a', ClipboardTextReader.MaxChars + 100));
         AssertReads(new string('a', ClipboardTextReader.MaxChars));
         Assert.NotEqual(afterCopy, _reader.SequenceNumber);
+
+        // A secret copied from a password manager is never read.
+        Copy("cotabby secret", marker: "ExcludeClipboardContentFromMonitorProcessing");
+        Thread.Sleep(50);
+        Assert.Null(_reader.ReadText());
+        Copy("cotabby secret", marker: "CanIncludeInClipboardHistory");
+        Thread.Sleep(50);
+        Assert.Null(_reader.ReadText());
     }
 
-    /// <summary>Clipboard history is told to skip the text, so the test leaves nothing behind there.</summary>
-    private static void Copy(string text)
+    /// <summary>
+    /// The cloud clipboard is told to skip the text. Text marked to stay out of clipboard history
+    /// as well reads as private, so readable copies stay in the local history.
+    /// </summary>
+    private static void Copy(string text, string marker = "CanUploadToCloudClipboard")
     {
         var data = new DataObject();
         data.SetText(text);
-        data.SetData("ExcludeClipboardContentFromMonitorProcessing", new MemoryStream(new byte[4]));
+        data.SetData(marker, new MemoryStream(new byte[4]));
         WpfClipboard.SetDataObject(data, copy: true);
     }
 

@@ -6,12 +6,19 @@ namespace Cotabby.Win32.Clipboard;
 /// <summary>What the clipboard held before a paste, as raw bytes per format.</summary>
 public sealed class ClipboardSnapshot
 {
-    internal ClipboardSnapshot(IReadOnlyList<(uint Format, byte[] Data)> formats) => Formats = formats;
+    internal ClipboardSnapshot(IReadOnlyList<(ClipboardSaveStep Step, byte[] Data)> formats, bool isPrivate)
+    {
+        Formats = formats;
+        IsPrivate = isPrivate;
+    }
 
-    internal IReadOnlyList<(uint Format, byte[] Data)> Formats { get; }
+    internal IReadOnlyList<(ClipboardSaveStep Step, byte[] Data)> Formats { get; }
 
-    /// <summary>True when the clipboard held none of the formats worth keeping.</summary>
+    /// <summary>True when the clipboard was empty.</summary>
     public bool IsEmpty => Formats.Count == 0;
+
+    /// <summary>True when the app that copied the content asked clipboard tools to leave it alone.</summary>
+    public bool IsPrivate { get; }
 }
 
 public enum ClipboardRestoreOutcome
@@ -44,20 +51,18 @@ public static class ClipboardSwap
     private const int OpenAttempts = 10;
     private const int OpenRetryMs = 10;
 
-    private static readonly Lazy<IReadOnlyDictionary<string, uint>> FormatIds = new(() =>
-        ClipboardFormatPolicy.Candidates.ToDictionary(name => name, name => name switch
-        {
-            ClipboardFormatPolicy.UnicodeText => CF_UNICODETEXT,
-            ClipboardFormatPolicy.Text => CF_TEXT,
-            ClipboardFormatPolicy.FileDrop => CF_HDROP,
-            ClipboardFormatPolicy.Dib => CF_DIB,
-            _ => RegisterClipboardFormat(name),
-        }));
+    private static readonly Lazy<uint> ExcludeFromMonitoringFormat =
+        new(() => RegisterClipboardFormat("ExcludeClipboardContentFromMonitorProcessing"));
+
+    private static readonly Lazy<uint> CanIncludeInHistoryFormat =
+        new(() => RegisterClipboardFormat("CanIncludeInClipboardHistory"));
+
+    private static readonly Lazy<uint> ViewerIgnoreFormat = new(() => RegisterClipboardFormat("Clipboard Viewer Ignore"));
 
     private static readonly Lazy<uint[]> PrivacyFormats = new(() =>
     [
-        RegisterClipboardFormat("ExcludeClipboardContentFromMonitorProcessing"),
-        RegisterClipboardFormat("CanIncludeInClipboardHistory"),
+        ExcludeFromMonitoringFormat.Value,
+        CanIncludeInHistoryFormat.Value,
         RegisterClipboardFormat("CanUploadToCloudClipboard"),
     ]);
 
@@ -74,7 +79,8 @@ public static class ClipboardSwap
         try
         {
             if (Capture() is not { } snapshot || !EmptyClipboard()) return false;
-            if (!Put(CF_UNICODETEXT, TextBytes(text)))
+            // Classic edit controls show a bare line feed as no break at all.
+            if (!Put(CF_UNICODETEXT, TextBytes(text.ReplaceLineEndings("\r\n"))))
             {
                 // The clipboard is already empty, so the user's content goes straight back.
                 PutAll(snapshot);
@@ -96,63 +102,124 @@ public static class ClipboardSwap
     /// <paramref name="expectedSequence"/>, which means the user or another app copied something
     /// that must not be overwritten.
     /// </summary>
-    public static ClipboardRestoreOutcome TryRestore(ClipboardSnapshot saved, uint expectedSequence)
+    /// <param name="sequence">The clipboard sequence number right after a restore, otherwise 0.</param>
+    public static ClipboardRestoreOutcome TryRestore(ClipboardSnapshot saved, uint expectedSequence, out uint sequence)
     {
+        sequence = 0;
         if (!TryOpen(OpenAttempts, OpenRetryMs)) return ClipboardRestoreOutcome.Failed;
+        var outcome = ClipboardRestoreOutcome.Failed;
         try
         {
             if (GetClipboardSequenceNumber() != expectedSequence) return ClipboardRestoreOutcome.ChangedSince;
             if (!EmptyClipboard()) return ClipboardRestoreOutcome.Failed;
-            if (saved.IsEmpty) return ClipboardRestoreOutcome.Restored;
-            bool all = PutAll(saved);
-            PutPrivacyMarkers();
-            return all ? ClipboardRestoreOutcome.Restored : ClipboardRestoreOutcome.Failed;
+            if (saved.IsEmpty)
+            {
+                outcome = ClipboardRestoreOutcome.Restored;
+            }
+            else
+            {
+                bool all = PutAll(saved);
+                PutPrivacyMarkers();
+                if (all) outcome = ClipboardRestoreOutcome.Restored;
+            }
         }
         finally
         {
             CloseClipboard();
         }
+        if (outcome == ClipboardRestoreOutcome.Restored) sequence = GetClipboardSequenceNumber();
+        return outcome;
     }
 
     /// <summary>
-    /// Copies the kept formats out of the open clipboard. Null when one of them could not be read
-    /// or they add up past <see cref="MaxSnapshotBytes"/>.
+    /// True when the open clipboard holds content its app asked clipboard tools to leave alone, as
+    /// password managers do for a copied secret.
+    /// </summary>
+    internal static bool HoldsPrivateContent()
+    {
+        if (IsClipboardFormatAvailable(ExcludeFromMonitoringFormat.Value)) return true;
+        if (IsClipboardFormatAvailable(ViewerIgnoreFormat.Value)) return true;
+        uint canInclude = CanIncludeInHistoryFormat.Value;
+        if (!IsClipboardFormatAvailable(canInclude)) return false;
+        return ClipboardFormatPolicy.IsPrivate(false, false, ReadBytes(GetClipboardData(canInclude), sizeof(uint) * 16) ?? []);
+    }
+
+    /// <summary>
+    /// Copies every format out of the open clipboard. Null when one of them cannot be saved
+    /// faithfully or read, or they add up past <see cref="MaxSnapshotBytes"/>.
     /// </summary>
     private static ClipboardSnapshot? Capture()
     {
-        var ids = FormatIds.Value;
-        var available = ClipboardFormatPolicy.Candidates.Where(name => IsClipboardFormatAvailable(ids[name])).ToList();
-        var formats = new List<(uint, byte[])>();
+        var available = new List<uint>();
+        for (uint format = EnumClipboardFormats(0); format != 0; format = EnumClipboardFormats(format)) available.Add(format);
+        if (ClipboardFormatPolicy.Plan(available) is not { } plan) return null;
+
+        var formats = new List<(ClipboardSaveStep, byte[])>();
         long total = 0;
-        foreach (var name in ClipboardFormatPolicy.Keep(available))
+        foreach (var step in plan)
         {
-            uint id = ids[name];
-            IntPtr handle = GetClipboardData(id);
-            if (handle == IntPtr.Zero) return null;
-            long size = (long)GlobalSize(handle);
-            total += size;
-            if (total > MaxSnapshotBytes) return null;
-            IntPtr data = GlobalLock(handle);
-            if (data == IntPtr.Zero) return null;
-            try
-            {
-                var bytes = new byte[size];
-                Marshal.Copy(data, bytes, 0, bytes.Length);
-                formats.Add((id, bytes));
-            }
-            finally
-            {
-                GlobalUnlock(handle);
-            }
+            IntPtr handle = GetClipboardData(step.Format);
+            byte[]? bytes = step.Kind == ClipboardSaveKind.EnhancedMetafile
+                ? ReadMetafile(handle, MaxSnapshotBytes - total)
+                : ReadBytes(handle, MaxSnapshotBytes - total);
+            if (bytes is null) return null;
+            total += bytes.Length;
+            formats.Add((step, bytes));
         }
-        return new ClipboardSnapshot(formats);
+
+        byte[]? canInclude = formats.FirstOrDefault(saved => saved.Item1.Format == CanIncludeInHistoryFormat.Value).Item2;
+        bool isPrivate = ClipboardFormatPolicy.IsPrivate(
+            available.Contains(ExcludeFromMonitoringFormat.Value), available.Contains(ViewerIgnoreFormat.Value), canInclude);
+        return new ClipboardSnapshot(formats, isPrivate);
+    }
+
+    /// <summary>A memory block's bytes, or null when it cannot be read or is larger than <paramref name="limit"/>.</summary>
+    private static byte[]? ReadBytes(IntPtr handle, long limit)
+    {
+        if (handle == IntPtr.Zero) return null;
+        long size = (long)GlobalSize(handle);
+        if (size > limit) return null;
+        IntPtr data = GlobalLock(handle);
+        if (data == IntPtr.Zero) return null;
+        try
+        {
+            var bytes = new byte[size];
+            Marshal.Copy(data, bytes, 0, bytes.Length);
+            return bytes;
+        }
+        finally
+        {
+            GlobalUnlock(handle);
+        }
+    }
+
+    private static byte[]? ReadMetafile(IntPtr handle, long limit)
+    {
+        if (handle == IntPtr.Zero) return null;
+        uint size = GetEnhMetaFileBits(handle, 0, []);
+        if (size == 0 || size > limit) return null;
+        var bytes = new byte[size];
+        return GetEnhMetaFileBits(handle, size, bytes) == size ? bytes : null;
     }
 
     private static bool PutAll(ClipboardSnapshot snapshot)
     {
         bool all = true;
-        foreach (var (format, data) in snapshot.Formats) all &= Put(format, data);
+        foreach (var (step, data) in snapshot.Formats)
+        {
+            all &= step.Kind == ClipboardSaveKind.EnhancedMetafile ? PutMetafile(data) : Put(step.Format, data);
+        }
         return all;
+    }
+
+    /// <summary>Hands an enhanced metafile to the open clipboard, which owns it once it succeeds.</summary>
+    private static bool PutMetafile(byte[] data)
+    {
+        IntPtr metafile = SetEnhMetaFileBits((uint)data.Length, data);
+        if (metafile == IntPtr.Zero) return false;
+        if (SetClipboardData(ClipboardFormatPolicy.CF_ENHMETAFILE, metafile) != IntPtr.Zero) return true;
+        DeleteEnhMetaFile(metafile);
+        return false;
     }
 
     private static void PutPrivacyMarkers()

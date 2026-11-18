@@ -11,6 +11,11 @@ namespace Cotabby.Win32.Clipboard;
 /// It brackets that with <see cref="BeginOwnWrite"/> and <see cref="EndOwnWrite"/>, and the
 /// changes made in between are subtracted from <see cref="SequenceNumber"/>. A paste therefore
 /// never looks like a copy by the user.
+/// <para>
+/// Content its app asked clipboard tools to leave alone, such as a secret copied from a password
+/// manager, is never read, so it cannot reach a prompt. Cotabby marks the content it puts back the
+/// same way to keep it out of clipboard history, so that content is judged by what it was before.
+/// </para>
 /// </remarks>
 public sealed class ClipboardTextReader : IClipboardReader
 {
@@ -24,6 +29,8 @@ public sealed class ClipboardTextReader : IClipboardReader
     private uint _ownChanges;
     private uint? _ownWriteStart;
     private uint? _ownTextSequence;
+    private uint? _restoredSequence;
+    private bool _restoredIsPrivate;
 
     public uint SequenceNumber
     {
@@ -37,8 +44,11 @@ public sealed class ClipboardTextReader : IClipboardReader
     {
         lock (_gate)
         {
-            if (_ownWriteStart is not null || GetClipboardSequenceNumber() == _ownTextSequence) return null;
-            return ReadUnicodeText();
+            uint now = GetClipboardSequenceNumber();
+            if (_ownWriteStart is not null || now == _ownTextSequence) return null;
+            bool restored = now == _restoredSequence;
+            if (restored && _restoredIsPrivate) return null;
+            return ReadUnicodeText(skipPrivate: !restored);
         }
     }
 
@@ -49,7 +59,9 @@ public sealed class ClipboardTextReader : IClipboardReader
     }
 
     /// <param name="restored">False when Cotabby's own text was left on the clipboard.</param>
-    public void EndOwnWrite(bool restored)
+    /// <param name="restoredSequence">The sequence number right after the user's content went back, if it did.</param>
+    /// <param name="restoredIsPrivate">The content that went back was private before Cotabby saved it.</param>
+    public void EndOwnWrite(bool restored, uint? restoredSequence = null, bool restoredIsPrivate = false)
     {
         lock (_gate)
         {
@@ -58,14 +70,18 @@ public sealed class ClipboardTextReader : IClipboardReader
             _ownChanges = unchecked(_ownChanges + now - start);
             _ownTextSequence = restored || now == start ? null : now;
             _ownWriteStart = null;
+            _restoredSequence = restoredSequence;
+            _restoredIsPrivate = restoredIsPrivate;
         }
     }
 
-    private static unsafe string? ReadUnicodeText()
+    /// <param name="skipPrivate">Returns null for content marked private.</param>
+    private static unsafe string? ReadUnicodeText(bool skipPrivate)
     {
         if (!ClipboardSwap.TryOpen(OpenAttempts, OpenRetryMs)) return null;
         try
         {
+            if (skipPrivate && ClipboardSwap.HoldsPrivateContent()) return null;
             IntPtr handle = GetClipboardData(CF_UNICODETEXT);
             if (handle == IntPtr.Zero) return null;
             char* text = (char*)GlobalLock(handle);

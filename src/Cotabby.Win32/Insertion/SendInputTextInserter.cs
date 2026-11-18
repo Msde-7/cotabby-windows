@@ -15,12 +15,12 @@ namespace Cotabby.Win32.Insertion;
 /// of forty before its input queue overflows. A paste goes through the host's own paste handler,
 /// which inserts any length at once.
 /// <para>
-/// The paste saves the clipboard's text, rich text, HTML and copied files, writes the
-/// suggestion, sends Ctrl+V and later puts the saved content back. The restore waits long enough
-/// for a slow host to read the clipboard, and it is skipped when anything else wrote to the
-/// clipboard meanwhile, so a copy the user made in that time is kept. When the clipboard cannot
-/// be read, single-line text is typed in short bursts instead and multi-line text is not
-/// inserted, since typing a line break as Enter could send a chat message.
+/// The paste saves every format on the clipboard, writes the suggestion, sends Ctrl+V and later
+/// puts the saved content back. The restore waits long enough for a slow host to read the
+/// clipboard, and it is skipped when anything else wrote to the clipboard meanwhile, so a copy the
+/// user made in that time is kept. When the clipboard cannot be read or holds content that cannot
+/// be saved faithfully, single-line text is typed in short bursts instead and multi-line text is
+/// not inserted, since typing a line break as Enter could send a chat message.
 /// </para>
 /// <para>
 /// Before every batch of keys the foreground window is checked against the target field, so
@@ -236,12 +236,15 @@ public sealed class SendInputTextInserter : ITextInserter
     private async Task RestoreClipboardAsync(ClipboardSnapshot saved, uint ownSequence, bool settle)
     {
         bool ownTextGone = false;
+        uint? restoredSequence = null;
         try
         {
             if (settle) await Task.Delay(RestoreSettleMs).ConfigureAwait(false);
             for (int attempt = 1; attempt <= RestoreAttempts; attempt++)
             {
-                var outcome = await Task.Run(() => ClipboardSwap.TryRestore(saved, ownSequence)).ConfigureAwait(false);
+                uint sequence = 0;
+                var outcome = await Task.Run(() => ClipboardSwap.TryRestore(saved, ownSequence, out sequence))
+                    .ConfigureAwait(false);
                 if (outcome == ClipboardRestoreOutcome.ChangedSince)
                 {
                     _logger.LogInformation("Clipboard changed after the paste, so it was left as it is.");
@@ -251,6 +254,7 @@ public sealed class SendInputTextInserter : ITextInserter
                 if (outcome == ClipboardRestoreOutcome.Restored)
                 {
                     ownTextGone = true;
+                    restoredSequence = sequence;
                     return;
                 }
                 if (attempt < RestoreAttempts) await Task.Delay(RestoreRetryMs).ConfigureAwait(false);
@@ -263,7 +267,7 @@ public sealed class SendInputTextInserter : ITextInserter
         }
         finally
         {
-            _clipboardContext?.EndOwnWrite(ownTextGone);
+            _clipboardContext?.EndOwnWrite(ownTextGone, restoredSequence, saved.IsPrivate);
         }
     }
 
