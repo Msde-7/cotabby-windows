@@ -163,7 +163,7 @@ public partial class App : Application
             if (_host is { } host && ex is not null)
             {
                 host.LogError(ex, message);
-                return AppHost.LogPath;
+                return host.ActiveLogPath;
             }
             string line = $"{DateTime.Now:HH:mm:ss.fff} fail: Cotabby.App[0] {message}{(ex is null ? "" : $" :: {ex}")}{Environment.NewLine}";
             Directory.CreateDirectory(Path.GetDirectoryName(AppHost.LogPath)!);

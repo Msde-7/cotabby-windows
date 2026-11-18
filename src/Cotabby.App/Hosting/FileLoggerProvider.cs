@@ -48,6 +48,15 @@ public sealed class FileLoggerProvider : ILoggerProvider
         }
     }
 
+    /// <summary>The file lines go to now, which is cotabby.alt.log while another process holds the log, or null when there is none.</summary>
+    public string? CurrentPath
+    {
+        get
+        {
+            lock (_gate) return (_writer?.BaseStream as FileStream)?.Name;
+        }
+    }
+
     /// <summary>Writes one line, or drops it once the provider is disposed, so late messages at shutdown never throw.</summary>
     private void Write(string line)
     {

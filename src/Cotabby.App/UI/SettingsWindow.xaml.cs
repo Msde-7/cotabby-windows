@@ -42,6 +42,7 @@ public partial class SettingsWindow : Window
         Detail.Children.Add(_results);
 
         host.SettingsApplied += _context.Refresh;
+        host.SetupDownloadChanged += _context.Refresh;
         // A model can finish loading from the tray while the window is in the background.
         Activated += (_, _) => _context.Refresh();
         NavList.SelectedIndex = 0;
@@ -76,6 +77,7 @@ public partial class SettingsWindow : Window
     {
         base.OnClosed(e);
         _host.SettingsApplied -= _context.Refresh;
+        _host.SetupDownloadChanged -= _context.Refresh;
         _context.Close();
         _instance = null;
     }

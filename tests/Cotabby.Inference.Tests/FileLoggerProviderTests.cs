@@ -31,6 +31,36 @@ public sealed class FileLoggerProviderTests : IDisposable
     }
 
     [Fact]
+    public void CurrentPath_IsTheFileTheLinesGoTo()
+    {
+        using (var provider = new FileLoggerProvider(LogPath))
+        {
+            Assert.Equal(LogPath, provider.CurrentPath);
+        }
+
+        string? fallback;
+        using (new FileStream(LogPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        using (var provider = new FileLoggerProvider(LogPath))
+        {
+            provider.CreateLogger("Test").LogInformation("hello");
+            fallback = provider.CurrentPath;
+        }
+
+        Assert.NotNull(fallback);
+        Assert.NotEqual(LogPath, fallback);
+        Assert.Contains("hello", File.ReadAllText(fallback));
+    }
+
+    [Fact]
+    public void CurrentPath_IsNullOnceDisposed()
+    {
+        var provider = new FileLoggerProvider(LogPath);
+        provider.Dispose();
+
+        Assert.Null(provider.CurrentPath);
+    }
+
+    [Fact]
     public void LargeLogHeldByAnotherProcess_DoesNotThrow()
     {
         File.WriteAllText(LogPath, new string('x', 200));

@@ -38,6 +38,9 @@ public sealed class AppHost : IAsyncDisposable
     public static string LogPath { get; } = System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Cotabby", "logs", "cotabby.log");
 
+    /// <summary>The log file in use, which is cotabby.alt.log while another process, such as a second copy, holds <see cref="LogPath"/>.</summary>
+    public string ActiveLogPath => _fileLog.CurrentPath ?? LogPath;
+
     /// <summary>Debug logs include typed and suggested text, so they are opt-in.</summary>
     private static readonly bool DebugLogging = Environment.GetEnvironmentVariable("COTABBY_DEBUG_LOG") == "1";
 
@@ -45,7 +48,7 @@ public sealed class AppHost : IAsyncDisposable
     private readonly ILoggerFactory _loggers;
     private readonly HttpClient _http;
     private readonly KeyboardHook _hook;
-    private readonly UiaFocusTracker _focus;
+    private readonly SwitchableFocusTracker _focus;
     private readonly SuggestionEngineRouter _router;
     private readonly SynchronizationContext _ui;
     private readonly ILogger _logger;
@@ -62,6 +65,11 @@ public sealed class AppHost : IAsyncDisposable
     private static readonly TimeSpan SaveDelay = TimeSpan.FromMilliseconds(500);
     private readonly Timer _saveTimer;
     private bool _savePending;
+
+    /// <summary>Fires when a timed pause ends, so focus tracking starts again.</summary>
+    private readonly Timer _pauseEndTimer;
+    /// <summary>Whether focus should be tracked, as last applied. Read by the background switch.</summary>
+    private volatile bool _focusTracked = true;
 
     /// <summary>False when Windows has no OCR language for the user's languages, so screen context cannot run.</summary>
     public bool ScreenContextAvailable { get; }
@@ -82,7 +90,23 @@ public sealed class AppHost : IAsyncDisposable
     /// The model download the first-run window started, while it runs. Like upstream's, it carries
     /// on after the window closes, so the model list in Settings offers its pause and cancel.
     /// </summary>
-    public SetupDownload? RunningSetupDownload { get; set; }
+    public SetupDownload? RunningSetupDownload
+    {
+        get => _setupDownload;
+        set
+        {
+            _setupDownload = value;
+            SetupDownloadChanged?.Invoke();
+        }
+    }
+
+    private SetupDownload? _setupDownload;
+
+    /// <summary>
+    /// Raised on the UI thread when the first-run window's download starts or ends, so an open
+    /// Settings window offers its pause and cancel right away.
+    /// </summary>
+    public event Action? SetupDownloadChanged;
 
     public sealed record SetupDownload(string ModelId, CancellationTokenSource Cancellation, Task Completion);
 
@@ -106,6 +130,7 @@ public sealed class AppHost : IAsyncDisposable
         _overlay = overlay;
         _macroPreview = macroPreview;
         _saveTimer = new Timer(_ => _ui.Post(_ => SavePending(), null));
+        _pauseEndTimer = new Timer(_ => _ui.Post(_ => ApplyFocusTracking(), null));
 
         _fileLog = new FileLoggerProvider(LogPath);
         _loggers = LoggerFactory.Create(b =>
@@ -138,7 +163,7 @@ public sealed class AppHost : IAsyncDisposable
             _logger.LogWarning("{Path} could not be read. Running on the defaults without saving over it.", SettingsStore.Path);
         }
         _hook = new KeyboardHook(loggers.CreateLogger<KeyboardHook>());
-        var focus = _focus = new UiaFocusTracker(loggers.CreateLogger<UiaFocusTracker>());
+        var focus = _focus = new SwitchableFocusTracker(new UiaFocusTracker(loggers.CreateLogger<UiaFocusTracker>()));
         var clipboard = new ClipboardTextReader();
         var inserter = new SendInputTextInserter(loggers.CreateLogger<SendInputTextInserter>(), clipboard, focus);
 
@@ -290,6 +315,7 @@ public sealed class AppHost : IAsyncDisposable
         if (Settings.Pause?.IsActive(DateTimeOffset.Now) == false) Settings.Pause = null;
 
         Coordinator.Settings = Settings.ToSuggestionSettings();
+        ApplyFocusTracking();
         _router.UseEndpoint = Settings.Engine == EngineKind.Endpoint;
         _endpoint.UpdateSettings(Settings.EndpointSettings);
         TypingHistory.ApplyPreferences(Settings.TypingHistoryPreferences);
@@ -310,6 +336,40 @@ public sealed class AppHost : IAsyncDisposable
         }
         ApplyEngineResidency();
         SettingsApplied?.Invoke();
+    }
+
+    /// <summary>
+    /// Stops watching focus while Cotabby is off or paused, when suggestions, emoji and macros are
+    /// all off, and starts again when it is turned back on or a timed pause ends. The hook keeps
+    /// running, so the global toggle still works.
+    /// </summary>
+    private void ApplyFocusTracking()
+    {
+        var now = DateTimeOffset.Now;
+        var pause = Settings.Pause is { } p && p.IsActive(now) ? p : null;
+        bool track = Settings.Enabled && pause is null;
+        // Checked again at least hourly, which also covers a clock change during the pause.
+        var pauseEnds = Settings.Enabled && pause?.Until is { } until
+            ? TimeSpan.FromTicks(Math.Min((until - now).Ticks, TimeSpan.FromHours(1).Ticks)) + TimeSpan.FromMilliseconds(100)
+            : Timeout.InfiniteTimeSpan;
+        _pauseEndTimer.Change(pauseEnds, Timeout.InfiniteTimeSpan);
+
+        if (track == _focusTracked) return;
+        _focusTracked = track;
+        _logger.LogInformation(track ? "Focus tracking resumed." : "Focus tracking stopped while Cotabby is off.");
+        // Off the UI thread, because starting reads the focused field through UI Automation. Each
+        // switch applies the latest wish, so switches that finish out of order still end right.
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                _focus.SetEnabled(_focusTracked);
+            }
+            catch (Exception ex)
+            {
+                LogError(ex, "Switching focus tracking failed.");
+            }
+        });
     }
 
     /// <summary>
@@ -525,6 +585,7 @@ public sealed class AppHost : IAsyncDisposable
         Step("save settings", () =>
         {
             _saveTimer.Dispose();
+            _pauseEndTimer.Dispose();
             SaveSettings();
         });
         Step("unsubscribe", () =>
