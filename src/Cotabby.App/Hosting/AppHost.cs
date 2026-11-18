@@ -91,7 +91,8 @@ public sealed class AppHost : IAsyncDisposable
 
     /// <summary>
     /// The model download the first-run window started, while it runs. Like upstream's, it carries
-    /// on after the window closes, so the model list in Settings offers its pause and cancel.
+    /// on after the window closes, so the model list in Settings offers its pause and cancel. A
+    /// download started from the model list is published here too, so the first-run window follows it.
     /// </summary>
     public SetupDownload? RunningSetupDownload
     {
@@ -111,7 +112,7 @@ public sealed class AppHost : IAsyncDisposable
     /// </summary>
     public event Action? SetupDownloadChanged;
 
-    /// <summary>A first-run download. A reopened first-run window follows its <see cref="Progress"/> instead of starting another.</summary>
+    /// <summary>A shared model download. A reopened first-run window follows its <see cref="Progress"/> instead of starting another.</summary>
     public sealed record SetupDownload(
         string ModelId, CancellationTokenSource Cancellation, Task Completion, Progress<ModelDownloader.Progress> Progress);
 

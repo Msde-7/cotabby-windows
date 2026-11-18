@@ -20,7 +20,7 @@ public interface IFocusTracker : IDisposable
     /// </summary>
     FocusedField? Refresh(bool readHostText = false);
 
-    /// <summary>Start watching. Idempotent.</summary>
+    /// <summary>Start watching and raise <see cref="FocusChanged"/> with the field focused now. Idempotent.</summary>
     void Start();
 
     /// <summary>Stop watching. Idempotent.</summary>

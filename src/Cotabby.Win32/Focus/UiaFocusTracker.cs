@@ -54,6 +54,7 @@ public sealed class UiaFocusTracker : IFocusTracker
 
     public void Start()
     {
+        FocusedField? initial;
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -67,6 +68,18 @@ public sealed class UiaFocusTracker : IFocusTracker
             // Seeded so Current is not null until the first focus change.
             long sequence = _current.Begin();
             _current.TryPublish(sequence, Capture());
+            initial = _current.Current;
+        }
+
+        // Listeners learn where focus already is, as a focus change would tell them, so a field
+        // focused before tracking started is not missed until focus moves.
+        try
+        {
+            FocusChanged?.Invoke(this, initial);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Focus change handling failed.");
         }
     }
 

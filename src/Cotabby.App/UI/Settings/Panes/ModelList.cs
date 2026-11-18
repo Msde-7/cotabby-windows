@@ -221,7 +221,7 @@ internal sealed class ModelList : StackPanel
         if (Busy) return;
         if (_context.Host.SelectedModelId != model.Id) _context.Change(s => AppHost.PickModel(s, model.Id));
 
-        _loading = new CancellationTokenSource();
+        var loading = _loading = new CancellationTokenSource();
         _downloading = !ModelDownloader.IsCached(model);
         _cancelRequested = false;
         _progress = null;
@@ -234,17 +234,14 @@ internal sealed class ModelList : StackPanel
             _progress = update;
             ShowProgress();
         });
+        var work = DownloadAndLoadAsync(model, progress, loading.Token);
+        // The first-run window asking for the same model follows this download, as it follows its
+        // own, where starting a second one would fail.
+        var shared = _downloading ? new AppHost.SetupDownload(model.Id, loading, work, progress) : null;
+        if (shared is not null) _context.Host.RunningSetupDownload = shared;
         try
         {
-            if (_downloading)
-            {
-                await _context.Host.Downloader.DownloadAsync(model, progress, _loading.Token);
-                // Loading cannot be paused or cancelled, so those buttons go once the file is in place.
-                _downloading = false;
-                _progress = null;
-                Rebuild();
-            }
-            await _context.Host.EnsureModelReadyAsync(null, _loading.Token);
+            await work;
         }
         catch (OperationCanceledException)
         {
@@ -258,9 +255,26 @@ internal sealed class ModelList : StackPanel
         finally
         {
             _loading = null;
+            if (shared is not null && ReferenceEquals(_context.Host.RunningSetupDownload, shared))
+            {
+                _context.Host.RunningSetupDownload = null;
+            }
             // The runtime status rows read the new state on this refresh.
             _context.Refresh();
         }
+    }
+
+    private async Task DownloadAndLoadAsync(CotabbyModel model, IProgress<ModelDownloader.Progress> progress, CancellationToken ct)
+    {
+        if (_downloading)
+        {
+            await _context.Host.Downloader.DownloadAsync(model, progress, ct);
+            // Loading cannot be paused or cancelled, so those buttons go once the file is in place.
+            _downloading = false;
+            _progress = null;
+            Rebuild();
+        }
+        await _context.Host.EnsureModelReadyAsync(null, ct);
     }
 
     private void Pause() => _loading?.Cancel();

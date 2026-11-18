@@ -63,8 +63,8 @@ public sealed class SwitchableFocusTracker : IFocusTracker
             if (!_started) return;
             if (enabled)
             {
+                // Starting raises FocusChanged with where focus is now.
                 _inner.Start();
-                FocusChanged?.Invoke(this, _inner.Current);
             }
             else
             {

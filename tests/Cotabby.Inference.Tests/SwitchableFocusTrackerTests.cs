@@ -20,6 +20,7 @@ public sealed class SwitchableFocusTrackerTests
     public void SwitchingOff_StopsTrackingAndTellsListenersFocusLeft()
     {
         _tracker.Start();
+        _events.Clear();
 
         _tracker.SetEnabled(false);
 
@@ -62,13 +63,23 @@ public sealed class SwitchableFocusTrackerTests
         _tracker.SetEnabled(true);
 
         Assert.False(_inner.Running);
-        Assert.Equal([null], _events);
+        Assert.Equal([_inner.Field, null], _events);
+    }
+
+    [Fact]
+    public void Start_TellsListenersWhereFocusIs()
+    {
+        _tracker.Start();
+
+        Assert.True(_inner.Running);
+        Assert.Same(_inner.Field, Assert.Single(_events));
     }
 
     [Fact]
     public void FocusChanges_ArePassedOn()
     {
         _tracker.Start();
+        _events.Clear();
 
         _inner.RaiseFocus();
 
@@ -99,7 +110,13 @@ public sealed class SwitchableFocusTrackerTests
 
         public void RaiseFocus() => FocusChanged?.Invoke(this, Field);
 
-        public void Start() => Running = true;
+        /// <summary>Like the UI Automation tracker, starting tells listeners where focus is.</summary>
+        public void Start()
+        {
+            if (Running) return;
+            Running = true;
+            FocusChanged?.Invoke(this, Field);
+        }
 
         public void Stop() => Running = false;
 
