@@ -67,7 +67,7 @@ public static class EmojiVariantExtensions
     /// variation selector so it does not fall back to the plain text symbol.
     /// </summary>
     public static string SampleGlyph(this EmojiSkinTone tone) =>
-        tone.Modifier() is { } modifier ? "✌" + modifier : "✌️";
+        tone.Modifier() is { } modifier ? "✌" + modifier : "✌\uFE0F";
 
     public static string DisplayName(this EmojiGender gender) => gender switch
     {

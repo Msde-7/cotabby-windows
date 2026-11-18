@@ -276,4 +276,27 @@ public class MacroTriggerStateMachineTests
         Assert.False(sm.IsActive);
         Assert.Equal("", sm.Query);
     }
+
+    // U+FFFD is a character the keyboard hook could not read, such as one after a dead key.
+
+    [Fact]
+    public void AnUnreadableCharacterCancelsTheCaptureAndPassesThrough()
+    {
+        var sm = Capturing("12+3");
+
+        Assert.Equal(Outcome.Cancel, sm.Apply(Ch('\uFFFD'), hasInsertableResult: true));
+        Assert.False(sm.ConsumesKey);
+        Assert.False(sm.IsActive);
+        Assert.Equal("", sm.Query);
+    }
+
+    [Fact]
+    public void ASlashRightAfterAnUnreadableCharacterStaysText()
+    {
+        var sm = new MacroTriggerStateMachine();
+        Assert.Equal(Outcome.None, sm.Apply(Ch('\uFFFD'), hasInsertableResult: false));
+
+        Assert.Equal(Outcome.None, sm.Apply(Ch('/'), hasInsertableResult: false));
+        Assert.False(sm.IsActive);
+    }
 }

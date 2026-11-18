@@ -105,7 +105,7 @@ public sealed class CurrencyEvaluator(CultureInfo? culture = null, CurrencyRateT
         if (format.CurrencyPositivePattern == 0 && char.IsLetter(symbol[^1]))
         {
             // A bare code in front of the amount reads better with a gap (CHF 90.00).
-            symbol += ' ';
+            symbol += '\u00A0';
         }
         format.CurrencySymbol = symbol;
         format.CurrencyDecimalDigits = CodesWithoutMinorUnit.Contains(code) ? 0 : 2;

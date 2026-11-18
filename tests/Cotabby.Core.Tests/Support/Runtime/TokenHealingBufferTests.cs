@@ -125,6 +125,37 @@ public class TokenHealingBufferTests
         Assert.Null(buffer.Append([0xFF]));
         Assert.Null(buffer.Append(Utf8("text")));
         Assert.Equal("", buffer.Text);
+        Assert.True(buffer.HasInvalidBytes);
+    }
+
+    [Fact]
+    public void InvalidByteKeepsTheTextBeforeItAndEndsTheOutput()
+    {
+        var buffer = Buffer("");
+        Assert.Equal("Hi", buffer.Append(Utf8("Hi")));
+        Assert.Equal("Hi there", buffer.Append([.. Utf8(" there"), 0xFF, .. Utf8("x")]));
+        Assert.True(buffer.HasInvalidBytes);
+        Assert.Null(buffer.Append(Utf8(" more")));
+        Assert.Equal("Hi there", buffer.Text);
+    }
+
+    [Fact]
+    public void CompleteScalarsBeforeASplitOneArePublished()
+    {
+        var buffer = Buffer("");
+        Assert.Equal("ab", buffer.Append([.. Utf8("ab"), 0xF0]));
+        Assert.False(buffer.HasInvalidBytes);
+        Assert.Equal("ab😀", buffer.Append([0x9F, 0x98, 0x80]));
+    }
+
+    [Fact]
+    public void ASplitScalarThatTurnsOutInvalidEndsTheOutput()
+    {
+        var buffer = Buffer("");
+        Assert.Equal("ok", buffer.Append([.. Utf8("ok"), 0xE2]));
+        Assert.Null(buffer.Append(Utf8("zz")));
+        Assert.True(buffer.HasInvalidBytes);
+        Assert.Equal("ok", buffer.Text);
     }
 
     [Fact]

@@ -16,6 +16,12 @@ public sealed class EmojiTriggerStateMachine
 {
     private const char Trigger = ':';
 
+    /// <summary>
+    /// What the keyboard hook reports for a character it could not read, such as the one after a
+    /// dead key or the second half of a surrogate pair.
+    /// </summary>
+    private const char UnknownCharacter = '\uFFFD';
+
     // The last character typed while idle. Null means nothing is known about the text before the caret.
     private char? _previousCharacter;
 
@@ -115,6 +121,13 @@ public sealed class EmojiTriggerStateMachine
 
     private Output ReduceCapturingCharacter(char character)
     {
+        // The query no longer matches what the field holds, so the capture cancels. The unknown
+        // character is remembered as no boundary, so a colon right after it opens nothing.
+        if (character == UnknownCharacter)
+        {
+            GoIdle(character);
+            return new Output(EmojiTriggerAction.Cancel, false);
+        }
         if (character == Trigger)
         {
             GoIdle(null);

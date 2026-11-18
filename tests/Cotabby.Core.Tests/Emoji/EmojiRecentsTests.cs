@@ -15,7 +15,7 @@ public class EmojiRecentsTests
     [
         Entry("😀", "grinning"),
         Entry("😂", "joy"),
-        Entry("❤️", "heart"),
+        Entry("❤\uFE0F", "heart"),
         Entry("🚀", "rocket"),
         Entry("🦄", "unicorn"),
     ]);
@@ -27,28 +27,28 @@ public class EmojiRecentsTests
 
     [Fact]
     public void RecentsLeadInOrderThenPopularityPads() =>
-        Assert.Equal(["🦄", "😀", "😂", "❤️", "🚀"], Glyphs(10, "unicorn", "grinning"));
+        Assert.Equal(["🦄", "😀", "😂", "❤\uFE0F", "🚀"], Glyphs(10, "unicorn", "grinning"));
 
     [Fact]
     public void EmptyUsageUsesOnlyThePopularityWindow() =>
-        Assert.Equal(["😂", "❤️", "🚀"], Glyphs(10));
+        Assert.Equal(["😂", "❤\uFE0F", "🚀"], Glyphs(10));
 
     [Fact]
     public void PaddingWindowScalesWithLimit() =>
-        Assert.Equal(["😂", "❤️"], Glyphs(5));
+        Assert.Equal(["😂", "❤\uFE0F"], Glyphs(5));
 
     [Fact]
     public void UnresolvableRecentAliasIsSkipped() =>
-        Assert.Equal(["😂", "❤️"], Glyphs(5, "not_in_catalog", "joy"));
+        Assert.Equal(["😂", "❤\uFE0F"], Glyphs(5, "not_in_catalog", "joy"));
 
     [Fact]
     public void RecentThatIsAlsoPopularAppearsOnceAtItsRecentPosition() =>
-        Assert.Equal(["❤️", "😂", "🚀"], Glyphs(10, "HEART"));
+        Assert.Equal(["❤\uFE0F", "😂", "🚀"], Glyphs(10, "HEART"));
 
     [Fact]
     public void LimitIsRespected()
     {
-        Assert.Equal(["😂", "❤️"], Glyphs(2));
+        Assert.Equal(["😂", "❤\uFE0F"], Glyphs(2));
         Assert.Equal(["🦄"], Glyphs(1, "unicorn", "grinning"));
     }
 

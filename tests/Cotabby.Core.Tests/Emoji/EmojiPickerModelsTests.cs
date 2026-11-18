@@ -40,7 +40,7 @@ public class EmojiPickerModelsTests
     [Fact]
     public void EmojiSkinTone_SampleGlyphAppendsModifierAndNeutralKeepsVariationSelector()
     {
-        Assert.Equal("✌️", EmojiSkinTone.Neutral.SampleGlyph());
+        Assert.Equal("✌\uFE0F", EmojiSkinTone.Neutral.SampleGlyph());
         foreach (var tone in Enum.GetValues<EmojiSkinTone>().Where(tone => tone != EmojiSkinTone.Neutral))
         {
             Assert.Equal("✌" + tone.Modifier(), tone.SampleGlyph());

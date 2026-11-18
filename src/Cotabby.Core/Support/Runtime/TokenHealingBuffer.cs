@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.Unicode;
 
 namespace Cotabby.Core.Support;
 
@@ -25,6 +24,9 @@ public sealed class TokenHealingBuffer
     private int _replayed;
     private readonly List<byte> _visibleBytes = [];
 
+    /// <summary>How many of <see cref="_visibleBytes"/> are complete, valid UTF-8.</summary>
+    private int _validBytes;
+
     public TokenHealingBuffer(ReadOnlySpan<byte> replayedPrefix)
     {
         _replay = replayedPrefix.ToArray();
@@ -48,12 +50,18 @@ public sealed class TokenHealingBuffer
     public bool HasVisibleBytes => _visibleBytes.Count > 0;
 
     /// <summary>
+    /// The output reached bytes that are not UTF-8. <see cref="Text"/> keeps the valid text before
+    /// them and never grows again, so the runtime can stop sampling.
+    /// </summary>
+    public bool HasInvalidBytes { get; private set; }
+
+    /// <summary>
     /// Returns the cumulative visible text only when this piece adds a complete UTF-8 continuation.
     /// Null during replay or a split scalar.
     /// </summary>
     public string? Append(ReadOnlySpan<byte> tokenBytes)
     {
-        if (HasReplayMismatch) return null;
+        if (HasReplayMismatch || HasInvalidBytes) return null;
 
         int replayCount = Math.Min(_replay.Length - _replayed, tokenBytes.Length);
         if (!RemainingReplay[..replayCount].SequenceEqual(tokenBytes[..replayCount]))
@@ -72,9 +80,24 @@ public sealed class TokenHealingBuffer
 
         // Lossy decoding would turn each unfinished token piece into U+FFFD. The original bytes are
         // kept until later pieces complete the scalar, and an invalid sequence never publishes.
+        // The complete scalars before an unfinished or invalid one are published, so one bad byte
+        // does not freeze the text at the token before it.
         var visible = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_visibleBytes);
-        if (!Utf8.IsValid(visible)) return null;
-        Text = Encoding.UTF8.GetString(visible);
+        int valid = _validBytes;
+        while (valid < visible.Length)
+        {
+            var status = Rune.DecodeFromUtf8(visible[valid..], out _, out int consumed);
+            if (status == System.Buffers.OperationStatus.Done)
+            {
+                valid += consumed;
+                continue;
+            }
+            if (status == System.Buffers.OperationStatus.InvalidData) HasInvalidBytes = true;
+            break;
+        }
+        if (valid == _validBytes) return null;
+        _validBytes = valid;
+        Text = Encoding.UTF8.GetString(visible[..valid]);
         return Text;
     }
 }

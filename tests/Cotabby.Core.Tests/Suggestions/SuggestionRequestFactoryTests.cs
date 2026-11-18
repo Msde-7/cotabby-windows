@@ -204,11 +204,11 @@ public sealed class SuggestionRequestFactoryTests
     [Fact]
     public void Prefix_CharacterWindowKeepsUnicodeAndTrailingWhitespace()
     {
-        string text = string.Concat(Enumerable.Repeat("👩🏽‍💻", 2600)) + "\n\tHello  ";
+        string text = string.Concat(Enumerable.Repeat("👩🏽\u200D💻", 2600)) + "\n\tHello  ";
 
         string prefix = SuggestionRequestFactory.Prefix(text, maxCharacters: 2000);
 
-        Assert.Equal(string.Concat(Enumerable.Repeat("👩🏽‍💻", 1991)) + "\n\tHello  ", prefix);
+        Assert.Equal(string.Concat(Enumerable.Repeat("👩🏽\u200D💻", 1991)) + "\n\tHello  ", prefix);
     }
 
     [Fact]

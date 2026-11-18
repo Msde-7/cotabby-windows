@@ -115,34 +115,34 @@ public class EmojiCatalogMatcherTests
     public void FrequentUseAloneMarksAFavorite()
     {
         var sut = Matcher(
-            Entry("🅰️", "alpha", ["alpha"]),
-            Entry("🅱️", "alphabet", ["alphabet"]));
+            Entry("🅰\uFE0F", "alpha", ["alpha"]),
+            Entry("🅱\uFE0F", "alphabet", ["alphabet"]));
 
         var once = Usage(frequency: new() { ["alphabet"] = 1 });
-        Assert.Equal("🅰️", sut.Matches("alph", once)[0].Glyph);
+        Assert.Equal("🅰\uFE0F", sut.Matches("alph", once)[0].Glyph);
 
         var often = Usage(frequency: new() { ["alphabet"] = EmojiUsageSnapshot.FrequentThreshold });
-        Assert.Equal("🅱️", sut.Matches("alph", often)[0].Glyph);
+        Assert.Equal("🅱\uFE0F", sut.Matches("alph", often)[0].Glyph);
     }
 
     [Fact]
     public void FavoriteNeverJumpsAStrongerTier()
     {
         var sut = Matcher(
-            Entry("🅰️", "alpha", ["alpha"]),
-            Entry("🅱️", "alphabet", ["alphabet"]));
+            Entry("🅰\uFE0F", "alpha", ["alpha"]),
+            Entry("🅱\uFE0F", "alphabet", ["alphabet"]));
 
-        Assert.Equal("🅰️", sut.Matches("alpha", Usage(recents: ["alphabet"]))[0].Glyph);
+        Assert.Equal("🅰\uFE0F", sut.Matches("alpha", Usage(recents: ["alphabet"]))[0].Glyph);
     }
 
     [Fact]
     public void CatalogOrderIsTheFinalTiebreak()
     {
         var sut = Matcher(
-            Entry("1️⃣", "zork one", ["zorka"]),
-            Entry("2️⃣", "zork two", ["zorkb"]));
+            Entry("1\uFE0F\u20E3", "zork one", ["zorka"]),
+            Entry("2\uFE0F\u20E3", "zork two", ["zorkb"]));
 
-        Assert.Equal(["1️⃣", "2️⃣"], Glyphs(sut.Matches("zork")));
+        Assert.Equal(["1\uFE0F\u20E3", "2\uFE0F\u20E3"], Glyphs(sut.Matches("zork")));
     }
 
     [Fact]
@@ -185,11 +185,11 @@ public class EmojiCatalogMatcherTests
     public void FavoriteFloatsAboveShorterTokenWithinTier()
     {
         var sut = Matcher(
-            Entry("🅰️", "alpha", ["alpha"]),
-            Entry("🅱️", "alphabet", ["alphabet"]));
+            Entry("🅰\uFE0F", "alpha", ["alpha"]),
+            Entry("🅱\uFE0F", "alphabet", ["alphabet"]));
 
-        Assert.Equal("🅰️", sut.Matches("alph")[0].Glyph);
-        Assert.Equal("🅱️", sut.Matches("alph", Usage(recents: ["alphabet"]))[0].Glyph);
+        Assert.Equal("🅰\uFE0F", sut.Matches("alph")[0].Glyph);
+        Assert.Equal("🅱\uFE0F", sut.Matches("alph", Usage(recents: ["alphabet"]))[0].Glyph);
     }
 
     [Fact]
@@ -197,9 +197,9 @@ public class EmojiCatalogMatcherTests
     {
         var sut = Matcher(
             Entry("🌿", "hedge", ["hedge"]),
-            Entry("❤️", "heart", ["heart"]));
+            Entry("❤\uFE0F", "heart", ["heart"]));
 
-        Assert.Equal("❤️", sut.Matches("he")[0].Glyph);
+        Assert.Equal("❤\uFE0F", sut.Matches("he")[0].Glyph);
     }
 
     [Fact]

@@ -23,7 +23,7 @@ public sealed class SpellingLanguageResolver(Func<SpellingDictionaryLanguage, st
 
     // What CaretWordContext.CommittedWordIn accepts after a word: a space (or Chromium's no-break
     // space) and the punctuation that commits a word.
-    private static readonly char[] CommittingDelimiters = [' ', ' ', ',', ';', ':', '!', '?'];
+    private static readonly char[] CommittingDelimiters = [' ', '\u00A0', ',', ';', ':', '!', '?'];
 
     private readonly LanguageVocabularyScorer _scorer = new(resourceLoader ?? SpellingDictionaryResources.Loader());
 

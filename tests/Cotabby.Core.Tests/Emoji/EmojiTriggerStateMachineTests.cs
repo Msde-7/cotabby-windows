@@ -316,4 +316,29 @@ public class EmojiTriggerStateMachineTests
         Assert.Equal(Output.Ignored, sut.Reduce(Key(KeyKind.Tab, down: false), 2));
         Assert.Equal("smi", sut.Query);
     }
+
+    // U+FFFD is a character the keyboard hook could not read, such as one after a dead key.
+
+    [Fact]
+    public void UnreadableCharacter_CancelsTheCaptureWithoutConsumingIt()
+    {
+        var sut = Capturing("smi", matchCount: 3);
+
+        Assert.Equal(new Output(EmojiTriggerAction.Cancel, false), sut.Reduce(Key(KeyKind.Character, '\uFFFD'), 3));
+        Assert.False(sut.IsCapturing);
+        Assert.Equal("", sut.Query);
+    }
+
+    [Fact]
+    public void UnreadableCharacter_IsNoBoundaryForTheNextColon()
+    {
+        var sut = Capturing("smi");
+        sut.Reduce(Key(KeyKind.Character, '\uFFFD'), 0);
+        Assert.Equal(Output.Ignored, Type(sut, ":"));
+        Assert.False(sut.IsCapturing);
+
+        var idle = new EmojiTriggerStateMachine();
+        Type(idle, "\uFFFD:");
+        Assert.False(idle.IsCapturing);
+    }
 }

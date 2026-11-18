@@ -6,9 +6,9 @@ namespace Cotabby.Core.Tests.Emoji;
 /// <summary>Glyphs are written as explicit scalars so modifier placement is unambiguous.</summary>
 public class EmojiVariantResolverTests
 {
-    private const string Firefighter = "\U0001F9D1‍\U0001F692";
-    private const string ManFirefighter = "\U0001F468‍\U0001F692";
-    private const string WomanFirefighter = "\U0001F469‍\U0001F692";
+    private const string Firefighter = "\U0001F9D1\u200D\U0001F692";
+    private const string ManFirefighter = "\U0001F468\u200D\U0001F692";
+    private const string WomanFirefighter = "\U0001F469\u200D\U0001F692";
 
     private static readonly EmojiMatch Wave = Match("\U0001F44B", "waving hand", "wave");
 
@@ -38,7 +38,7 @@ public class EmojiVariantResolverTests
     [Fact]
     public void SkinTone_AppliesAfterTheLeadingPersonScalarInsideZwjSequence() =>
         Assert.Equal(
-            ["\U0001F9D1\U0001F3FD‍\U0001F692", Firefighter],
+            ["\U0001F9D1\U0001F3FD\u200D\U0001F692", Firefighter],
             Resolve([Match(Firefighter, "firefighter", "firefighter")], EmojiSkinTone.Medium));
 
     [Fact]
@@ -65,8 +65,8 @@ public class EmojiVariantResolverTests
     public void TonedGlyph_InsertsTheModifierBeforeAVariationSelector() =>
         // U+261D is a single UTF-16 unit, unlike the astral bases in the other cases.
         Assert.Equal(
-            "☝\U0001F3FD️",
-            EmojiVariantResolver.TonedGlyph("☝️", EmojiSkinTone.Medium.Modifier()!));
+            "☝\U0001F3FD\uFE0F",
+            EmojiVariantResolver.TonedGlyph("☝\uFE0F", EmojiSkinTone.Medium.Modifier()!));
 
     [Fact]
     public void IsModifierBase_MatchesRangeEdges()
@@ -133,7 +133,7 @@ public class EmojiVariantResolverTests
         ];
 
         Assert.Equal(
-            ["\U0001F469\U0001F3FF‍\U0001F692", WomanFirefighter],
+            ["\U0001F469\U0001F3FF\u200D\U0001F692", WomanFirefighter],
             Resolve(family, EmojiSkinTone.Dark, EmojiGender.Female));
     }
 

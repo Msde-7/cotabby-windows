@@ -17,6 +17,7 @@ namespace Cotabby.Core.Macros;
 ///   <item>Any other character, Enter, Delete, arrows, a Ctrl, Alt or Win chord, and Backspace
 ///   on an empty query cancel and pass through.</item>
 ///   <item>A character past <see cref="MaxQueryLength"/> cancels and passes through.</item>
+///   <item>A character the hook could not read (U+FFFD) cancels and passes through.</item>
 /// </list>
 /// </remarks>
 public sealed class MacroTriggerStateMachine
@@ -36,6 +37,12 @@ public sealed class MacroTriggerStateMachine
     }
 
     private const char Trigger = '/';
+
+    /// <summary>
+    /// What the keyboard hook reports for a character it could not read, such as the one after a
+    /// dead key or the second half of a surrogate pair.
+    /// </summary>
+    private const char UnknownCharacter = '\uFFFD';
 
     /// <summary>
     /// The longest query a capture holds. No macro comes near it, and every keystroke evaluates the
@@ -112,6 +119,9 @@ public sealed class MacroTriggerStateMachine
 
     private Outcome ApplyCharacter(char c)
     {
+        // Whatever was typed, the query no longer matches the field, so a capture cancels and the
+        // key passes through. It is no word boundary either, so a slash right after it stays text.
+        if (c == UnknownCharacter) return End(c);
         if (IsActive)
         {
             if (!MacroQueryGrammar.Extends(c) || Query.Length >= MaxQueryLength) return End(c);

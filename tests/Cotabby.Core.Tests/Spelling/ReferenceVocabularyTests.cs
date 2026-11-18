@@ -15,9 +15,9 @@ public class ReferenceVocabularyTests
     [Fact]
     public void WordsComeFromAllThreeSourcesAndKeepConnectors()
     {
-        var words = ReferenceVocabulary.Words("It's a well-known -fact- (résumé) x2 par", "tail text", "Glossary");
+        var words = ReferenceVocabulary.Words("It's a well-known -fact- (re\u0301sume\u0301) x2 par", "tail text", "Glossary");
         Assert.Equal(
-            new HashSet<string> { "It's", "a", "well-known", "résumé", "x", "tail", "text", "Glossary" },
+            new HashSet<string> { "It's", "a", "well-known", "re\u0301sume\u0301", "x", "tail", "text", "Glossary" },
             words);
     }
 }

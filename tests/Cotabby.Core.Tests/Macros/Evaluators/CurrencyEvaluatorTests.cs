@@ -45,7 +45,7 @@ public class CurrencyEvaluatorTests
     [Fact]
     public void CodeWithoutSymbolIsShownAsTheCodeWithAGap()
     {
-        Assert.Equal("CHF 90.00", _sut.Evaluate("100usd->chf")?.InsertionText);
+        Assert.Equal("CHF\u00A090.00", _sut.Evaluate("100usd->chf")?.InsertionText);
     }
 
     [Fact]
