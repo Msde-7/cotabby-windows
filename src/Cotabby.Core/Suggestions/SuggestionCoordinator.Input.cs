@@ -224,8 +224,9 @@ public sealed partial class SuggestionCoordinator
         _keySequence++;
         if (ev.HasNonShiftModifier || ev.Kind is not (KeyKind.Character or KeyKind.Backspace))
         {
-            // Enter, navigation and shortcuts change the text in ways a count cannot predict.
-            SetPublishBaseline(null);
+            // Enter, navigation and shortcuts change the text in ways a count cannot predict, so the
+            // read waits for the field to move on from how it looked at the key.
+            SetPublishBaseline(_focus.Current, awaitsChange: true);
         }
         else if (ev.Kind == KeyKind.Character)
         {
@@ -254,7 +255,8 @@ public sealed partial class SuggestionCoordinator
         }
         if (!committed) return false;
         // The commit replaces the composition in the field, which a key count cannot follow.
-        PredictFromFreshRead();
+        SetPublishBaseline(_focus.Current, awaitsChange: true);
+        SchedulePrediction(typed: null);
         return true;
     }
 

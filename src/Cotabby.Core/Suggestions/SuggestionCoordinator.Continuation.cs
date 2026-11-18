@@ -11,7 +11,8 @@ public sealed partial class SuggestionCoordinator
     /// A generation for the text a suggestion leaves once used, started before it is. The text may
     /// still be generating; empty means it produced nothing.
     /// </summary>
-    private sealed record PrefetchedContinuation(string FocusIdentity, string PrecedingText, Task<string> Text);
+    private sealed record PrefetchedContinuation(
+        string FocusIdentity, string PrecedingText, Task<string> Text, CancellationTokenSource Cancel);
 
     /// <summary>
     /// Starts evaluating the prompt of a field that just gained focus. The engine gives it up as soon
@@ -63,6 +64,8 @@ public sealed partial class SuggestionCoordinator
     {
         if (_sessionPrefetched || _sessionField is not { } offeredIn || session.IsExhausted || !_engine.IsReady) return;
         var settings = _settings;
+        // An endpoint is billed per request, so like upstream it gets no speculative continuation.
+        if (settings.UsesEndpoint) return;
         if (ContinuationTarget(session, settings, atOffer) is not { } preceding) return;
         if (!SuggestionRequestFactory.ShouldGenerate(preceding, offeredIn.TrailingText, settings.SuggestWithinWords)) return;
         _sessionPrefetched = true;
@@ -86,7 +89,7 @@ public sealed partial class SuggestionCoordinator
                 return "";
             }
         });
-        _prefetched = new PrefetchedContinuation(identity, preceding, text);
+        Volatile.Write(ref _prefetched, new PrefetchedContinuation(identity, preceding, text, cts));
     }
 
     /// <summary>
@@ -97,8 +100,6 @@ public sealed partial class SuggestionCoordinator
     {
         if (session.Correction is { } correction)
         {
-            // An unconfirmed fix is new, speculative text, so it stays on this PC like upstream's.
-            if (settings.UsesEndpoint) return null;
             return TypoCorrectionReplacementPlanner.Plan(
                     _expectedPreceding, correction.Word, correction.CorrectedWord, requiresTrailingSpace: false) is { } fix
                 ? _expectedPreceding[..^fix.DeletingUtf16Count] + fix.ReplacementText
@@ -106,7 +107,7 @@ public sealed partial class SuggestionCoordinator
         }
         if (session.PredictedText.Length <= ContinuationPrefetchChars) return _expectedPreceding + session.PredictedText;
         // A lone word ending: the words after it are a guess the model has not made yet.
-        bool wordEnding = atOffer && !settings.UsesEndpoint
+        bool wordEnding = atOffer
             && !session.PredictedText.Any(char.IsWhiteSpace)
             && CaretWordContext.UnfinishedWord(_expectedPreceding) is not null;
         return wordEnding ? _expectedPreceding + session.PredictedText : null;
@@ -118,15 +119,23 @@ public sealed partial class SuggestionCoordinator
     /// </summary>
     private async Task<string?> TakePrefetchedAsync(FocusedField field, CancellationToken ct)
     {
-        var prefetched = Interlocked.Exchange(ref _prefetched, null);
-        if (prefetched is null || prefetched.FocusIdentity != FocusIdentity(field)) return null;
+        var prefetched = Volatile.Read(ref _prefetched);
+        if (prefetched is null) return null;
         string expected = SuggestionSessionReconciler.SpaceNormalized(prefetched.PrecedingText);
         string live = SuggestionSessionReconciler.SpaceNormalized(field.PrecedingText);
         // The space added after accepting, or typed by the user, ends the same word. It is the one
         // difference allowed, and it takes the place of the continuation's own leading space.
         bool joinedBySpace = live == expected + " " && !expected.EndsWith(' ');
-        if (live != expected && !joinedBySpace) return null;
+        if (prefetched.FocusIdentity != FocusIdentity(field) || (live != expected && !joinedBySpace))
+        {
+            // The field moved past the text it was made for. The engine runs one generation at a
+            // time, so a leftover one would hold up the request that replaces it.
+            if (Interlocked.CompareExchange(ref _prefetched, null, prefetched) == prefetched) prefetched.Cancel.Cancel();
+            return null;
+        }
+        // It is taken only once used, so a request cancelled while it waits leaves it for the next.
         string text = await prefetched.Text.WaitAsync(ct).ConfigureAwait(false);
+        if (Interlocked.CompareExchange(ref _prefetched, null, prefetched) != prefetched) return null;
         if (joinedBySpace) text = text.StartsWith(' ') ? text[1..] : "";
         return text.Length == 0 ? null : text;
     }
@@ -135,6 +144,6 @@ public sealed partial class SuggestionCoordinator
     {
         _prefetch?.Cancel();
         _prefetch = null;
-        _prefetched = null;
+        Volatile.Write(ref _prefetched, null);
     }
 }

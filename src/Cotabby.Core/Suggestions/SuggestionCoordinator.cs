@@ -107,6 +107,7 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
     // keys pressed since then should have added. Null means the next read is trusted as is.
     private FocusedField? _publishBaseline;
     private int _expectedDelta;
+    private bool _publishAwaitsChange;
     private long _keySequence;
     private int _focusedPid;
 

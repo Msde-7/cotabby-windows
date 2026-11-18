@@ -148,14 +148,28 @@ internal sealed class ScriptedEngine : ISuggestionEngine
     /// <summary>When set, a decode reports its whole text as a partial, then waits here before it finishes.</summary>
     public TaskCompletionSource? Hold { get; set; }
 
+    /// <summary>Which requests <see cref="Hold"/> applies to. All of them by default.</summary>
+    public Func<SuggestionRequest, bool> Holds { get; set; } = _ => true;
+
+    /// <summary>Prefixes of the requests that were cancelled while they generated.</summary>
+    public ConcurrentQueue<string> Cancelled { get; } = new();
+
     public async Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct, Action<string>? onPartial = null)
     {
         Requests.Enqueue(request);
         await Task.Yield();
-        if (Hold is { } hold)
+        if (Hold is { } hold && Holds(request))
         {
             onPartial?.Invoke(Completion(request));
-            await hold.Task.WaitAsync(ct);
+            try
+            {
+                await hold.Task.WaitAsync(ct);
+            }
+            catch (OperationCanceledException)
+            {
+                Cancelled.Enqueue(request.Prefix);
+                throw;
+            }
         }
         return Completion(request);
     }

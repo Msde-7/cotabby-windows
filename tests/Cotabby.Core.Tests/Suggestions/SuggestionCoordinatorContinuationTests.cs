@@ -1,4 +1,5 @@
 using Cotabby.Core.Input;
+using Cotabby.Core.Suggestions;
 
 namespace Cotabby.Core.Tests.Suggestions;
 
@@ -73,5 +74,52 @@ public sealed class SuggestionCoordinatorContinuationTests : CoordinatorHarness
         Type("hello");
 
         await Shown(" world again");
+    }
+
+    [Fact]
+    public async Task ClearingTheSuggestion_StopsItsPrefetchedContinuation()
+    {
+        Engine.Completion = request => request.Prefix.EndsWith("world") ? " again" : " world";
+        Engine.Hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Engine.Holds = r => r.Prefix == "hello world";
+        Type("hello");
+        await Shown(" world");
+        await Eventually(() => Engine.Requests.Any(r => r.Prefix == "hello world"), "the continuation is prefetched");
+
+        // A click elsewhere in the field: the suggestion goes, and its continuation is of no use.
+        Focus.Replace(Fields.Text("hello there"));
+
+        await Shown("");
+        await Eventually(() => Engine.Cancelled.Contains("hello world"), "the prefetch is cancelled");
+    }
+
+    [Fact]
+    public async Task APrefetchForOtherText_IsCancelledWhenTheFieldDisagrees()
+    {
+        Engine.Completion = request => request.Prefix.EndsWith("world") ? " again" : request.Prefix == "hello" ? " world" : "";
+        Engine.Hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Engine.Holds = r => r.Prefix == "hello world";
+        Type("hello");
+        await Shown(" world");
+        Type(" worl");
+        await Eventually(() => Engine.Requests.Any(r => r.Prefix == "hello world"), "the continuation is prefetched");
+
+        // The last key types through the suggestion, but the host shows something else.
+        Hook.Press(Keys.Char('d'));
+        Focus.Append("D");
+
+        await Eventually(() => Engine.Cancelled.Contains("hello world"), "the unused prefetch is cancelled");
+    }
+
+    [Fact]
+    public async Task AnEndpoint_GetsNoSpeculativeContinuation()
+    {
+        Coordinator.Settings = SuggestionSettings.Default with { UsesEndpoint = true };
+        Engine.Completion = request => request.Prefix.EndsWith("world") ? " again" : " world";
+        Type("hello");
+        await Shown(" world");
+
+        await Task.Delay(200);
+        Assert.DoesNotContain(Engine.Requests, r => r.Prefix == "hello world");
     }
 }

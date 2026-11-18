@@ -131,4 +131,19 @@ public sealed class SuggestionCoordinatorTypoTests : CoordinatorHarness
         await Task.Delay(150);
         Assert.Equal("other teh ", Focus.Current!.Text);
     }
+
+    [Fact]
+    public async Task CorrectionTheHostNeverShows_IsNotOfferedAgain()
+    {
+        Type("hello teh ");
+        await Shown("the");
+        Focus.IgnoresEdits = true;
+
+        Assert.True(Hook.Press(Keys.Tab()));
+        await Shown("");
+
+        // Past the wait for the edit, the old text must not be corrected a second time.
+        await Task.Delay(700);
+        Assert.Equal("", Overlay.Text);
+    }
 }

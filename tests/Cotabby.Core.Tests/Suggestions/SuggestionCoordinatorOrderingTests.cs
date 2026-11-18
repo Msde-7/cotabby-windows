@@ -80,4 +80,19 @@ public sealed class SuggestionCoordinatorOrderingTests : CoordinatorHarness
 
         await Shown(" marks");
     }
+
+    [Fact]
+    public async Task Paste_WaitsForTheHostToShowThePastedText()
+    {
+        Type("hello");
+        await Shown(" world again");
+        Engine.Requests.Clear();
+
+        Hook.Press(Keys.Special(KeyKind.Shortcut, 0x56) with { Modifiers = KeyModifiers.Control });
+        await Task.Delay(80);
+        Focus.Append(" pasted");
+
+        await Eventually(() => !Engine.Requests.IsEmpty, "a request is sent");
+        Assert.Equal("hello pasted", Engine.Requests.First().Prefix);
+    }
 }

@@ -140,6 +140,8 @@ public sealed partial class SuggestionCoordinator
         ClearSession();
         _prediction = null;
         _work.Cancel();
+        // Typing through to the end clears the session without coming here, which keeps its continuation.
+        CancelPrefetch();
     }
 
     private void ResetAcceptKeyState()

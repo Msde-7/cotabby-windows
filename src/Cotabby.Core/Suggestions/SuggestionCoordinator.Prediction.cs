@@ -25,25 +25,40 @@ public sealed partial class SuggestionCoordinator
         var settings = _settings;
         var baseline = _publishBaseline;
         int delta = _expectedDelta;
+        bool awaitsChange = _publishAwaitsChange;
         long sequence = _keySequence;
         long submittedAt = _clock.GetTimestamp();
         // The debounce runs alongside the wait for the host to show the key, not after it.
         _ = _work.Submit(
-            ct => PredictAsync(requestId, settings, baseline, delta, typed, requiresTextChange, sequence, submittedAt, ct),
+            ct => PredictAsync(
+                requestId, settings, new PublishWait(baseline, delta, typed, requiresTextChange, awaitsChange),
+                sequence, submittedAt, ct),
             TimeSpan.Zero);
     }
 
     private async Task PredictAsync(
-        string requestId, SuggestionSettings settings, FocusedField? baseline, int delta, char? typed,
-        bool requiresTextChange, long sequence, long submittedAt, CancellationToken ct)
+        string requestId, SuggestionSettings settings, PublishWait wait, long sequence, long submittedAt,
+        CancellationToken ct)
     {
         TypingPrediction? prediction = null;
         PartialStream? stream = null;
         bool presented = false;
         try
         {
-            var field = await WaitForHostPublishAsync(baseline, delta, typed, requiresTextChange, ct)
-                .ConfigureAwait(false);
+            var (field, gaveUp) = await WaitForHostPublishAsync(wait, ct).ConfigureAwait(false);
+            if (gaveUp)
+            {
+                // A replacement the host never showed must not be corrected again from the old
+                // text. The next real key asks again, and a queued accept is released now.
+                _logger.LogDebug("Request {ReqId} abandoned: the edit never showed in the field.", requestId);
+                Post(() =>
+                {
+                    if (_keySequence != sequence) return;
+                    ResetAcceptKeyState();
+                    CancelPrefetch();
+                });
+                return;
+            }
             // Whatever is left of the quiet time after a key, once the host has shown it. A key in
             // the meantime cancels this work, so a fast typist still starts no generation per key.
             var quiet = _work.Debounce - _clock.GetElapsedTime(submittedAt);
@@ -211,10 +226,15 @@ public sealed partial class SuggestionCoordinator
         }
     }
 
-    private void SetPublishBaseline(FocusedField? field, int delta = 0)
+    /// <param name="awaitsChange">
+    /// The keys since <paramref name="field"/> change the text in ways a count cannot follow, so the
+    /// next read waits for the text, field or caret to differ from it.
+    /// </param>
+    private void SetPublishBaseline(FocusedField? field, int delta = 0, bool awaitsChange = false)
     {
         _publishBaseline = field;
         _expectedDelta = delta;
+        _publishAwaitsChange = awaitsChange && field is not null;
     }
 
     /// <summary>Asks for a suggestion against the field as it is now, with no typed keys to wait for.</summary>
@@ -223,6 +243,12 @@ public sealed partial class SuggestionCoordinator
         SetPublishBaseline(null);
         SchedulePrediction(typed: null);
     }
+
+    /// <summary>What a request waits for before it reads the field.</summary>
+    /// <param name="RequiresTextChange">Wait until the text differs from the baseline, as after a correction, or give up.</param>
+    /// <param name="AwaitsChange">Wait until the text, field or caret differs from the baseline, or read it anyway.</param>
+    private readonly record struct PublishWait(
+        FocusedField? Baseline, int Delta, char? Typed, bool RequiresTextChange, bool AwaitsChange);
 
     private static string NewRequestId(string prefix) => prefix + Guid.NewGuid().ToString("N")[..8];
 
@@ -273,8 +299,8 @@ public sealed partial class SuggestionCoordinator
         }
     }
 
-    private async Task<FocusedField?> WaitForHostPublishAsync(
-        FocusedField? baseline, int delta, char? typed, bool requiresTextChange, CancellationToken ct)
+    /// <returns>The field, and GaveUp when an edit that had to show never did.</returns>
+    private async Task<(FocusedField? Field, bool GaveUp)> WaitForHostPublishAsync(PublishWait wait, CancellationToken ct)
     {
         int waited = 0;
         int interval = HostPublishFirstPollMs;
@@ -282,33 +308,37 @@ public sealed partial class SuggestionCoordinator
         {
             ct.ThrowIfCancellationRequested();
             var field = _focus.Refresh();
-            if (field is null) return null;
-            if (waited >= HostPublishCeilingMs || HasPublished(field, baseline, delta, typed, requiresTextChange, waited))
-            {
-                return field;
-            }
+            if (field is null) return (null, false);
+            if (HasPublished(field, wait, waited)) return (field, false);
+            // Upstream abandons a replacement the host did not show rather than read the old text.
+            if (waited >= HostPublishCeilingMs) return (field, wait.RequiresTextChange && wait.Baseline is not null);
             await Task.Delay(interval, ct).ConfigureAwait(false);
             waited += interval;
             interval = HostPublishPollMs;
         }
     }
 
-    private static bool HasPublished(
-        FocusedField field, FocusedField? baseline, int delta, char? typed, bool requiresTextChange, int waited)
+    private static bool HasPublished(FocusedField field, PublishWait wait, int waited)
     {
+        var (baseline, delta, typed, requiresTextChange, awaitsChange) = wait;
         var preceding = field.PrecedingText;
-        if (requiresTextChange && baseline is not null)
-        {
-            return SuggestionSessionReconciler.SpaceNormalized(preceding)
+        bool textChanged = baseline is not null
+            && SuggestionSessionReconciler.SpaceNormalized(preceding)
                 != SuggestionSessionReconciler.SpaceNormalized(baseline.PrecedingText);
+        if (requiresTextChange && baseline is not null) return textChanged;
+        if (awaitsChange && baseline is not null)
+        {
+            // Like upstream, the read is taken once the text, the field or the caret moved on from
+            // the snapshot at the key. A key typed after that must also have arrived.
+            bool moved = !SameField(field, baseline) || field.CaretOffset != baseline.CaretOffset
+                || field.HasSelection != baseline.HasSelection;
+            return (textChanged || moved) && (typed is not { } t || EndsWithTyped(preceding, t));
         }
         if (baseline is null || baseline.ProcessId != field.ProcessId)
         {
             // With nothing to count against, the typed character itself is the evidence. A dead key
             // can make the host insert an accented form of it, which then waits out the ceiling.
-            return typed is { } c
-                ? preceding.EndsWith(c) || (c == ' ' && preceding.EndsWith('\u00A0'))
-                : waited > 0;
+            return typed is { } c ? EndsWithTyped(preceding, c) : waited > 0;
         }
 
         int expected = baseline.PrecedingText.Length + delta;
@@ -319,6 +349,9 @@ public sealed partial class SuggestionCoordinator
             _ => true,
         };
     }
+
+    private static bool EndsWithTyped(string preceding, char c) =>
+        preceding.EndsWith(c) || (c == ' ' && preceding.EndsWith('\u00A0'));
 
     /// <summary>
     /// Waits for a pause in typing and for the host to show what was typed during generation, then
