@@ -83,10 +83,18 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
             LlamaRuntimeCore? core = null;
             try
             {
-                weights = await LLamaWeights.LoadFromFileAsync(parameters, ct).ConfigureAwait(false);
-                // The context is created once per loaded model. Creating one costs seconds on Vulkan
-                // because of pipeline compilation.
-                context = weights.CreateContext(parameters, _loggerFactory.CreateLogger<LLamaContext>());
+                try
+                {
+                    (weights, context) = await LoadWeightsAndContextAsync(parameters, ct).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // An integrated or small GPU can run out of memory for the weights or the
+                    // context. The CPU still runs the model, and no model at all would be worse.
+                    _logger.LogWarning(ex, "Loading model {Model} with GPU offload failed. Retrying on the CPU.", model.Id);
+                    parameters = parameters with { GpuLayerCount = 0, NoKqvOffload = true };
+                    (weights, context) = await LoadWeightsAndContextAsync(parameters, ct).ConfigureAwait(false);
+                }
                 core = new LlamaRuntimeCore(weights, context, _loggerFactory.CreateLogger<LlamaRuntimeCore>());
 
                 // The first generation on a fresh Vulkan context compiles shaders and reserves buffers,
@@ -114,6 +122,24 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
         finally
         {
             _gate.Release();
+        }
+    }
+
+    /// <summary>Loads the weights and creates their context, freeing the weights if the context fails.</summary>
+    private async Task<(LLamaWeights Weights, LLamaContext Context)> LoadWeightsAndContextAsync(
+        ModelParams parameters, CancellationToken ct)
+    {
+        var weights = await LLamaWeights.LoadFromFileAsync(parameters, ct).ConfigureAwait(false);
+        try
+        {
+            // The context is created once per loaded model. Creating one costs seconds on Vulkan
+            // because of pipeline compilation.
+            return (weights, weights.CreateContext(parameters, _loggerFactory.CreateLogger<LLamaContext>()));
+        }
+        catch
+        {
+            weights.Dispose();
+            throw;
         }
     }
 

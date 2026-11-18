@@ -112,10 +112,20 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
         string raw;
         try
         {
+            // A prewarm that started while the prompt was rendered could otherwise take the free
+            // gate first and evaluate a cold prompt with nothing left to cancel it. Nothing awaits
+            // between here and the gate.
+            CancelPrewarm();
             raw = await core.GenerateAsync(prompt, options, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
+            return string.Empty;
+        }
+        catch (ObjectDisposedException)
+        {
+            // The model was unloaded or switched after this request picked up its core.
+            _logger.LogDebug("Req {ReqId}: the model was unloaded before generation.", request.RequestId);
             return string.Empty;
         }
 

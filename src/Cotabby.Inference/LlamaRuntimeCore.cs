@@ -94,6 +94,8 @@ public sealed class LlamaRuntimeCore : IDisposable
         // limited to models whose memory can shift.
         _canReusePrefix = !weights.NativeHandle.IsRecurrent && context.NativeHandle.MemoryCanShift;
         _slidingWindow = weights.NativeHandle.SWACount;
+        // Read once, so callers never touch the native context outside the gate.
+        ContextWindowTokens = (int)context.NativeHandle.ContextSize;
         _healingVocabulary = BuildHealingVocabulary();
         _abortCallback = _ => _abortToken.IsCancellationRequested;
         NativeApi.llama_set_abort_callback(
@@ -103,7 +105,7 @@ public sealed class LlamaRuntimeCore : IDisposable
     public SafeLlamaModelHandle.Vocabulary Vocab => _weights.Vocab;
 
     /// <summary>Size of the context window in tokens.</summary>
-    public int ContextWindowTokens => (int)_context.NativeHandle.ContextSize;
+    public int ContextWindowTokens { get; }
 
     /// <summary>
     /// Run one constrained generation that continues <paramref name="prompt"/>. The prompt's final
@@ -535,7 +537,7 @@ public sealed class LlamaRuntimeCore : IDisposable
 
             var piece = scratch.AsSpan(0, byteLen);
             // A single-line field cannot take a line break, so the next best token continues the line.
-            if (singleLine && piece.IndexOf((byte)'\n') >= 0) continue;
+            if (singleLine && piece.IndexOfAny((byte)'\n', (byte)'\r') >= 0) continue;
             return token;
         }
         return null;
