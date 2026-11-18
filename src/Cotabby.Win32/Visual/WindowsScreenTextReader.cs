@@ -129,7 +129,7 @@ public sealed class WindowsScreenTextReader : IScreenTextReader
 
     private static RECT CropAbove(ScreenRect field, RECT window, IntPtr hwnd, VisualContextConfiguration configuration)
     {
-        double dpiScale = Math.Max(1, GetDpiForWindow(hwnd)) / 96.0;
+        double dpiScale = Math.Max(1, MonitorDpi(hwnd)) / 96.0;
         int padding = (int)(CropHorizontalPaddingDip * dpiScale);
         int height = Math.Min((int)(CropContextHeightDip * dpiScale), window.Height);
         int width = field.IsEmpty
@@ -140,6 +140,18 @@ public sealed class WindowsScreenTextReader : IScreenTextReader
         x = Math.Clamp(x, window.Left, Math.Max(window.Left, window.Right - width));
         y = Math.Clamp(y, window.Top, Math.Max(window.Top, window.Bottom - height));
         return new RECT { Left = x, Top = y, Right = x + width, Bottom = y + height };
+    }
+
+    /// <summary>
+    /// The effective DPI of the monitor the window is on. A window that is not DPI aware reports 96
+    /// for itself while its coordinates here are physical pixels, so its own DPI would make the crop
+    /// too small on a scaled display.
+    /// </summary>
+    private static uint MonitorDpi(IntPtr hwnd)
+    {
+        IntPtr monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if (monitor != IntPtr.Zero && GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, out uint dpi, out _) == 0) return dpi;
+        return GetDpiForWindow(hwnd);
     }
 
     private static RECT ClipToVirtualScreen(RECT rect)
@@ -178,10 +190,14 @@ public sealed class WindowsScreenTextReader : IScreenTextReader
             if (memory == IntPtr.Zero || bitmap == IntPtr.Zero || bits == IntPtr.Zero) return null;
             previous = SelectObject(memory, bitmap);
             SetStretchBltMode(memory, HALFTONE);
+            // HALFTONE needs the brush origin set after it, or its dither pattern is misaligned.
+            SetBrushOrgEx(memory, 0, 0, IntPtr.Zero);
             if (!StretchBlt(memory, 0, 0, width, height, screen, source.Left, source.Top, source.Width, source.Height, SRCCOPY))
             {
                 return null;
             }
+            // GDI may still be drawing into the section, so the batch is flushed before its bits are read.
+            GdiFlush();
             if (_pixels.Length != width * height * 4) _pixels = new byte[width * height * 4];
             // GDI leaves alpha undefined. OCR reads premultiplied pixels, so they are made opaque.
             CopyOpaque(new ReadOnlySpan<uint>((void*)bits, width * height), MemoryMarshal.Cast<byte, uint>(_pixels.AsSpan()));

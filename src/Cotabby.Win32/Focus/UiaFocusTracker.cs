@@ -35,9 +35,10 @@ public sealed class UiaFocusTracker : IFocusTracker
     private readonly object _readGate = new();
     private readonly FocusFlickerGate _flicker = new();
     private readonly HashSet<IntPtr> _primedWindows = [];
+    private readonly CaptureOrder<FocusedField> _current = new();
+    private readonly PrecedingTextReads _precedingReads = new();
 
     private AutomationFocusChangedEventHandler? _handler;
-    private FocusedField? _current;
     private bool _running;
     private bool _disposed;
 
@@ -47,7 +48,7 @@ public sealed class UiaFocusTracker : IFocusTracker
 
     public UiaFocusTracker(ILogger<UiaFocusTracker> logger) => _logger = logger;
 
-    public FocusedField? Current => _current;
+    public FocusedField? Current => _current.Current;
 
     public event EventHandler<FocusedField?>? FocusChanged;
 
@@ -64,7 +65,8 @@ public sealed class UiaFocusTracker : IFocusTracker
             _logger.LogInformation("UIA focus tracker started.");
 
             // Seeded so Current is not null until the first focus change.
-            _current = Capture();
+            long sequence = _current.Begin();
+            _current.TryPublish(sequence, Capture());
         }
     }
 
@@ -80,7 +82,7 @@ public sealed class UiaFocusTracker : IFocusTracker
                 catch (Exception ex) { _logger.LogWarning(ex, "RemoveAutomationFocusChangedEventHandler threw."); }
                 _handler = null;
             }
-            _current = null;
+            _current.Reset();
             lock (_readGate) _flicker.Reset();
             _logger.LogInformation("UIA focus tracker stopped.");
         }
@@ -88,8 +90,9 @@ public sealed class UiaFocusTracker : IFocusTracker
 
     public FocusedField? Refresh(bool readHostText = false)
     {
+        long sequence = _current.Begin();
         var snap = Capture(readHostText);
-        _current = snap;
+        _current.TryPublish(sequence, snap);
         return snap;
     }
 
@@ -106,17 +109,14 @@ public sealed class UiaFocusTracker : IFocusTracker
 
         try
         {
+            long sequence = _current.Begin();
             var snap = Capture();
-            // Focus on a field that is not editable ends the session, so no ghost text is left behind.
-            if (snap is null)
-            {
-                _current = null;
-                FocusChanged?.Invoke(this, null);
-                return;
-            }
+            // When a capture that started later finished first, this one describes focus as it was
+            // before, so the later one is passed on instead.
+            if (!_current.TryPublish(sequence, snap)) snap = _current.Current;
 
-            // Every focus event is passed on. Listeners compare FieldId to tell a new field.
-            _current = snap;
+            // Focus on a field that is not editable ends the session, so no ghost text is left behind.
+            // Every other focus event is passed on. Listeners compare FieldId to tell a new field.
             FocusChanged?.Invoke(this, snap);
         }
         catch (Exception ex)
@@ -134,7 +134,7 @@ public sealed class UiaFocusTracker : IFocusTracker
         TryCaptureFocused(readHostText, out var snap, out var elementId);
         lock (_readGate)
         {
-            var held = _current;
+            var held = _current.Current;
             if (_flicker.Evaluate(snap?.FieldId ?? elementId, snap is not null) == FocusFlickerGate.Decision.Suppress
                 && held is not null && held.FieldId == elementId)
             {
@@ -297,11 +297,11 @@ public sealed class UiaFocusTracker : IFocusTracker
             if (!_running) return;
             try
             {
+                long sequence = _current.Begin();
                 var snap = Capture();
                 if (snap is null) continue;
-                if (_current?.FieldId != snap.FieldId)
+                if (_current.Current?.FieldId != snap.FieldId && _current.TryPublish(sequence, snap))
                 {
-                    _current = snap;
                     FocusChanged?.Invoke(this, snap);
                 }
                 return;
@@ -329,7 +329,10 @@ public sealed class UiaFocusTracker : IFocusTracker
             ? rawText as TextPattern
             : null;
         var caret = ReadCaretRange(textPattern);
-        var (text, caretOffset, hasSelection) = ReadTextAndCaret(element, cached, textPattern, caret);
+        // A secure field's text is never read, whatever marked it secure. Its caret still places the overlay.
+        var (text, caretOffset, hasSelection) = isSecure
+            ? (string.Empty, 0, false)
+            : ReadTextAndCaret(element, cached, textPattern, caret, fieldId);
         var caretRect = ReadCaretRect(caret);
         var fieldRect = ToScreenRect(info.BoundingRectangle);
         var ct = info.ControlType;
@@ -337,7 +340,7 @@ public sealed class UiaFocusTracker : IFocusTracker
         bool singleLine = FieldShape.IsSingleLine(editLike, fieldRect, caretRect);
         // The font and line sample cost several more round trips, so only the snapshot a suggestion
         // is drawn from reads them.
-        var styleCaret = readHostText && !hasSelection ? caret : null;
+        var styleCaret = readHostText && !hasSelection && !isSecure ? caret : null;
         var sample = styleCaret is null ? default : ReadLineSample(styleCaret, caretRect, fieldRect);
         var font = styleCaret is null ? default : ReadHostFont(fieldId, styleCaret, sample.Range);
 
@@ -386,9 +389,13 @@ public sealed class UiaFocusTracker : IFocusTracker
         return FieldShape.HoldsSeveralLines(singleLine, text);
     }
 
-    /// <summary>Text kept before the caret. The request factory sends at most this much prefix.</summary>
-    private const int MaxCharsBeforeCaret = 14000;
     private const int MaxCharsAfterCaret = 512;
+
+    /// <summary>
+    /// Paragraphs a bounded read of a long document reaches back from the caret. Even short lines
+    /// of code add up to more than the text kept.
+    /// </summary>
+    private const int BoundedReadParagraphs = 1000;
 
     /// <summary>Cap of the document read when the host reports no caret.</summary>
     private const int MaxDocumentChars = 16 * 1024;
@@ -406,8 +413,8 @@ public sealed class UiaFocusTracker : IFocusTracker
         catch (Exception) { return null; }
     }
 
-    private static (string text, int caretOffset, bool hasSelection) ReadTextAndCaret(
-        AutomationElement element, bool cached, TextPattern? textPattern, TextPatternRange? selection)
+    private (string text, int caretOffset, bool hasSelection) ReadTextAndCaret(
+        AutomationElement element, bool cached, TextPattern? textPattern, TextPatternRange? selection, string fieldId)
     {
         // TextPattern is preferred because it gives the caret as a selection.
         if (textPattern is not null)
@@ -420,7 +427,7 @@ public sealed class UiaFocusTracker : IFocusTracker
                 }
 
                 bool hasSelection = selection.GetText(1).Length > 0;
-                var (before, after) = ReadAroundSelection(textPattern.DocumentRange, selection);
+                var (before, after) = ReadAroundSelection(textPattern.DocumentRange, selection, fieldId);
                 return (before + after, before.Length, hasSelection);
             }
             catch (Exception) { /* fall through */ }
@@ -442,18 +449,22 @@ public sealed class UiaFocusTracker : IFocusTracker
     /// </summary>
     /// <remarks>
     /// The ranges are built with MoveEndpointByRange only. MoveEndpointByUnit by character takes
-    /// seconds in a WPF text box, and reading up to the caret takes milliseconds.
+    /// seconds in a WPF text box, and reading up to the caret takes milliseconds. A long document
+    /// may instead be read from a range moved back by paragraph, as <see cref="PrecedingTextReads"/>
+    /// decides.
     /// </remarks>
-    private static (string before, string after) ReadAroundSelection(TextPatternRange document, TextPatternRange selection)
+    private (string before, string after) ReadAroundSelection(
+        TextPatternRange document, TextPatternRange selection, string fieldId)
     {
-        var toCaret = document.Clone();
-        toCaret.MoveEndpointByRange(TextPatternRangeEndpoint.End, selection, TextPatternRangeEndpoint.Start);
-        string before = toCaret.GetText(-1);
-        if (before.Length > MaxCharsBeforeCaret)
+        string? before = _precedingReads.UseBounded(fieldId) ? ReadBoundedBeforeCaret(document, selection, fieldId) : null;
+        if (before is null)
         {
-            before = before[^MaxCharsBeforeCaret..];
-            // The cut must not leave half a surrogate pair.
-            if (char.IsLowSurrogate(before[0])) before = before[1..];
+            long started = Stopwatch.GetTimestamp();
+            var toCaret = document.Clone();
+            toCaret.MoveEndpointByRange(TextPatternRangeEndpoint.End, selection, TextPatternRangeEndpoint.Start);
+            string all = toCaret.GetText(-1);
+            _precedingReads.FullRead(fieldId, all.Length, Stopwatch.GetElapsedTime(started));
+            before = PrecedingTextReads.KeepEnd(all);
         }
 
         var fromCaret = document.Clone();
@@ -462,6 +473,33 @@ public sealed class UiaFocusTracker : IFocusTracker
         if (after.Length > 0 && char.IsHighSurrogate(after[^1])) after = after[..^1];
 
         return (before, after);
+    }
+
+    /// <summary>
+    /// The text before the caret read from a range that starts a bounded number of paragraphs
+    /// back, or null when that range did not reach far enough and a full read is needed.
+    /// </summary>
+    private string? ReadBoundedBeforeCaret(TextPatternRange document, TextPatternRange selection, string fieldId)
+    {
+        long started = Stopwatch.GetTimestamp();
+        string? before = null;
+        try
+        {
+            var toCaret = selection.Clone();
+            toCaret.MoveEndpointByRange(TextPatternRangeEndpoint.End, selection, TextPatternRangeEndpoint.Start);
+            toCaret.MoveEndpointByUnit(TextPatternRangeEndpoint.Start, TextUnit.Paragraph, -BoundedReadParagraphs);
+            string text = toCaret.GetText(-1);
+            before = PrecedingTextReads.FromBounded(
+                text,
+                text.Length <= PrecedingTextReads.Kept
+                    && toCaret.CompareEndpoints(TextPatternRangeEndpoint.Start, document, TextPatternRangeEndpoint.Start) == 0);
+        }
+        catch (Exception)
+        {
+            // A provider that cannot move by paragraph is read in full.
+        }
+        _precedingReads.BoundedRead(fieldId, before is not null, Stopwatch.GetElapsedTime(started));
+        return before;
     }
 
     private readonly record struct LineSample(TextPatternRange? Range, ScreenRect LineRect, string? Text, double? WidthPx);

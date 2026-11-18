@@ -37,7 +37,7 @@ public sealed class BatterySaverMonitor : IDisposable
         _poll = new Timer(_ => Check(), null, PollInterval, PollInterval);
     }
 
-    /// <summary>Raised on a thread-pool or system thread with the new state.</summary>
+    /// <summary>Raised on a thread-pool or system thread with the new state, under a lock, so handlers must return quickly.</summary>
     public event Action<bool>? Changed;
 
     public bool IsOn => EnergySaverOn() || PowerStatus.IsBatterySaverOn;
@@ -59,13 +59,15 @@ public sealed class BatterySaverMonitor : IDisposable
     private void Check()
     {
         if (Volatile.Read(ref _disposed) != 0) return;
-        bool on = IsOn;
+        // The event and the poll can check at once. Reading and raising under the lock keeps an
+        // older reading from landing last, which would leave the state wrong and hide the next change.
         lock (_gate)
         {
+            bool on = IsOn;
             if (on == _last) return;
             _last = on;
+            Changed?.Invoke(on);
         }
-        Changed?.Invoke(on);
     }
 
     public void Dispose()

@@ -12,6 +12,8 @@ internal static partial class ScreenCaptureNative
     public const int SM_CYVIRTUALSCREEN = 79;
     public const uint SRCCOPY = 0x00CC0020;
     public const int HALFTONE = 4;
+    public const uint MONITOR_DEFAULTTONEAREST = 2;
+    public const int MDT_EFFECTIVE_DPI = 0;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct BITMAPINFOHEADER
@@ -41,6 +43,20 @@ internal static partial class ScreenCaptureNative
 
     [LibraryImport("user32.dll")]
     public static partial uint GetDpiForWindow(IntPtr hwnd);
+
+    [LibraryImport("user32.dll")]
+    public static partial IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+
+    [LibraryImport("shcore.dll")]
+    public static partial int GetDpiForMonitor(IntPtr monitor, int dpiType, out uint dpiX, out uint dpiY);
+
+    [LibraryImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool SetBrushOrgEx(IntPtr hdc, int x, int y, IntPtr previous);
+
+    [LibraryImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GdiFlush();
 
     [LibraryImport("user32.dll")]
     public static partial IntPtr GetDC(IntPtr hwnd);
