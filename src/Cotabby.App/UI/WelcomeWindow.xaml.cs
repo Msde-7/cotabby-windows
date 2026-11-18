@@ -240,10 +240,12 @@ public partial class WelcomeWindow : Window
         }
 
         // A copy of this window that was closed during its download leaves the download running.
-        // Following it shows its progress, where starting a second one would fail.
-        var running = _host.RunningSetupDownload is { } current && current.ModelId == modelId && !current.Completion.IsCompleted
+        // Following it shows its progress, where starting a second one would fail. One paused in
+        // Settings or by a model switch is stopping, and following it would show it paused at once.
+        var shared = _host.RunningSetupDownload is { } current && current.ModelId == modelId && !current.Completion.IsCompleted
             ? current
             : null;
+        var running = shared is { Cancellation.IsCancellationRequested: false } ? shared : null;
         if (_modelCts != running?.Cancellation) _modelCts?.Cancel();
         var seq = ++_ensureSeq;
         _lastEnsureFor = modelId;
@@ -266,6 +268,19 @@ public partial class WelcomeWindow : Window
         var download = running;
         if (download is null)
         {
+            // A stopping download still holds the model's file, which the new one needs.
+            if (shared is not null)
+            {
+                try
+                {
+                    await shared.Completion;
+                }
+                catch (Exception)
+                {
+                    // It was paused or failed. The new download starts over or resumes.
+                }
+                if (seq != _ensureSeq) return;
+            }
             var cts = new CancellationTokenSource();
             var progress = new Progress<ModelDownloader.Progress>();
             download = new AppHost.SetupDownload(modelId, cts, _host.EnsureModelReadyAsync(progress, cts.Token), progress);

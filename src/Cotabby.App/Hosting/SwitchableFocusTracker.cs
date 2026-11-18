@@ -37,8 +37,9 @@ public sealed class SwitchableFocusTracker : IFocusTracker
         lock (_gate)
         {
             _started = true;
-            if (_enabled) _inner.Start();
+            if (!_enabled) return;
         }
+        StartInner();
     }
 
     public void Stop()
@@ -61,16 +62,30 @@ public sealed class SwitchableFocusTracker : IFocusTracker
             if (_enabled == enabled) return;
             _enabled = enabled;
             if (!_started) return;
-            if (enabled)
-            {
-                // Starting raises FocusChanged with where focus is now.
-                _inner.Start();
-            }
-            else
+            if (!enabled)
             {
                 _inner.Stop();
                 FocusChanged?.Invoke(this, null);
+                return;
             }
+        }
+        // Starting raises FocusChanged with where focus is now.
+        StartInner();
+    }
+
+    /// <summary>
+    /// Starts the inner tracker outside the gate: its first read of the focused field can be held up
+    /// by a hung app, and switching off or quitting must not wait for it. Tracking switched off or
+    /// stopped meanwhile is stopped again, and listeners told focus left when it was switched off.
+    /// </summary>
+    private void StartInner()
+    {
+        _inner.Start();
+        lock (_gate)
+        {
+            if (_started && _enabled) return;
+            _inner.Stop();
+            if (_started) FocusChanged?.Invoke(this, null);
         }
     }
 

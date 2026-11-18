@@ -54,7 +54,7 @@ public sealed class UiaFocusTracker : IFocusTracker
 
     public void Start()
     {
-        FocusedField? initial;
+        long sequence;
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -64,18 +64,19 @@ public sealed class UiaFocusTracker : IFocusTracker
             _handler = OnFocusChanged;
             Automation.AddAutomationFocusChangedEventHandler(_handler);
             _logger.LogInformation("UIA focus tracker started.");
-
-            // Seeded so Current is not null until the first focus change.
-            long sequence = _current.Begin();
-            _current.TryPublish(sequence, Capture());
-            initial = _current.Current;
+            sequence = _current.Begin();
         }
 
-        // Listeners learn where focus already is, as a focus change would tell them, so a field
-        // focused before tracking started is not missed until focus moves.
+        // Read outside the gate, so a Stop never waits on a host slow to answer. A Stop meanwhile
+        // drops what the read finds.
         try
         {
-            FocusChanged?.Invoke(this, initial);
+            // Seeded so Current is not null until the first focus change.
+            _current.TryPublish(sequence, Capture());
+            // Listeners learn where focus already is, as a focus change would tell them, so a field
+            // focused before tracking started is not missed until focus moves. A focus change read
+            // since and passed on first is not followed by this older read.
+            _current.Deliver(sequence, RaiseFocusChanged);
         }
         catch (Exception ex)
         {
@@ -116,6 +117,8 @@ public sealed class UiaFocusTracker : IFocusTracker
         Stop();
     }
 
+    private void RaiseFocusChanged(FocusedField? field) => FocusChanged?.Invoke(this, field);
+
     private void OnFocusChanged(object? sender, AutomationFocusChangedEventArgs e)
     {
         if (!_running) return;
@@ -123,14 +126,13 @@ public sealed class UiaFocusTracker : IFocusTracker
         try
         {
             long sequence = _current.Begin();
-            var snap = Capture();
-            // When a capture that started later finished first, this one describes focus as it was
-            // before, so the later one is passed on instead.
-            if (!_current.TryPublish(sequence, snap)) snap = _current.Current;
+            _current.TryPublish(sequence, Capture());
 
             // Focus on a field that is not editable ends the session, so no ghost text is left behind.
             // Every other focus event is passed on. Listeners compare FieldId to tell a new field.
-            FocusChanged?.Invoke(this, snap);
+            // When a capture that started later finished first, this one describes focus as it was
+            // before, so the later one is passed on instead, and nothing once it was.
+            _current.Deliver(sequence, RaiseFocusChanged);
         }
         catch (Exception ex)
         {
@@ -315,7 +317,7 @@ public sealed class UiaFocusTracker : IFocusTracker
                 if (snap is null) continue;
                 if (_current.Current?.FieldId != snap.FieldId && _current.TryPublish(sequence, snap))
                 {
-                    FocusChanged?.Invoke(this, snap);
+                    _current.Deliver(sequence, RaiseFocusChanged);
                 }
                 return;
             }

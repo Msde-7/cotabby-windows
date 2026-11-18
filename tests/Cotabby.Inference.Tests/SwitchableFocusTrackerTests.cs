@@ -86,6 +86,91 @@ public sealed class SwitchableFocusTrackerTests
         Assert.Same(_inner.Field, Assert.Single(_events));
     }
 
+    [Fact]
+    public async Task QuittingWhileSwitchingOn_DoesNotWaitForTheFirstRead()
+    {
+        // Switching on reads the focused field, which a hung app can hold up for seconds.
+        var inner = new HangingTracker();
+        var tracker = new SwitchableFocusTracker(inner);
+        tracker.SetEnabled(false);
+        tracker.Start();
+        var switching = Task.Run(() => tracker.SetEnabled(true));
+        Assert.True(inner.Reading.Wait(TimeSpan.FromSeconds(5)));
+
+        var stop = Task.Run(tracker.Stop);
+        bool stopped = await Task.WhenAny(stop, Task.Delay(TimeSpan.FromSeconds(2))) == stop;
+        inner.Release.Set();
+        await switching;
+        await stop;
+
+        Assert.True(stopped, "Stop waited for the read");
+        Assert.False(inner.Running);
+    }
+
+    [Fact]
+    public async Task SwitchedOffDuringTheFirstRead_EndsStoppedWithFocusGone()
+    {
+        var inner = new HangingTracker();
+        var tracker = new SwitchableFocusTracker(inner);
+        var events = new List<FocusedField?>();
+        tracker.FocusChanged += (_, field) => { lock (events) events.Add(field); };
+        tracker.SetEnabled(false);
+        tracker.Start();
+        var switching = Task.Run(() => tracker.SetEnabled(true));
+        Assert.True(inner.Reading.Wait(TimeSpan.FromSeconds(5)));
+
+        var switchOff = Task.Run(() => tracker.SetEnabled(false));
+        bool switchedOff = await Task.WhenAny(switchOff, Task.Delay(TimeSpan.FromSeconds(2))) == switchOff;
+        inner.Release.Set();
+        await switching;
+        await switchOff;
+
+        Assert.True(switchedOff, "switching off waited for the read");
+        Assert.False(inner.Running);
+        lock (events) Assert.Null(events[^1]);
+    }
+
+    /// <summary>Like the UI Automation tracker reading a hung app: starting blocks in its first read until released.</summary>
+    private sealed class HangingTracker : IFocusTracker
+    {
+        private readonly FocusedField _field = new()
+        {
+            ProcessId = 7,
+            ProcessName = "hung",
+            Text = "",
+            CaretOffset = 0,
+            CaretRect = new ScreenRect(0, 0, 1, 20),
+            FieldRect = new ScreenRect(0, 0, 800, 600),
+            IsSingleLine = true,
+            IsSecure = false,
+        };
+
+        private volatile bool _running;
+
+        public ManualResetEventSlim Reading { get; } = new();
+        public ManualResetEventSlim Release { get; } = new();
+        public bool Running => _running;
+
+        public FocusedField? Current => _running ? _field : null;
+
+        public event EventHandler<FocusedField?>? FocusChanged;
+
+        public FocusedField? Refresh(bool readHostText = false) => _field;
+
+        public void Start()
+        {
+            if (_running) return;
+            _running = true;
+            Reading.Set();
+            Release.Wait();
+            if (_running) FocusChanged?.Invoke(this, _field);
+        }
+
+        public void Stop() => _running = false;
+
+        public void Dispose() => Stop();
+    }
+
     private sealed class CountingTracker : IFocusTracker
     {
         public FocusedField Field { get; } = new()

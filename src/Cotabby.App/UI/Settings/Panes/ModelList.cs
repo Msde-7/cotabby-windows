@@ -238,7 +238,10 @@ internal sealed class ModelList : StackPanel
         // The first-run window asking for the same model follows this download, as it follows its
         // own, where starting a second one would fail.
         var shared = _downloading ? new AppHost.SetupDownload(model.Id, loading, work, progress) : null;
-        if (shared is not null) _context.Host.RunningSetupDownload = shared;
+        // The first-run window's download of another model keeps its place, so the window still follows it.
+        bool otherRunning = _context.Host.RunningSetupDownload is { Completion.IsCompleted: false } running
+            && running.ModelId != model.Id;
+        if (shared is not null && !otherRunning) _context.Host.RunningSetupDownload = shared;
         try
         {
             await work;

@@ -8,8 +8,10 @@ namespace Cotabby.Win32.Focus;
 public sealed class CaptureOrder<T> where T : class
 {
     private readonly object _gate = new();
+    private readonly object _deliverGate = new();
     private long _started;
     private long _published;
+    private long _delivered;
     private T? _current;
 
     public T? Current => Volatile.Read(ref _current);
@@ -32,12 +34,34 @@ public sealed class CaptureOrder<T> where T : class
         }
     }
 
-    /// <summary>Clears the current value. Captures already running are dropped when they finish.</summary>
+    /// <summary>
+    /// Passes the current value to <paramref name="deliver"/> for the capture numbered
+    /// <paramref name="sequence"/>, unless a capture that started later was passed on already or a
+    /// <see cref="Reset"/> came after this one started. Deliveries never overlap, so listeners get
+    /// values in the order their captures started and never end with an older one.
+    /// </summary>
+    public void Deliver(long sequence, Action<T?> deliver)
+    {
+        lock (_deliverGate)
+        {
+            if (sequence <= _delivered) return;
+            _delivered = sequence;
+            deliver(Current);
+        }
+    }
+
+    /// <summary>
+    /// Clears the current value. Captures already running are dropped when they finish, and a
+    /// delivery in progress finishes first.
+    /// </summary>
     public void Reset()
     {
+        lock (_deliverGate)
         lock (_gate)
         {
-            _published = Interlocked.Read(ref _started);
+            long started = Interlocked.Read(ref _started);
+            _published = started;
+            _delivered = started;
             Volatile.Write(ref _current, null);
         }
     }
