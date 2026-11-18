@@ -87,6 +87,11 @@ internal static partial class ScreenCaptureNative
 
     [LibraryImport("gdi32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool BitBlt(
+        IntPtr dest, int xDest, int yDest, int wDest, int hDest, IntPtr src, int xSrc, int ySrc, uint rop);
+
+    [LibraryImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool StretchBlt(
         IntPtr dest, int xDest, int yDest, int wDest, int hDest,
         IntPtr src, int xSrc, int ySrc, int wSrc, int hSrc, uint rop);

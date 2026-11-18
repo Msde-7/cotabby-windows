@@ -51,11 +51,14 @@ public sealed class ScreenContextSourceTests : IDisposable
         WindowTitle = windowTitle,
     };
 
-    private ScreenContextSource Source(TimeSpan? refreshInterval = null)
+    private static readonly TimeSpan ActiveWindow = TimeSpan.FromSeconds(30);
+
+    private ScreenContextSource Source(TimeSpan? refreshInterval = null, TimeSpan? idleRefreshInterval = null)
     {
         var source = new ScreenContextSource(
             _reader, () => _current, NullLogger.Instance, _clock,
-            settle: TimeSpan.Zero, refreshInterval: refreshInterval ?? TimeSpan.FromHours(1), lifetime: Lifetime);
+            settle: TimeSpan.Zero, refreshInterval: refreshInterval ?? TimeSpan.FromHours(1), lifetime: Lifetime,
+            idleRefreshInterval: idleRefreshInterval ?? TimeSpan.FromHours(1), activeWindow: ActiveWindow);
         source.FirstExcerptReady += _firstExcerpts.Enqueue;
         source.ExcerptChanged += _changes.Enqueue;
         _sources.Add(source);
@@ -210,5 +213,83 @@ public sealed class ScreenContextSourceTests : IDisposable
         Assert.Equal(2, _changes.Count);
         Assert.Contains("quarterly travel plans", source.For(field));
     }
-}
 
+    /// <summary>Reads finish within this on real timers, so a count that holds this long has stopped.</summary>
+    private static async Task AssertNoReadsFor(TimeSpan quiet, ConcurrentQueue<FocusedField> reads)
+    {
+        // A read already past its wait when the clock moved may still land.
+        await Task.Delay(50);
+        int before = reads.Count;
+        await Task.Delay(quiet);
+        Assert.Equal(before, reads.Count);
+    }
+
+    [Fact]
+    public async Task RefreshBacksOffOnceTheUserStopsTyping()
+    {
+        var source = Source(refreshInterval: TimeSpan.FromMilliseconds(5));
+        var field = Field();
+        await TrackUntilReady(source, field);
+        await WaitUntil(() => _reader.Reads.Count >= 3);
+
+        _clock.Advance(ActiveWindow);
+
+        await AssertNoReadsFor(TimeSpan.FromMilliseconds(200), _reader.Reads);
+    }
+
+    [Fact]
+    public async Task TypingAfterABreakRefreshesAtOnceAndKeepsRefreshing()
+    {
+        var source = Source(refreshInterval: TimeSpan.FromMilliseconds(5));
+        var field = Field();
+        await TrackUntilReady(source, field);
+        _clock.Advance(ActiveWindow);
+        await AssertNoReadsFor(TimeSpan.FromMilliseconds(100), _reader.Reads);
+
+        // A request after a screen change reads the same text and is not typing.
+        source.Track(field, usesEndpoint: false);
+        await AssertNoReadsFor(TimeSpan.FromMilliseconds(100), _reader.Reads);
+
+        var typed = field with { Text = "h", CaretOffset = 1 };
+        _current = typed;
+        int reads = _reader.Reads.Count;
+        source.Track(typed, usesEndpoint: false);
+
+        await WaitUntil(() => _reader.Reads.Count >= reads + 3);
+    }
+
+    [Fact]
+    public async Task TypingSeenByARefreshKeepsTheFastPace()
+    {
+        var source = Source(refreshInterval: TimeSpan.FromMilliseconds(5));
+        var field = Field();
+        await TrackUntilReady(source, field);
+
+        // The refresh reads the field itself, so typing counts even when no request tracks it.
+        _clock.Advance(ActiveWindow - TimeSpan.FromSeconds(1));
+        _current = field with { Text = "h", CaretOffset = 1 };
+        int reads = _reader.Reads.Count;
+        await WaitUntil(() => _reader.Reads.Count >= reads + 2);
+        _clock.Advance(TimeSpan.FromSeconds(2));
+
+        reads = _reader.Reads.Count;
+        await WaitUntil(() => _reader.Reads.Count >= reads + 3);
+    }
+
+    [Fact]
+    public async Task AnExcerptReadWhileIdleLastsUntilTheNextIdleRefresh()
+    {
+        var idle = TimeSpan.FromSeconds(10);
+        var source = Source(refreshInterval: TimeSpan.FromMilliseconds(5), idleRefreshInterval: idle);
+        var field = Field();
+        await TrackUntilReady(source, field);
+        _clock.Advance(ActiveWindow);
+        await AssertNoReadsFor(TimeSpan.FromMilliseconds(100), _reader.Reads);
+
+        // The excerpt is replaced every idle refresh, so it is as current as upstream's.
+        _clock.Advance(idle);
+        Assert.NotNull(source.For(field));
+        _clock.Advance(Lifetime);
+        Assert.Null(source.For(field));
+    }
+}

@@ -189,13 +189,7 @@ public sealed class WindowsScreenTextReader : IScreenTextReader
             bitmap = CreateDIBSection(screen, ref info, 0, out IntPtr bits, IntPtr.Zero, 0);
             if (memory == IntPtr.Zero || bitmap == IntPtr.Zero || bits == IntPtr.Zero) return null;
             previous = SelectObject(memory, bitmap);
-            SetStretchBltMode(memory, HALFTONE);
-            // HALFTONE needs the brush origin set after it, or its dither pattern is misaligned.
-            SetBrushOrgEx(memory, 0, 0, IntPtr.Zero);
-            if (!StretchBlt(memory, 0, 0, width, height, screen, source.Left, source.Top, source.Width, source.Height, SRCCOPY))
-            {
-                return null;
-            }
+            if (!CopyPixels(memory, screen, source, width, height)) return null;
             // GDI may still be drawing into the section, so the batch is flushed before its bits are read.
             GdiFlush();
             if (_pixels.Length != width * height * 4) _pixels = new byte[width * height * 4];
@@ -210,6 +204,24 @@ public sealed class WindowsScreenTextReader : IScreenTextReader
             if (memory != IntPtr.Zero) DeleteDC(memory);
             ReleaseDC(IntPtr.Zero, screen);
         }
+    }
+
+    /// <summary>
+    /// A window that fits is copied pixel for pixel. HALFTONE costs 15-60 ms even at the same size,
+    /// against about 1 ms for BitBlt. A smaller copy keeps HALFTONE: COLORONCOLOR is as fast, but
+    /// it drops whole pixel columns and rows, and Windows OCR then misses most small text even at
+    /// 94 percent of the size.
+    /// </summary>
+    private static bool CopyPixels(IntPtr memory, IntPtr screen, RECT source, int width, int height)
+    {
+        if (width == source.Width && height == source.Height)
+        {
+            return BitBlt(memory, 0, 0, width, height, screen, source.Left, source.Top, SRCCOPY);
+        }
+        SetStretchBltMode(memory, HALFTONE);
+        // HALFTONE needs the brush origin set after it, or its dither pattern is misaligned.
+        SetBrushOrgEx(memory, 0, 0, IntPtr.Zero);
+        return StretchBlt(memory, 0, 0, width, height, screen, source.Left, source.Top, source.Width, source.Height, SRCCOPY);
     }
 
     /// <summary>Copies BGRA pixels with every alpha byte set to 255.</summary>

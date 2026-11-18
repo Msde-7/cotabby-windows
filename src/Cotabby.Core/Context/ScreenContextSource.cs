@@ -22,6 +22,13 @@ public interface IScreenTextReader
 /// stands in for the current one. Capture and recognition never hold up a suggestion: a request
 /// takes whatever excerpt is ready.
 /// </summary>
+/// <remarks>
+/// Upstream refreshes every 3 seconds for as long as the field has focus. Each refresh here reads
+/// the field and copies the window, and recognizes it again when its pixels changed, which costs a
+/// few percent of a core with nobody typing. So once the field's text and caret have not moved for
+/// a while the refresh slows down, and the next edit seen in a request or a refresh brings the
+/// fast pace back at once, with a capture straight away.
+/// </remarks>
 public sealed partial class ScreenContextSource : IDisposable
 {
     private readonly IScreenTextReader _reader;
@@ -30,6 +37,8 @@ public sealed partial class ScreenContextSource : IDisposable
     private readonly ILogger _logger;
     private readonly TimeSpan _settle;
     private readonly TimeSpan _refreshInterval;
+    private readonly TimeSpan _idleRefreshInterval;
+    private readonly TimeSpan _activeWindow;
     private readonly TimeSpan _lifetime;
     private readonly object _gate = new();
 
@@ -43,13 +52,28 @@ public sealed partial class ScreenContextSource : IDisposable
         public string? Excerpt;
         public long CapturedAt;
 
+        /// <summary>
+        /// How long the excerpt counts as current: the lifetime at the usual pace, stretched by as
+        /// much as a slow wait is longer, so it lasts until the refresh after the next one is due.
+        /// </summary>
+        public TimeSpan ValidFor;
+
+        /// <summary>The field as last seen, and when its text or caret last moved.</summary>
+        public string? FieldText;
+        public int FieldCaret;
+        public long EditedAt;
+
+        /// <summary>Set to end a slow wait early. Null while the refresh runs at its usual pace.</summary>
+        public TaskCompletionSource? Wake;
+
         /// <summary>The last text read, kept through a failed capture so reading it again is no change.</summary>
         public string? LastText;
     }
 
     public ScreenContextSource(
         IScreenTextReader reader, Func<FocusedField?> currentField, ILogger logger, TimeProvider? clock = null,
-        TimeSpan? settle = null, TimeSpan? refreshInterval = null, TimeSpan? lifetime = null)
+        TimeSpan? settle = null, TimeSpan? refreshInterval = null, TimeSpan? lifetime = null,
+        TimeSpan? idleRefreshInterval = null, TimeSpan? activeWindow = null)
     {
         _reader = reader;
         _currentField = currentField;
@@ -58,6 +82,8 @@ public sealed partial class ScreenContextSource : IDisposable
         _settle = settle ?? TimeSpan.FromMilliseconds(250);
         _refreshInterval = refreshInterval ?? TimeSpan.FromSeconds(3);
         _lifetime = lifetime ?? TimeSpan.FromSeconds(6);
+        _idleRefreshInterval = idleRefreshInterval ?? TimeSpan.FromSeconds(10);
+        _activeWindow = activeWindow ?? TimeSpan.FromSeconds(30);
     }
 
     /// <summary>Raised on the thread pool the first time a field's excerpt becomes ready.</summary>
@@ -98,14 +124,34 @@ public sealed partial class ScreenContextSource : IDisposable
         }
         string identity = IdentityOf(field);
         var configuration = VisualContextConfiguration.For(usesEndpoint);
-        Session session;
+        Session? started = null;
+        TaskCompletionSource? wake = null;
         lock (_gate)
         {
-            if (_session is { } current && current.Identity == identity && current.Configuration == configuration) return;
-            StopLocked();
-            session = _session = new Session(identity, configuration);
+            if (_session is { } current && current.Identity == identity && current.Configuration == configuration)
+            {
+                // A request reads the field, so an edit seen here ends a slow wait at once.
+                if (NoteEditLocked(current, field)) (wake, current.Wake) = (current.Wake, null);
+            }
+            else
+            {
+                StopLocked();
+                started = _session = new Session(identity, configuration);
+                NoteEditLocked(started, field);
+            }
         }
-        _ = RunAsync(session);
+        wake?.TrySetResult();
+        if (started is not null) _ = RunAsync(started);
+    }
+
+    /// <summary>Records the field and says whether its text or caret moved since it was last seen.</summary>
+    private bool NoteEditLocked(Session session, FocusedField field)
+    {
+        if (session.FieldText == field.Text && session.FieldCaret == field.CaretOffset) return false;
+        session.FieldText = field.Text;
+        session.FieldCaret = field.CaretOffset;
+        session.EditedAt = _clock.GetTimestamp();
+        return true;
     }
 
     /// <summary>Drops the excerpt and stops capturing.</summary>
@@ -127,7 +173,7 @@ public sealed partial class ScreenContextSource : IDisposable
         lock (_gate)
         {
             if (_session is not { Excerpt: { } excerpt } session || session.Identity != IdentityOf(field)) return null;
-            return _clock.GetElapsedTime(session.CapturedAt) < _lifetime ? excerpt : null;
+            return _clock.GetElapsedTime(session.CapturedAt) < session.ValidFor ? excerpt : null;
         }
     }
 
@@ -156,11 +202,14 @@ public sealed partial class ScreenContextSource : IDisposable
                     }
                     return;
                 }
+                lock (_gate) NoteEditLocked(session, field);
                 // Age counts from before the capture, so slow recognition cannot renew old pixels.
                 long capturedAt = _clock.GetTimestamp();
                 string? excerpt = await ExcerptAsync(field, session.Configuration, ct).ConfigureAwait(false);
                 bool first = false;
                 bool changed = false;
+                TimeSpan wait;
+                TaskCompletionSource? wake;
                 lock (_gate)
                 {
                     if (_session != session) return;
@@ -169,10 +218,16 @@ public sealed partial class ScreenContextSource : IDisposable
                     session.Excerpt = excerpt;
                     session.CapturedAt = capturedAt;
                     if (excerpt is not null) session.LastText = excerpt;
+                    // Judged at the capture's own time, so a slow read cannot make its excerpt idle-aged.
+                    bool idle = _clock.GetElapsedTime(session.EditedAt, capturedAt) >= _activeWindow;
+                    wait = idle ? Max(_idleRefreshInterval, _refreshInterval) : _refreshInterval;
+                    session.ValidFor = _lifetime + (wait - _refreshInterval);
+                    // Set in the same lock as the decision, so an edit right after it still wakes the wait.
+                    wake = session.Wake = idle ? new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously) : null;
                 }
                 if (first) FirstExcerptReady?.Invoke(field);
                 if (changed) ExcerptChanged?.Invoke(field);
-                await Task.Delay(_refreshInterval, _clock, ct).ConfigureAwait(false);
+                await WaitAsync(wait, wake, ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -183,6 +238,23 @@ public sealed partial class ScreenContextSource : IDisposable
             _logger.LogWarning(ex, "Reading screen context failed.");
         }
     }
+
+    /// <summary>Waits out the refresh interval, or less when <paramref name="wake"/> completes first.</summary>
+    private async Task WaitAsync(TimeSpan wait, TaskCompletionSource? wake, CancellationToken ct)
+    {
+        if (wake is null)
+        {
+            await Task.Delay(wait, _clock, ct).ConfigureAwait(false);
+            return;
+        }
+        using var delay = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        await Task.WhenAny(Task.Delay(wait, _clock, delay.Token), wake.Task).ConfigureAwait(false);
+        // Ends the timer of a wait the wake cut short.
+        delay.Cancel();
+        ct.ThrowIfCancellationRequested();
+    }
+
+    private static TimeSpan Max(TimeSpan a, TimeSpan b) => a > b ? a : b;
 
     private async Task<string?> ExcerptAsync(FocusedField field, VisualContextConfiguration configuration, CancellationToken ct)
     {
