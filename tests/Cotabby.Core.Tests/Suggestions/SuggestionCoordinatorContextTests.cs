@@ -201,7 +201,7 @@ public sealed class SuggestionCoordinatorContextTests : CoordinatorHarness
         Engine.Completion = _ => " world again";
         Type("hello");
         await Shown(" world again");
-        await Task.Delay(100);
+        await Settled();
         int requests = Engine.Requests.Count;
 
         await Task.Delay(200);

@@ -14,7 +14,7 @@ public sealed class SuggestionCoordinatorContinuationTests : CoordinatorHarness
 
         Type(" w");
         await Eventually(() => Engine.Requests.Any(r => r.Prefix == "hello world"), "the continuation is prefetched");
-        await Task.Delay(50);
+        await Settled();
         int requests = Engine.Requests.Count;
         Type("orld");
 
@@ -119,7 +119,7 @@ public sealed class SuggestionCoordinatorContinuationTests : CoordinatorHarness
         Type("hello");
         await Shown(" world");
 
-        await Task.Delay(200);
+        await Settled();
         Assert.DoesNotContain(Engine.Requests, r => r.Prefix == "hello world");
     }
 

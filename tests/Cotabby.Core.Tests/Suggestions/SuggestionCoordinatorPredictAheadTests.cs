@@ -14,8 +14,7 @@ public sealed class SuggestionCoordinatorPredictAheadTests : CoordinatorHarness
 
     private async Task GeneratingFor(string prefix)
     {
-        await Eventually(() => Engine.Requests.Any(r => r.Prefix == prefix), $"a request for \"{prefix}\" runs");
-        await Task.Delay(30);
+        await Eventually(() => Engine.Reached.Contains(prefix), $"a request for \"{prefix}\" runs");
     }
 
     [Fact]
@@ -26,7 +25,7 @@ public sealed class SuggestionCoordinatorPredictAheadTests : CoordinatorHarness
         int requests = Engine.Requests.Count;
 
         Type(" wo");
-        await Task.Delay(50);
+        await KeysHandled();
         _hold.SetResult();
 
         await Shown("rld again");
@@ -55,7 +54,7 @@ public sealed class SuggestionCoordinatorPredictAheadTests : CoordinatorHarness
         await GeneratingFor("hello");
 
         Type(" world");
-        await Task.Delay(50);
+        await KeysHandled();
         _hold.SetResult();
 
         await GeneratingFor("hello world");
@@ -72,9 +71,9 @@ public sealed class SuggestionCoordinatorPredictAheadTests : CoordinatorHarness
 
         // Trimmed by the kept key, the answer would start mid-word, so it is dropped.
         Type("w");
-        await Task.Delay(50);
+        await KeysHandled();
         _hold.SetResult();
-        await Task.Delay(100);
+        await Settled();
         Type("orld ");
 
         await GeneratingFor("Hello world ");
@@ -88,8 +87,9 @@ public sealed class SuggestionCoordinatorPredictAheadTests : CoordinatorHarness
         await GeneratingFor("hello");
         Hook.Press(Keys.Char(' '));
         Focus.Replace(Focus.Current! with { HostIsPredicting = true });
+        int reads = Focus.HostTextReads;
         _hold.SetResult();
-        await Task.Delay(100);
+        await Eventually(() => Focus.HostTextReads > reads, "the answer is checked against the field");
 
         Focus.Replace(Fields.Text("hello "));
         await Eventually(() => Engine.Requests.Any(r => r.Prefix == "hello "), "typing is asked about again");
@@ -142,7 +142,7 @@ public sealed class SuggestionCoordinatorPredictAheadTests : CoordinatorHarness
         await GeneratingFor("hello");
 
         TypeAtCaret("hello big ", "\nfriend");
-        await Task.Delay(50);
+        await KeysHandled();
         _hold.SetResult();
 
         await GeneratingFor("hello big ");

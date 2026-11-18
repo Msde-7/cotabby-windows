@@ -73,12 +73,22 @@ public sealed partial class SuggestionCoordinator
 
         if (ev.Kind == KeyKind.Character && !ev.HasNonShiftModifier && HoldsTyping())
         {
-            // The accepted text has not reached the host yet. Upstream inserts inside its event
-            // tap, so the next key always lands after it; here the key waits its turn instead.
-            args.Suppress = true;
-            Interlocked.Increment(ref _heldEdits);
-            Post(() => ReplayHeldKey(ev));
-            return;
+            if (!CanRetype(ev.Character))
+            {
+                // Typing it again would insert the wrong text, so the host gets it as it is, which
+                // may put it ahead of the accepted text. Later keys are not held either, so they
+                // still land after it.
+                EndTypingHoldEarly();
+            }
+            else
+            {
+                // The accepted text has not reached the host yet. Upstream inserts inside its event
+                // tap, so the next key always lands after it; here the key waits its turn instead.
+                args.Suppress = true;
+                Interlocked.Increment(ref _heldEdits);
+                Post(() => ReplayHeldKey(ev));
+                return;
+            }
         }
 
         if (SynchronizationContext.Current == _ui) HandleEvent(ev);
@@ -112,6 +122,17 @@ public sealed partial class SuggestionCoordinator
     }
 
     private void EndTypingHold() => Interlocked.Decrement(ref _heldEdits);
+
+    /// <summary>Lets typed keys through until the next accept, whatever is still being sent.</summary>
+    private void EndTypingHoldEarly() => Volatile.Write(ref _typingHoldEndsAt, 0);
+
+    /// <summary>
+    /// True when typing the key's character reproduces the key. The hook reports U+FFFD for a
+    /// letter after a dead key, which the host may show accented, and for the second half of a
+    /// surrogate pair, whose first half already reached the host.
+    /// </summary>
+    private static bool CanRetype(char character) =>
+        character != '\uFFFD' && !char.IsSurrogate(character) && !char.IsControl(character);
 
     /// <summary>Sends a key held back during an accept once the edits before it are done, then handles it as typed.</summary>
     private void ReplayHeldKey(KeyboardEvent ev)

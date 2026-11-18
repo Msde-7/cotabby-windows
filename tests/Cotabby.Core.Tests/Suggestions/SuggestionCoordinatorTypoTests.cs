@@ -65,7 +65,7 @@ public sealed class SuggestionCoordinatorTypoTests : CoordinatorHarness
 
         Type("hello teh n");
 
-        await Task.Delay(300);
+        await Settled();
         Assert.Equal("hello teh n", Focus.Current!.Text);
     }
 
@@ -128,7 +128,7 @@ public sealed class SuggestionCoordinatorTypoTests : CoordinatorHarness
 
         Assert.True(Hook.Press(Keys.Tab()));
 
-        await Task.Delay(150);
+        await Settled();
         Assert.Equal("other teh ", Focus.Current!.Text);
     }
 
@@ -143,7 +143,6 @@ public sealed class SuggestionCoordinatorTypoTests : CoordinatorHarness
         await Shown("");
 
         // Past the wait for the edit, the old text must not be corrected a second time.
-        await Task.Delay(700);
-        Assert.Equal("", Overlay.Text);
+        await StaysHidden();
     }
 }

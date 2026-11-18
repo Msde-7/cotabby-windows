@@ -14,6 +14,7 @@ public abstract class CoordinatorHarness : IAsyncDisposable
         Keys.Special(KeyKind.Character, KeyBinding.VkBacktick) with { Character = '`' };
 
     private readonly PumpContext _pump = new();
+    private readonly SuggestionWorkController _work = new(TimeSpan.FromMilliseconds(5));
 
     private protected FakeHook Hook { get; } = new();
     private protected FakeFocus Focus { get; } = new();
@@ -27,7 +28,7 @@ public abstract class CoordinatorHarness : IAsyncDisposable
     {
         Coordinator = new SuggestionCoordinator(
             Hook, Focus, Engine, Overlay, Focus,
-            new SuggestionWorkController(TimeSpan.FromMilliseconds(5)),
+            _work,
             NullLogger<SuggestionCoordinator>.Instance, _pump,
             batterySaverOn: () => BatterySaver,
             clock: clock,
@@ -66,9 +67,39 @@ public abstract class CoordinatorHarness : IAsyncDisposable
 
     protected Task Shown(string text) => Eventually(() => Overlay.Text == text, $"the overlay shows \"{text}\"");
 
+    /// <summary>Asserts that nothing shows once the coordinator has finished everything it started.</summary>
     protected async Task StaysHidden()
     {
-        await Task.Delay(150);
+        await Settled();
         Assert.Equal("", Overlay.Text);
+    }
+
+    /// <summary>Completes once the UI context has handled every key pressed and everything posted so far.</summary>
+    protected Task KeysHandled() => _pump.Drained();
+
+    /// <summary>
+    /// Waits until the coordinator has nothing left that could change what shows or what lands in
+    /// the field: the UI context has run everything posted to it, no request waits or generates
+    /// except one parked on the engine's hold, no insertion is under way, and nothing was read,
+    /// generated or posted over several looks in a row.
+    /// </summary>
+    protected async Task Settled()
+    {
+        var clock = Stopwatch.StartNew();
+        (long Posted, int Reads, int Requests)? last = null;
+        int quietLooks = 0;
+        while (quietLooks < 3)
+        {
+            Assert.True(clock.ElapsedMilliseconds < 5000, "Timed out waiting for the coordinator to settle");
+            await _pump.Drained();
+            // Work queued to the thread pool before this has at least started once this runs.
+            await Task.Factory.StartNew(
+                static () => { }, CancellationToken.None, TaskCreationOptions.PreferFairness, TaskScheduler.Default);
+            var stamp = (_pump.Posted, Focus.Refreshes, Engine.Requests.Count);
+            bool idle = Engine.Running == 0 && Focus.EditsInFlight == 0 && (_work.IsIdle || Engine.Parked > 0);
+            quietLooks = idle && stamp == last ? quietLooks + 1 : 0;
+            last = stamp;
+            await Task.Delay(10);
+        }
     }
 }

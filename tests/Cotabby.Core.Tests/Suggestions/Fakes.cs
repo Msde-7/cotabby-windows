@@ -70,6 +70,9 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
 {
     private readonly object _gate = new();
     private FocusedField? _field;
+    private int _refreshes;
+    private int _hostTextReads;
+    private int _editsInFlight;
 
     public event EventHandler<FocusedField?>? FocusChanged;
 
@@ -80,7 +83,21 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
         get { lock (_gate) return _field; }
     }
 
-    public FocusedField? Refresh(bool readHostText = false) => Current;
+    /// <summary>How many times the coordinator read the field.</summary>
+    public int Refreshes => Volatile.Read(ref _refreshes);
+
+    /// <summary>How many of those reads also asked for the host's text layout, as the read before showing does.</summary>
+    public int HostTextReads => Volatile.Read(ref _hostTextReads);
+
+    /// <summary>Insertions that have started and not returned yet.</summary>
+    public int EditsInFlight => Volatile.Read(ref _editsInFlight);
+
+    public FocusedField? Refresh(bool readHostText = false)
+    {
+        Interlocked.Increment(ref _refreshes);
+        if (readHostText) Interlocked.Increment(ref _hostTextReads);
+        return Current;
+    }
 
     public void Focus(FocusedField? field)
     {
@@ -122,18 +139,26 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
 
     public async Task<bool> InsertAsync(FocusedField target, string text, CancellationToken ct)
     {
-        if (InsertGate is { } gate) await gate.Task.WaitAsync(ct);
-        lock (_gate)
+        Interlocked.Increment(ref _editsInFlight);
+        try
         {
-            if (FailingInserts > 0)
+            if (InsertGate is { } gate) await gate.Task.WaitAsync(ct);
+            lock (_gate)
             {
-                FailingInserts--;
-                return false;
+                if (FailingInserts > 0)
+                {
+                    FailingInserts--;
+                    return false;
+                }
             }
+            lock (_gate) Insertions.Add(text);
+            if (!IgnoresEdits) Append(StoresCrLf ? text.Replace("\n", "\r\n") : text);
+            return true;
         }
-        lock (_gate) Insertions.Add(text);
-        if (!IgnoresEdits) Append(StoresCrLf ? text.Replace("\n", "\r\n") : text);
-        return true;
+        finally
+        {
+            Interlocked.Decrement(ref _editsInFlight);
+        }
     }
 
     public Task<bool> ReplaceAsync(FocusedField target, int deleteCount, string text, CancellationToken ct)
@@ -168,24 +193,56 @@ internal sealed class ScriptedEngine : ISuggestionEngine
     /// <summary>Prefixes of the requests that were cancelled while they generated.</summary>
     public ConcurrentQueue<string> Cancelled { get; } = new();
 
+    /// <summary>Prefixes of the requests that got their partial out, or their answer when nothing held them.</summary>
+    public ConcurrentQueue<string> Reached { get; } = new();
+
+    private int _running;
+    private int _parked;
+
+    /// <summary>Generations under way that are not waiting on <see cref="Hold"/>.</summary>
+    public int Running => Volatile.Read(ref _running);
+
+    /// <summary>Generations waiting on <see cref="Hold"/>.</summary>
+    public int Parked => Volatile.Read(ref _parked);
+
     public async Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct, Action<string>? onPartial = null)
     {
-        Requests.Enqueue(request);
-        await Task.Yield();
-        if (Hold is { } hold && Holds(request))
+        Interlocked.Increment(ref _running);
+        try
         {
-            onPartial?.Invoke(Completion(request));
-            try
+            Requests.Enqueue(request);
+            await Task.Yield();
+            if (Hold is { } hold && Holds(request))
             {
-                await hold.Task.WaitAsync(ct);
+                onPartial?.Invoke(Completion(request));
+                Reached.Enqueue(request.Prefix);
+                Interlocked.Increment(ref _parked);
+                Interlocked.Decrement(ref _running);
+                try
+                {
+                    await hold.Task.WaitAsync(ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    Cancelled.Enqueue(request.Prefix);
+                    throw;
+                }
+                finally
+                {
+                    Interlocked.Increment(ref _running);
+                    Interlocked.Decrement(ref _parked);
+                }
             }
-            catch (OperationCanceledException)
+            else
             {
-                Cancelled.Enqueue(request.Prefix);
-                throw;
+                Reached.Enqueue(request.Prefix);
             }
+            return Completion(request);
         }
-        return Completion(request);
+        finally
+        {
+            Interlocked.Decrement(ref _running);
+        }
     }
 }
 
@@ -263,6 +320,7 @@ internal sealed class RecordingOverlay : IOverlayPresenter
 internal sealed class PumpContext : SynchronizationContext, IDisposable
 {
     private readonly BlockingCollection<(SendOrPostCallback Callback, object? State)> _queue = new();
+    private long _posted;
 
     public PumpContext()
     {
@@ -274,7 +332,22 @@ internal sealed class PumpContext : SynchronizationContext, IDisposable
         { IsBackground = true }.Start();
     }
 
-    public override void Post(SendOrPostCallback d, object? state) => _queue.Add((d, state));
+    /// <summary>How many callbacks were posted so far.</summary>
+    public long Posted => Interlocked.Read(ref _posted);
+
+    public override void Post(SendOrPostCallback d, object? state)
+    {
+        Interlocked.Increment(ref _posted);
+        _queue.Add((d, state));
+    }
+
+    /// <summary>Completes once every callback posted before it has run. It does not count as posted.</summary>
+    public Task Drained()
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _queue.Add((static state => ((TaskCompletionSource)state!).SetResult(), done));
+        return done.Task;
+    }
 
     public void Dispose() => _queue.CompleteAdding();
 }

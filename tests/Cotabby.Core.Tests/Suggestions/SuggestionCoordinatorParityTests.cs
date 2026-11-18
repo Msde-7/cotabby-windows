@@ -107,7 +107,7 @@ public sealed class SuggestionCoordinatorParityTests : CoordinatorHarness
         // Turned off from the language bar: no key, and no focus event.
         Focus.Replace(Focus.Current! with { ImeLanguageId = 0 });
         Type("n");
-        await Task.Delay(100);
+        await Settled();
         Type("o");
 
         await Eventually(() => !Engine.Requests.IsEmpty, "typing asks for suggestions again");
@@ -206,7 +206,7 @@ public sealed class SuggestionCoordinatorParityTests : CoordinatorHarness
 
         Focus.Focus(Fields.Text("") with { FieldId = "empty" });
 
-        await Task.Delay(150);
+        await Settled();
         Assert.Equal(0, calls);
     }
 }

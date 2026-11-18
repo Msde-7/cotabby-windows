@@ -19,11 +19,31 @@ public sealed class SuggestionCoordinatorOrderingTests : CoordinatorHarness
         // The host has not received the accepted text yet, so the space is held back for it.
         Assert.True(Hook.Press(Keys.Char(' ')), "a key typed during the insertion is held");
         Assert.True(Hook.Press(Keys.Char('a')));
-        await Task.Delay(50);
+        await KeysHandled();
         gate.SetResult();
 
         await Eventually(() => Focus.Current!.Text == "hello a", "the held keys follow the accepted text");
         Assert.False(Hook.Press(Keys.Char('b')), "typing passes through once the insertion is done");
+    }
+
+    [Fact]
+    public async Task AKeyOfUnknownCharacterTypedWhileAnAcceptIsInserting_GoesStraightToTheHost()
+    {
+        Engine.Completion = r => r.Prefix.EndsWith("hel") ? "lo world" : "";
+        Type("hel");
+        await Shown("lo world");
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Focus.InsertGate = gate;
+
+        Assert.True(Hook.Press(Keys.Tab()));
+        // The hook reports U+FFFD for the letter after a dead key, which the host may show accented.
+        Assert.False(Hook.Press(Keys.Char('\uFFFD')), "a key Cotabby cannot retype reaches the host");
+        Assert.False(Hook.Press(Keys.Char('s')), "keys after it are not held ahead of it");
+        gate.SetResult();
+
+        await Eventually(() => Focus.Insertions.Contains("lo"), "the accepted word is inserted");
+        await Settled();
+        Assert.DoesNotContain(Focus.Insertions, inserted => inserted.Contains('\uFFFD'));
     }
 
     [Fact]
@@ -51,7 +71,7 @@ public sealed class SuggestionCoordinatorOrderingTests : CoordinatorHarness
         await Shown(" world again");
         Hook.Press(Keys.Tab());
         await Eventually(() => Focus.Current!.Text == "hello world", "the word is inserted");
-        await Task.Delay(100);
+        await Settled();
         Engine.Requests.Clear();
 
         // The field already holds more than the baseline read before the accept, so only counting
@@ -112,7 +132,7 @@ public sealed class SuggestionCoordinatorOrderingTests : CoordinatorHarness
         gate.SetResult();
 
         await Shown("");
-        await Task.Delay(100);
+        await Settled();
         Assert.Equal("hello", Focus.Current!.Text);
     }
 
@@ -141,7 +161,7 @@ public sealed class SuggestionCoordinatorOrderingTests : CoordinatorHarness
         await Shown(" world again");
         Type("x");
         await Eventually(() => Engine.Requests.Any(r => r.Prefix == "hellox"), "the typo is asked about");
-        await Task.Delay(50);
+        await Settled();
         Engine.Requests.Clear();
 
         Hook.Press(Keys.Special(KeyKind.Backspace, 0x08));
