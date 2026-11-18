@@ -63,6 +63,27 @@ public class OpenAICompatibleSuggestionEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task Generation_ReportsEachNormalizedNonEmptyPartial()
+    {
+        _server.Respond(_ => StubHttpMessageHandler.Sse(
+            "data: {\"choices\":[{\"text\":\"  \"}]}\n\n" +
+            "data: {\"choices\":[{\"text\":\" big\"}]}\n\n" +
+            "data: {\"choices\":[{\"text\":\" world\"}]}\n\n" +
+            "data: [DONE]\n\n"));
+        var partials = new List<string>();
+        string prompt = CompletionPipeline.EndpointPrompt(Request);
+
+        var text = await MakeEngine().GenerateAsync(Request, CancellationToken.None, partials.Add);
+
+        string[] expected = ["   big", "   big world"];
+        Assert.Equal(
+            expected.Select(raw => CompletionPipeline.Normalize(raw, prompt, Request).Text).Where(t => t.Length > 0),
+            partials);
+        Assert.NotEmpty(partials);
+        Assert.Equal(text, partials[^1]);
+    }
+
+    [Fact]
     public async Task Generation_ReturnsNothingWhenTheOutputNormalizesToEmpty()
     {
         _server.Respond(_ => StubHttpMessageHandler.Sse("data: {\"choices\":[{\"text\":\"  \"}]}\n\ndata: [DONE]\n\n"));

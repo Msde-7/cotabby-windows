@@ -11,8 +11,10 @@ namespace Cotabby.Inference.OpenAICompatible;
 /// </summary>
 /// <remarks>
 /// Like the local engine it surfaces one normalized chunk, because prompt echo and trailing
-/// duplication are only detectable on the full string. Configuration and transport failures are
-/// thrown with their user-facing message. Cancellation ends the stream silently.
+/// duplication are only detectable on the full string. Partial results are normalized the same
+/// way and only let the coordinator keep a request alive while the user types the words it is
+/// producing. Configuration and transport failures are thrown with their user-facing message.
+/// Cancellation ends the stream silently.
 /// </remarks>
 public sealed class OpenAICompatibleSuggestionEngine : ISuggestionEngine
 {
@@ -55,6 +57,16 @@ public sealed class OpenAICompatibleSuggestionEngine : ISuggestionEngine
         var prompt = CompletionPipeline.EndpointPrompt(request);
         if (prompt.Length == 0) return string.Empty;
 
+        Action<string>? partialHandler = null;
+        if (onPartial is not null)
+        {
+            partialHandler = cumulativeRaw =>
+            {
+                string text = CompletionPipeline.Normalize(cumulativeRaw, prompt, request).Text;
+                if (text.Length > 0) onPartial(text);
+            };
+        }
+
         var started = Stopwatch.GetTimestamp();
         string raw;
         try
@@ -64,7 +76,8 @@ public sealed class OpenAICompatibleSuggestionEngine : ISuggestionEngine
                 _credentials.ReadApiKey(),
                 prompt,
                 new OpenAICompatibleGenerationOptions(request.MaxTokens, Temperature, TopP),
-                ct).ConfigureAwait(false);
+                ct,
+                partialHandler).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

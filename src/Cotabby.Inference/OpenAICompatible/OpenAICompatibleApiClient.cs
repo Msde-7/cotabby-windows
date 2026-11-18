@@ -14,8 +14,11 @@ public sealed class OpenAICompatibleClientException : Exception
     {
     }
 
-    public static OpenAICompatibleClientException Server(int statusCode) =>
-        new($"The endpoint returned HTTP {statusCode}.");
+    /// <param name="detail">The server's own explanation, already shortened and free of secrets.</param>
+    public static OpenAICompatibleClientException Server(int statusCode, string? detail = null) =>
+        new(detail is { Length: > 0 }
+            ? $"The endpoint returned HTTP {statusCode}: {detail}"
+            : $"The endpoint returned HTTP {statusCode}.");
 
     public static OpenAICompatibleClientException MalformedResponse() =>
         new("The endpoint returned an invalid OpenAI-compatible response.");
@@ -89,12 +92,14 @@ public sealed class OpenAICompatibleApiClient : IDisposable
     }
 
     /// <summary>Streams one generation and returns the accumulated raw text.</summary>
+    /// <param name="onPartialRawText">Receives the accumulated raw text after each text event, on the reading thread.</param>
     public async Task<string> GenerateAsync(
         OpenAICompatibleEndpointConfiguration configuration,
         string? apiKey,
         string prompt,
         OpenAICompatibleGenerationOptions options,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Action<string>? onPartialRawText = null)
     {
         RequireModelName(configuration);
 
@@ -119,11 +124,15 @@ public sealed class OpenAICompatibleApiClient : IDisposable
             var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
             using var reader = new StreamReader(stream, Encoding.UTF8);
             var accumulated = new StringBuilder();
+            var assembler = new OpenAICompatibleSseAssembler(mode);
             var sawEvent = false;
-            while (await reader.ReadLineAsync(timeout.Token).ConfigureAwait(false) is { } line)
+            string? line;
+            do
             {
-                timeout.CancelAfter(GenerationTimeout);
-                var sseEvent = OpenAICompatibleSseDecoder.Decode(line, mode);
+                // The end of the stream is passed on as null, so a last event without its blank line still counts.
+                line = await reader.ReadLineAsync(timeout.Token).ConfigureAwait(false);
+                if (line is not null) timeout.CancelAfter(GenerationTimeout);
+                if (assembler.Next(line) is not { } sseEvent) continue;
                 switch (sseEvent.Kind)
                 {
                     case OpenAICompatibleSseEventKind.Done:
@@ -131,11 +140,13 @@ public sealed class OpenAICompatibleApiClient : IDisposable
                     case OpenAICompatibleSseEventKind.Text:
                         sawEvent = true;
                         accumulated.Append(sseEvent.Value);
+                        onPartialRawText?.Invoke(accumulated.ToString());
                         break;
                     case OpenAICompatibleSseEventKind.Error:
                         throw OpenAICompatibleClientException.StreamError(sseEvent.Value!);
                 }
             }
+            while (line is not null);
 
             // A stream that closes without [DONE] still produced a usable answer.
             return sawEvent ? accumulated.ToString() : throw OpenAICompatibleClientException.MalformedResponse();
@@ -190,7 +201,8 @@ public sealed class OpenAICompatibleApiClient : IDisposable
                 .ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
-                throw OpenAICompatibleClientException.Server((int)response.StatusCode);
+                string? detail = await ReadErrorDetailAsync(response, apiKey, timeout.Token).ConfigureAwait(false);
+                throw OpenAICompatibleClientException.Server((int)response.StatusCode, detail);
             }
             return await read(response, timeout).ConfigureAwait(false);
         }
@@ -198,6 +210,86 @@ public sealed class OpenAICompatibleApiClient : IDisposable
         {
             throw new TimeoutException("The request timed out.");
         }
+    }
+
+    /// <summary>Longest server explanation shown with a failed status.</summary>
+    private const int ErrorDetailLength = 200;
+
+    /// <summary>Bytes of a failed response read for its explanation.</summary>
+    private const int ErrorBodyBytes = 8 * 1024;
+
+    /// <summary>
+    /// The server's explanation of a failed status, or null when the body has none worth
+    /// showing. A failure to read it only loses the explanation. The API key is redacted, since
+    /// some servers echo the credential they rejected.
+    /// </summary>
+    private static async Task<string?> ReadErrorDetailAsync(
+        HttpResponseMessage response, string? apiKey, CancellationToken ct)
+    {
+        string body;
+        try
+        {
+            await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            var buffer = new byte[ErrorBodyBytes];
+            int length = 0;
+            while (length < buffer.Length
+                && await stream.ReadAsync(buffer.AsMemory(length), ct).ConfigureAwait(false) is var read and > 0)
+            {
+                length += read;
+            }
+            body = Encoding.UTF8.GetString(buffer, 0, length);
+        }
+        catch (Exception ex) when (ex is IOException or HttpRequestException)
+        {
+            return null;
+        }
+
+        string? detail = ErrorDetail(body);
+        if (detail is null) return null;
+        if (apiKey?.Trim() is { Length: > 0 } key) detail = detail.Replace(key, "[API key]", StringComparison.Ordinal);
+        detail = string.Join(' ', detail.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return detail.Length > ErrorDetailLength ? detail[..ErrorDetailLength].TrimEnd() + "…" : detail;
+    }
+
+    /// <summary>
+    /// The message in the error shapes OpenAI-compatible servers use, or plain text. An HTML page
+    /// from a proxy says nothing the status does not.
+    /// </summary>
+    private static string? ErrorDetail(string body)
+    {
+        var trimmed = body.Trim();
+        if (trimmed.Length == 0 || trimmed.StartsWith('<')) return null;
+        if (!trimmed.StartsWith('{')) return trimmed;
+        try
+        {
+            using var document = JsonDocument.Parse(trimmed);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            if (root.TryGetProperty("error", out var error))
+            {
+                if (error.ValueKind == JsonValueKind.String) return NonEmpty(error.GetString());
+                if (error.ValueKind == JsonValueKind.Object
+                    && error.TryGetProperty("message", out var nested)
+                    && nested.ValueKind == JsonValueKind.String)
+                {
+                    return NonEmpty(nested.GetString());
+                }
+            }
+            foreach (var name in (ReadOnlySpan<string>)["message", "detail"])
+            {
+                if (root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
+                {
+                    return NonEmpty(value.GetString());
+                }
+            }
+            return null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        static string? NonEmpty(string? text) => string.IsNullOrWhiteSpace(text) ? null : text;
     }
 }
 
@@ -220,7 +312,7 @@ public readonly record struct OpenAICompatibleSseEvent(OpenAICompatibleSseEventK
 /// <summary>Pure line decoder for OpenAI's data-only SSE streams.</summary>
 public static class OpenAICompatibleSseDecoder
 {
-    private static readonly string[] MetadataPrefixes = [":", "event:", "id:", "retry:"];
+    internal static readonly string[] MetadataPrefixes = [":", "event:", "id:", "retry:"];
 
     /// <exception cref="OpenAICompatibleClientException">The payload is not a stream chunk.</exception>
     public static OpenAICompatibleSseEvent Decode(string line, OpenAICompatibleApiMode mode)
@@ -237,7 +329,29 @@ public static class OpenAICompatibleSseDecoder
             // chunk, and treating it as malformed would end an otherwise healthy stream.
             if (payload.Length == 0) return OpenAICompatibleSseEvent.Ignore;
         }
-        if (payload == "[DONE]") return OpenAICompatibleSseEvent.Done;
+        return DecodePayload(payload, mode);
+    }
+
+    /// <summary>Decodes one event's data, with any <c>data:</c> prefixes already removed.</summary>
+    /// <exception cref="OpenAICompatibleClientException">The payload is not a stream chunk.</exception>
+    public static OpenAICompatibleSseEvent DecodePayload(string payload, OpenAICompatibleApiMode mode) =>
+        TryDecodePayload(payload, mode, out var sseEvent)
+            ? sseEvent
+            : throw OpenAICompatibleClientException.MalformedResponse();
+
+    /// <summary>
+    /// Like <see cref="DecodePayload"/>, but false instead of throwing, so a caller can tell an
+    /// event that is still incomplete from one that is whole.
+    /// </summary>
+    public static bool TryDecodePayload(string payload, OpenAICompatibleApiMode mode, out OpenAICompatibleSseEvent sseEvent)
+    {
+        payload = payload.Trim();
+        sseEvent = OpenAICompatibleSseEvent.Ignore;
+        if (payload == "[DONE]")
+        {
+            sseEvent = OpenAICompatibleSseEvent.Done;
+            return true;
+        }
 
         StreamChunk? chunk;
         try
@@ -246,16 +360,82 @@ public static class OpenAICompatibleSseDecoder
         }
         catch (JsonException)
         {
-            chunk = null;
+            return false;
         }
-        if (chunk is null) throw OpenAICompatibleClientException.MalformedResponse();
+        if (chunk is null) return false;
 
-        if (chunk.Error is { Message.Length: > 0 } error) return OpenAICompatibleSseEvent.Error(error.Message);
-        if (chunk.Choices is not [{ } choice, ..]) return OpenAICompatibleSseEvent.Ignore;
+        switch (chunk.Error)
+        {
+            // OpenAI nests the message in an object. Ollama and others send a plain string.
+            case { ValueKind: JsonValueKind.String } error:
+                if (error.GetString() is { Length: > 0 } message)
+                {
+                    sseEvent = OpenAICompatibleSseEvent.Error(message);
+                    return true;
+                }
+                break;
+            case { ValueKind: JsonValueKind.Object } error:
+                if (!error.TryGetProperty("message", out var nested) || nested.ValueKind != JsonValueKind.String)
+                {
+                    return false;
+                }
+                if (nested.GetString() is { Length: > 0 } nestedMessage)
+                {
+                    sseEvent = OpenAICompatibleSseEvent.Error(nestedMessage);
+                    return true;
+                }
+                break;
+            case null or { ValueKind: JsonValueKind.Null }:
+                break;
+            default:
+                return false;
+        }
+
+        if (chunk.Choices is not [{ } choice, ..]) return true;
         var text = mode == OpenAICompatibleApiMode.Completions
             ? choice.Text
             : choice.Delta?.Content ?? choice.Message?.Content;
-        return string.IsNullOrEmpty(text) ? OpenAICompatibleSseEvent.Ignore : OpenAICompatibleSseEvent.Text(text);
+        if (!string.IsNullOrEmpty(text)) sseEvent = OpenAICompatibleSseEvent.Text(text);
+        return true;
+    }
+}
+
+/// <summary>
+/// Joins a stream's lines into events. Following the SSE format, consecutive <c>data:</c> lines
+/// form one event that a blank line ends. Most servers send one line per event, so a payload is
+/// decoded as soon as it is whole rather than at the blank line. Lines without a field name are
+/// taken as data too, which also reads a server that ignored streaming and sent one JSON body.
+/// </summary>
+public sealed class OpenAICompatibleSseAssembler(OpenAICompatibleApiMode mode)
+{
+    private readonly StringBuilder _pending = new();
+
+    /// <summary>
+    /// Takes the next line, or null at the end of the stream, and returns the event it completes.
+    /// </summary>
+    /// <exception cref="OpenAICompatibleClientException">An event ended that is not a stream chunk.</exception>
+    public OpenAICompatibleSseEvent? Next(string? line)
+    {
+        var trimmed = line?.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            // A blank line or the end of the stream ends the event, which has to be whole by now.
+            if (_pending.Length == 0) return null;
+            var payload = _pending.ToString();
+            _pending.Clear();
+            return OpenAICompatibleSseDecoder.DecodePayload(payload, mode);
+        }
+        if (OpenAICompatibleSseDecoder.MetadataPrefixes.Any(prefix => trimmed.StartsWith(prefix, StringComparison.Ordinal))) return null;
+
+        var data = trimmed.StartsWith("data:", StringComparison.Ordinal) ? trimmed["data:".Length..].TrimStart() : trimmed;
+        // Some servers and proxies send an empty data line as a keep-alive.
+        if (_pending.Length == 0 && data.Length == 0) return null;
+        if (_pending.Length > 0) _pending.Append('\n');
+        _pending.Append(data);
+
+        if (!OpenAICompatibleSseDecoder.TryDecodePayload(_pending.ToString(), mode, out var sseEvent)) return null;
+        _pending.Clear();
+        return sseEvent;
     }
 }
 
@@ -296,10 +476,9 @@ internal sealed record ChatCompletionRequest(
     double TopP,
     string ReasoningEffort);
 
-internal sealed record StreamChunk(IReadOnlyList<StreamChoice?>? Choices = null, StreamErrorPayload? Error = null);
+// The error is an object with a message or a plain string, depending on the server.
+internal sealed record StreamChunk(IReadOnlyList<StreamChoice?>? Choices = null, JsonElement? Error = null);
 
 internal sealed record StreamChoice(string? Text = null, StreamContent? Delta = null, StreamContent? Message = null);
 
 internal sealed record StreamContent(string? Content = null);
-
-internal sealed record StreamErrorPayload(string Message);

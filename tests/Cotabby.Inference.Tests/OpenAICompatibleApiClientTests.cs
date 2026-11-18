@@ -64,6 +64,10 @@ public class OpenAICompatibleApiClientTests : IDisposable
             SseEvent.Error("boom")
         },
         { """data: {"error":{"message":""}}""", Mode.Completions, SseEvent.Ignore },
+        // Ollama and others report the error as a plain string.
+        { """data: {"error":"model 'x' not found"}""", Mode.Completions, SseEvent.Error("model 'x' not found") },
+        { """data: {"error":""}""", Mode.Completions, SseEvent.Ignore },
+        { """data: {"error":null,"choices":[{"text":"ok"}]}""", Mode.Completions, SseEvent.Text("ok") },
     };
 
     [Theory]
@@ -202,13 +206,114 @@ public class OpenAICompatibleApiClientTests : IDisposable
     [Fact]
     public async Task Generation_MapsNonSuccessStatus()
     {
-        _server.Respond(_ => StubHttpMessageHandler.Json(
-            """{"error":{"message":"unauthorized"}}""", HttpStatusCode.Unauthorized));
+        _server.Respond(_ => StubHttpMessageHandler.Json("{}", HttpStatusCode.Unauthorized));
 
         var ex = await Assert.ThrowsAsync<OpenAICompatibleClientException>(
             () => _client.GenerateAsync(Configuration(), null, "text", Options));
 
         Assert.Equal("The endpoint returned HTTP 401.", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("""{"error":{"message":"unauthorized"}}""", "The endpoint returned HTTP 401: unauthorized")]
+    [InlineData("""{"error":"model 'x' not found"}""", "The endpoint returned HTTP 401: model 'x' not found")]
+    [InlineData("""{"object":"error","message":"bad request"}""", "The endpoint returned HTTP 401: bad request")]
+    [InlineData("""{"detail":"Not Found"}""", "The endpoint returned HTTP 401: Not Found")]
+    [InlineData("plain\n  text  reason", "The endpoint returned HTTP 401: plain text reason")]
+    [InlineData("<html><body>401</body></html>", "The endpoint returned HTTP 401.")]
+    [InlineData("", "The endpoint returned HTTP 401.")]
+    public async Task Generation_NonSuccessStatusCarriesTheServersMessage(string body, string expected)
+    {
+        _server.Respond(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized)
+        {
+            Content = new StringContent(body),
+        });
+
+        var ex = await Assert.ThrowsAsync<OpenAICompatibleClientException>(
+            () => _client.GenerateAsync(Configuration(), null, "text", Options));
+
+        Assert.Equal(expected, ex.Message);
+    }
+
+    [Fact]
+    public async Task ServerErrorMessage_IsTruncatedAndNeverContainsTheApiKey()
+    {
+        string echoed = "Incorrect API key provided: sk-secret-123. " + new string('x', 500);
+        _server.Respond(_ => StubHttpMessageHandler.Json(
+            $$$"""{"error":{"message":"{{{echoed}}}"}}""", HttpStatusCode.Unauthorized));
+
+        var ex = await Assert.ThrowsAsync<OpenAICompatibleClientException>(
+            () => _client.FetchModelsAsync(Configuration(), " sk-secret-123 "));
+
+        Assert.DoesNotContain("sk-secret-123", ex.Message);
+        Assert.StartsWith("The endpoint returned HTTP 401: Incorrect API key provided: ", ex.Message);
+        Assert.True(ex.Message.Length < 300, ex.Message);
+        Assert.EndsWith("…", ex.Message);
+    }
+
+    [Fact]
+    public async Task Generation_ReportsTheAccumulatedTextAfterEachTextEvent()
+    {
+        _server.Respond(_ => StubHttpMessageHandler.Sse(
+            "data: {\"choices\":[{\"text\":\" hel\"}]}\n\n" +
+            "data: {\"choices\":[]}\n\n" +
+            "data: {\"choices\":[{\"text\":\"lo\"}]}\n\n" +
+            "data: [DONE]\n\n"));
+        var partials = new List<string>();
+
+        var output = await _client.GenerateAsync(
+            Configuration(mode: Mode.Completions), null, "text", Options, onPartialRawText: partials.Add);
+
+        Assert.Equal(" hello", output);
+        Assert.Equal([" hel", " hello"], partials);
+    }
+
+    [Fact]
+    public async Task Generation_JoinsAnEventSplitOverSeveralDataLines()
+    {
+        _server.Respond(_ => StubHttpMessageHandler.Sse(
+            "data: {\"choices\":\n" +
+            "data: [{\"text\":\" multi\"}]}\n\n" +
+            "data: {\"choices\":[{\"text\":\" line\"}]}\n\n" +
+            "data: [DONE]\n\n"));
+
+        var output = await _client.GenerateAsync(Configuration(mode: Mode.Completions), null, "text", Options);
+
+        Assert.Equal(" multi line", output);
+    }
+
+    [Fact]
+    public async Task Generation_ReadsAServerThatIgnoresStreamingAndSendsOneJsonBody()
+    {
+        _server.Respond(_ => StubHttpMessageHandler.Json(
+            """
+            {
+              "id": "chatcmpl-1",
+              "choices": [
+                {
+                  "index": 0,
+                  "message": { "role": "assistant", "content": " whole answer" }
+                }
+              ]
+            }
+            """));
+
+        var output = await _client.GenerateAsync(Configuration(), null, "text", Options);
+
+        Assert.Equal(" whole answer", output);
+    }
+
+    [Fact]
+    public async Task Generation_MalformedEventStillFailsAtTheEventBoundary()
+    {
+        _server.Respond(_ => StubHttpMessageHandler.Sse(
+            "data: {not json\n\n" +
+            "data: {\"choices\":[{\"text\":\"never\"}]}\n\n"));
+
+        var ex = await Assert.ThrowsAsync<OpenAICompatibleClientException>(
+            () => _client.GenerateAsync(Configuration(mode: Mode.Completions), null, "text", Options));
+
+        Assert.Equal("The endpoint returned an invalid OpenAI-compatible response.", ex.Message);
     }
 
     [Fact]
@@ -341,5 +446,27 @@ public class OpenAICompatibleApiClientTests : IDisposable
 
         Assert.Empty(connection.Models);
         Assert.Equal(new OpenAICompatibleConnectionState.Idle(), connection.State);
+    }
+
+    [Fact]
+    public async Task ConnectionModel_CancelledRefreshDoesNotStayConnecting()
+    {
+        var connection = new OpenAICompatibleConnectionModel(_client);
+        _server.Respond(_ => StubHttpMessageHandler.Json("""{"data":[{"id":"a"}]}"""));
+        await connection.RefreshAsync(Configuration(), null);
+
+        _server.Responder = async (_, ct) =>
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+            throw new InvalidOperationException("unreachable");
+        };
+        using var cancellation = new CancellationTokenSource();
+        var refresh = connection.RefreshAsync(Configuration(), null, cancellation.Token);
+        Assert.Equal(new OpenAICompatibleConnectionState.Connecting(), connection.State);
+        cancellation.Cancel();
+        await refresh;
+
+        Assert.Equal(["a"], connection.Models.Select(model => model.Id));
+        Assert.Equal(new OpenAICompatibleConnectionState.Ready(1), connection.State);
     }
 }

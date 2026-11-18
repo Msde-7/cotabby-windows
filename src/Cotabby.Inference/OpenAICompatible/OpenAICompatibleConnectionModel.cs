@@ -34,6 +34,10 @@ public sealed class OpenAICompatibleConnectionModel(OpenAICompatibleApiClient cl
         CancellationToken ct = default)
     {
         var generation = ++_refreshGeneration;
+        // A refresh this one supersedes never publishes, so its Connecting is not worth restoring.
+        var previous = State is OpenAICompatibleConnectionState.Connecting
+            ? new OpenAICompatibleConnectionState.Idle()
+            : State;
         Publish(Models, new OpenAICompatibleConnectionState.Connecting());
         try
         {
@@ -44,6 +48,9 @@ public sealed class OpenAICompatibleConnectionModel(OpenAICompatibleApiClient cl
         }
         catch (OperationCanceledException)
         {
+            // Nothing newer replaced the state, so it goes back to what it was rather than
+            // staying at Connecting.
+            if (_refreshGeneration == generation) Publish(Models, previous);
         }
         catch (Exception ex)
         {
