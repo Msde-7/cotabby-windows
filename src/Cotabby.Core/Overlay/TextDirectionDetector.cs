@@ -21,12 +21,12 @@ public static class TextDirectionDetector
 
     private static bool IsStrongRightToLeft(char c) =>
         // Hebrew, Arabic, Syriac, Thaana, NKo and Arabic Extended.
-        c is >= '֐' and <= 'ࣿ'
+        c is >= '\u0590' and <= '\u08FF'
         // Hebrew and Arabic presentation forms.
-        or >= 'יִ' and <= '﷿'
-        or >= 'ﹰ' and <= '﻿'
+        or >= '\uFB1D' and <= '\uFDFF'
+        or >= '\uFE70' and <= '\uFEFF'
         // Right-to-left and Arabic letter marks.
-        or '‏' or '؜';
+        or '\u200F' or '\u061C';
 
     private static bool IsStrongLeftToRight(char c) =>
         c is >= 'A' and <= 'Z'
@@ -37,5 +37,5 @@ public static class TextDirectionDetector
         // CJK ideographs.
         or >= '一' and <= '鿿'
         // Left-to-right mark.
-        or '‎';
+        or '\u200E';
 }

@@ -10,7 +10,7 @@ public sealed class AcceptanceChunkerInsertionTests
     [InlineData(" you", "How are ", "you")]
     [InlineData("  you", "How are ", "you")]
     [InlineData(" you", "How are\t", "you")]
-    [InlineData(" you", "How are ", "you")]
+    [InlineData(" you", "How are\u00A0", "you")]
     [InlineData(" ", "Hello ", "")]
     [InlineData("\nnext", "first ", "\nnext")]
     public void InsertionChunk_DropsLeadingHorizontalWhitespaceWhenTheFieldAlreadyEndsInIt(
@@ -58,7 +58,7 @@ public sealed class AcceptanceChunkerInsertionTests
     [InlineData("world", "world, how", "world")]
     [InlineData("done.", "done. next", "done.")]
     [InlineData("資料", "資料 です", "資料")]
-    [InlineData("world", "world how", "world")]
+    [InlineData("world", "world\u00A0how", "world")]
     public void ConsumingTrailingSpace_TakesOnlyTheSpacesAndTabsAfterAFinishedWord(
         string chunk, string remaining, string expected) =>
         Assert.Equal(expected, AcceptanceChunker.ConsumingTrailingSpace(chunk, remaining));

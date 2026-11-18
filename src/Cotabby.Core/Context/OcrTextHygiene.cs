@@ -29,7 +29,7 @@ public static class OcrTextHygiene
 
     /// <summary>A replacement character means the recognizer emitted a glyph it could not map.</summary>
     public static IReadOnlyList<OcrLine> DropReplacementCharacter(IEnumerable<OcrLine> lines) =>
-        lines.Where(l => !l.Text.Contains('�')).ToList();
+        lines.Where(l => !l.Text.Contains('\uFFFD')).ToList();
 
     /// <summary>Drops lines where more than <paramref name="threshold"/> of the characters are symbol noise.</summary>
     public static IReadOnlyList<OcrLine> DropHighSymbolDensity(IEnumerable<OcrLine> lines, double threshold = 0.2) =>

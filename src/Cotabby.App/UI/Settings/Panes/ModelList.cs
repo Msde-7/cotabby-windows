@@ -302,7 +302,7 @@ internal sealed class ModelList : StackPanel
 
     private Button DeleteButton(CotabbyModel model)
     {
-        var button = new Button { Content = Ui.Icon("", 12), ToolTip = "Delete this model file" }.Styled("Btn");
+        var button = new Button { Content = Ui.Icon("\uE74D", 12), ToolTip = "Delete this model file" }.Styled("Btn");
         button.Click += (_, _) => Delete(model);
         return button;
     }

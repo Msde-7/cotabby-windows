@@ -30,7 +30,7 @@ public sealed class OcrTextHygieneTests
     [Fact]
     public void DropReplacementCharacter_DropsLinesWithReplacementGlyph()
     {
-        var input = new[] { Line("clean line"), Line("corru�pted"), Line("also clean") };
+        var input = new[] { Line("clean line"), Line("corru\uFFFDpted"), Line("also clean") };
         Assert.Equal(["clean line", "also clean"], Texts(OcrTextHygiene.DropReplacementCharacter(input)));
     }
 
@@ -146,7 +146,7 @@ public sealed class OcrTextHygieneTests
         [
             Line("This is a genuine line of prose."),
             Line("low confidence noise", 0.1f),
-            Line("corru�pted glyph"),
+            Line("corru\uFFFDpted glyph"),
             Line("┌───┐"),
             Line("the qu81ity is poor"),
             Line("--- :: --- :: ---"),
@@ -205,7 +205,7 @@ public sealed class OcrTextHygieneTests
     }
 
     [Theory]
-    [InlineData("great job team \U0001F468‍\U0001F469‍\U0001F467‍\U0001F466")]
+    [InlineData("great job team \U0001F468\u200D\U0001F469\u200D\U0001F467\u200D\U0001F466")]
     [InlineData("sounds good \U0001F44D\U0001F3FD\U0001F44D\U0001F3FD")]
     public void DropHighSymbolDensity_CountsAnEmojiAsOneCharacter(string text)
     {

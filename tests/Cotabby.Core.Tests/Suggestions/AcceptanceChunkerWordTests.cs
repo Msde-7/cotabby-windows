@@ -51,7 +51,7 @@ public sealed class AcceptanceChunkerWordTests
         Assert.Equal(expected, AcceptanceChunker.NextChunk(tail, autoAcceptTrailingPunctuation: false));
 
     [Theory]
-    [InlineData("café!", "café")]
+    [InlineData("cafe\u0301!", "cafe\u0301")]
     [InlineData("नमस्ते दुनिया", "नमस्ते")]
     public void NextChunk_PunctuationOff_KeepsCombiningMarksWithTheirLetter(string tail, string expected) =>
         Assert.Equal(expected, AcceptanceChunker.NextChunk(tail, autoAcceptTrailingPunctuation: false));

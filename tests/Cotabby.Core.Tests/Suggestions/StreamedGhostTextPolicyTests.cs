@@ -51,7 +51,7 @@ public sealed class StreamedGhostTextPolicyTests
     public void BoundariesCountUserCharactersRatherThanUtf16Units()
     {
         const string visible = "\U0001F408 café";
-        Assert.Equal(visible + " ", StreamedGhostTextPolicy.CompletedBufferedPrediction(visible + " café", 6));
+        Assert.Equal(visible + " ", StreamedGhostTextPolicy.CompletedBufferedPrediction(visible + " cafe\u0301", 6));
         Assert.Equal("你好", StreamedGhostTextPolicy.CompletedBufferedPrediction("你好世界", 2));
     }
 
@@ -64,7 +64,7 @@ public sealed class StreamedGhostTextPolicyTests
     [InlineData(" wor", " world", false)]
     [InlineData(" world", " world", false)]
     [InlineData(" worse idea", " world", false)]
-    [InlineData(" café", " cafe", false)]
+    [InlineData(" cafe\u0301", " cafe", false)]
     public void RenderableExtensionRequiresAStrictlyLongerPrefixExtension(string candidate, string? rendered, bool expected) =>
         Assert.Equal(expected, StreamedGhostTextPolicy.IsRenderableExtension(candidate, rendered));
 }

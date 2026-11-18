@@ -14,12 +14,10 @@ public class ClipboardTextReaderTests
 {
     private readonly ClipboardTextReader _reader = new();
 
-    [Fact]
+    // The test rewrites the real clipboard, so it only runs when asked for.
+    [FactWhenEnv("COTABBY_CLIPBOARD_TEST", "1")]
     public void ReadsCopiedTextAndIgnoresItsOwnWrites()
     {
-        // The test rewrites the real clipboard, so it only runs when asked for.
-        if (Environment.GetEnvironmentVariable("COTABBY_CLIPBOARD_TEST") != "1") return;
-
         OnStaThread(() =>
         {
             string? original = WpfClipboard.ContainsText() ? WpfClipboard.GetText() : null;
