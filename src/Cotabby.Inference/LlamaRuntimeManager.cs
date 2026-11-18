@@ -54,7 +54,7 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
             }
 
             if (_core is not null && _activeModel?.Id == model.Id) return;
-            UnloadInternal();
+            await UnloadOffCallerAsync().ConfigureAwait(false);
 
             var sw = Stopwatch.StartNew();
             // One logical core stays free for the UI and UI Automation, so prompt evaluation on
@@ -117,6 +117,13 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Unloads on the thread pool. Disposing the core waits for the decode in flight to stop, and
+    /// the gate above is often taken synchronously, so the caller, usually the UI thread, would
+    /// otherwise do that wait itself.
+    /// </summary>
+    private Task UnloadOffCallerAsync() => Task.Run(UnloadInternal, CancellationToken.None);
+
     private void UnloadInternal()
     {
         _core?.Dispose();
@@ -141,7 +148,7 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
         {
             if (_core is null && _weights is null) return;
             var model = _activeModel?.Id;
-            UnloadInternal();
+            await UnloadOffCallerAsync().ConfigureAwait(false);
             _logger.LogInformation("Model {Model} unloaded.", model);
         }
         finally
@@ -155,7 +162,7 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
         await _gate.WaitAsync().ConfigureAwait(false);
-        try { UnloadInternal(); }
+        try { await UnloadOffCallerAsync().ConfigureAwait(false); }
         finally { _gate.Release(); }
         _gate.Dispose();
     }

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using System.Text;
 using Cotabby.Core.Support;
 using LLama;
@@ -37,7 +38,9 @@ public sealed record LlamaGenerationOptions
 /// The context is built once at model load. Each generation keeps the longest shared prompt prefix
 /// in memory and evaluates only the rest, so time to first suggestion is prompt evaluation plus
 /// decode. All calls are serialized by an internal gate because llama.cpp contexts are not
-/// thread-safe.
+/// thread-safe. A cancelled call, or disposal, aborts the native decode in flight through
+/// llama.cpp's abort callback where the backend honours it (the CPU backend does), and otherwise
+/// between prompt chunks and sampled tokens.
 /// </remarks>
 public sealed class LlamaRuntimeCore : IDisposable
 {
@@ -63,9 +66,24 @@ public sealed class LlamaRuntimeCore : IDisposable
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly bool _canReusePrefix;
+    private readonly int _slidingWindow;
     private readonly TokenHealingVocabulary _healingVocabulary;
+
+    /// <summary>Cancelled by <see cref="Dispose"/>. Every call links to it.</summary>
+    private readonly CancellationTokenSource _lifetime = new();
+
+    /// <summary>Registered with llama.cpp. Held here so the delegate lives as long as the context.</summary>
+    private readonly AbortCallback _abortCallback;
+
+    /// <summary>The token of the call holding the gate, read by the abort callback.</summary>
+    private CancellationToken _abortToken;
+
     private LLamaToken[] _lastPromptTokens = [];
-    private bool _disposed;
+    private volatile bool _disposed;
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    private delegate bool AbortCallback(IntPtr data);
 
     public LlamaRuntimeCore(LLamaWeights weights, LLamaContext context, ILogger logger)
     {
@@ -75,7 +93,11 @@ public sealed class LlamaRuntimeCore : IDisposable
         // Recurrent and hybrid models cannot drop a suffix of their state, so prefix reuse is
         // limited to models whose memory can shift.
         _canReusePrefix = !weights.NativeHandle.IsRecurrent && context.NativeHandle.MemoryCanShift;
+        _slidingWindow = weights.NativeHandle.SWACount;
         _healingVocabulary = BuildHealingVocabulary();
+        _abortCallback = _ => _abortToken.IsCancellationRequested;
+        NativeApi.llama_set_abort_callback(
+            context.NativeHandle, Marshal.GetFunctionPointerForDelegate(_abortCallback), IntPtr.Zero);
     }
 
     public SafeLlamaModelHandle.Vocabulary Vocab => _weights.Vocab;
@@ -92,10 +114,10 @@ public sealed class LlamaRuntimeCore : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         return RunExclusiveAsync(
-            () =>
+            token =>
             {
                 var (promptTokens, healingPrefix) = PreparePrompt(prompt, options);
-                return Generate(promptTokens, healingPrefix, options, ct);
+                return Generate(promptTokens, healingPrefix, options, token);
             },
             whenDisposed: string.Empty,
             ct);
@@ -119,10 +141,10 @@ public sealed class LlamaRuntimeCore : IDisposable
         try
         {
             await RunExclusiveAsync(
-                () =>
+                token =>
                 {
                     var (promptTokens, _) = PreparePrompt(prompt, options);
-                    Prewarm(promptTokens, ct);
+                    Prewarm(promptTokens, token);
                     return true;
                 },
                 whenDisposed: false,
@@ -138,14 +160,40 @@ public sealed class LlamaRuntimeCore : IDisposable
     /// touches the context, tokenizing included, runs inside, after the disposal check, so an
     /// unload can never free the context under it.
     /// </summary>
-    private async Task<T> RunExclusiveAsync<T>(Func<T> work, T whenDisposed, CancellationToken ct)
+    /// <remarks>
+    /// <paramref name="work"/> receives <paramref name="ct"/> linked to disposal, and the native
+    /// abort callback watches that token while it runs, so an unload ends the call quickly. A
+    /// call that only disposal cancelled returns <paramref name="whenDisposed"/>.
+    /// </remarks>
+    private async Task<T> RunExclusiveAsync<T>(Func<CancellationToken, T> work, T whenDisposed, CancellationToken ct)
     {
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
+        try
+        {
+            await _gate.WaitAsync(linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return whenDisposed;
+        }
         try
         {
             // The model can be unloaded while this request waited for its turn.
             if (_disposed) return whenDisposed;
-            return await Task.Run(work, CancellationToken.None).ConfigureAwait(false);
+            return await Task.Run(
+                () =>
+                {
+                    _abortToken = linked.Token;
+                    try
+                    {
+                        return work(linked.Token);
+                    }
+                    finally
+                    {
+                        _abortToken = CancellationToken.None;
+                    }
+                },
+                CancellationToken.None).ConfigureAwait(false);
         }
         finally
         {
@@ -244,6 +292,11 @@ public sealed class LlamaRuntimeCore : IDisposable
                 batch.Add(promptTokens[j], j, Sequence, logits: j == promptTokens.Length - 1);
             }
             var result = handle.Decode(batch);
+            if (result == DecodeResult.ComputeAborted && ct.IsCancellationRequested)
+            {
+                KeepPrefixAfterAbort(promptTokens, end);
+                return PromptEvaluation.Cancelled;
+            }
             if (result != DecodeResult.Ok)
             {
                 _logger.LogWarning("Prompt decode failed with {Result}. Clearing memory.", result);
@@ -257,17 +310,45 @@ public sealed class LlamaRuntimeCore : IDisposable
     }
 
     /// <summary>
-    /// Drops every position from <paramref name="from"/> on and reports whether memory now ends
-    /// before it. LLamaSharp's <c>MemorySequenceRemove</c> discards the result of
-    /// <c>llama_memory_seq_rm</c>, which is false when a recurrent or hybrid memory refuses a
-    /// partial removal and leaves its state untouched, so the highest remaining position is the
-    /// check.
+    /// Drops every position from <paramref name="from"/> on and reports whether memory now holds
+    /// exactly the positions before it. LLamaSharp's <c>MemorySequenceRemove</c> discards the
+    /// result of <c>llama_memory_seq_rm</c>, which is false when a recurrent or hybrid memory
+    /// refuses a partial removal and leaves its state untouched, so the remaining positions are
+    /// the check. Memory that lost more than the tail fails it too.
     /// </summary>
     private bool TryTrimMemory(int from)
     {
+        _context.NativeHandle.MemorySequenceRemove(Sequence, from, -1);
+        return HoldsPrefix(from);
+    }
+
+    /// <summary>See <see cref="MemoryPrefix.HoldsExactly"/>.</summary>
+    private bool HoldsPrefix(int length)
+    {
         var handle = _context.NativeHandle;
-        handle.MemorySequenceRemove(Sequence, from, -1);
-        return handle.MemorySequenceMaxPosition(Sequence).Value < from;
+        int max = handle.MemorySequenceMaxPosition(Sequence).Value;
+        if (max != length - 1) return false;
+        return MemoryPrefix.HoldsExactly(length, handle.MemorySequenceMinPosition(Sequence).Value, max, _slidingWindow);
+    }
+
+    /// <summary>
+    /// Brings the remembered prompt back in line with memory after the abort callback stopped the
+    /// prompt chunk ending at <paramref name="end"/>. llama.cpp keeps the ubatches it finished and
+    /// removes the one it was computing. A memory that cannot remove it, such as a hybrid model's,
+    /// still reports the whole chunk although its state is half computed, so anything other than a
+    /// clean prefix that stops before <paramref name="end"/> is forgotten.
+    /// </summary>
+    private void KeepPrefixAfterAbort(LLamaToken[] promptTokens, int end)
+    {
+        int kept = _context.NativeHandle.MemorySequenceMaxPosition(Sequence).Value + 1;
+        if (_canReusePrefix && kept < end && HoldsPrefix(kept))
+        {
+            _lastPromptTokens = promptTokens[..kept];
+        }
+        else
+        {
+            ForgetPrompt();
+        }
     }
 
     private string Generate(
@@ -317,7 +398,14 @@ public sealed class LlamaRuntimeCore : IDisposable
             {
                 batch.Clear();
                 batch.Add((LLamaToken)sampledIds[^1], promptTokens.Length + sampledIds.Count - 1, Sequence, logits: true);
-                if (handle.Decode(batch) != DecodeResult.Ok) { stopReason = "accept_failed"; break; }
+                var accepted = handle.Decode(batch);
+                if (accepted != DecodeResult.Ok)
+                {
+                    stopReason = accepted == DecodeResult.ComputeAborted && ct.IsCancellationRequested
+                        ? "cancelled"
+                        : "accept_failed";
+                    break;
+                }
                 lastLogitsIndex = 0;
             }
 
@@ -537,6 +625,9 @@ public sealed class LlamaRuntimeCore : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        // Cancelling aborts the decode in flight and releases every call waiting for the gate,
+        // so the wait below is short.
+        _lifetime.Cancel();
         // A decode in flight reads the context, so it is freed only once that decode has ended.
         _gate.Wait();
         try
