@@ -85,6 +85,18 @@ public sealed class SuggestionSessionReconcilerTests
     public void FollowsExpected_TreatsANonBreakingSpaceAsASpace(string expected, string live, int lag, bool follows) =>
         Assert.Equal(follows, SuggestionSessionReconciler.FollowsExpected(expected, live, lag));
 
+    [Theory]
+    [InlineData("a\nb", "a\r\nb", 0, true)]
+    [InlineData("a\nb", "a\rb", 0, true)]
+    [InlineData("a\nbcd", "a\r\nb", 2, true)]
+    [InlineData("a\nbcd", "a\r\nb", 1, false)]
+    public void FollowsExpected_TreatsEveryLineEndingAlike(string expected, string live, int lag, bool follows) =>
+        Assert.Equal(follows, SuggestionSessionReconciler.FollowsExpected(expected, live, lag));
+
+    [Fact]
+    public void ComparisonNormalized_FoldsLineEndingsAndNoBreakSpaces() =>
+        Assert.Equal("a b\nc\nd", SuggestionSessionReconciler.ComparisonNormalized("a\u00A0b\r\nc\rd"));
+
     [Fact]
     public void SpaceNormalized_KeepsOffsets() =>
         Assert.Equal("a b c", SuggestionSessionReconciler.SpaceNormalized("a\u00A0b c"));

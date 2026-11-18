@@ -121,8 +121,8 @@ public sealed partial class SuggestionCoordinator
     {
         var prefetched = Volatile.Read(ref _prefetched);
         if (prefetched is null) return null;
-        string expected = SuggestionSessionReconciler.SpaceNormalized(prefetched.PrecedingText);
-        string live = SuggestionSessionReconciler.SpaceNormalized(field.PrecedingText);
+        string expected = SuggestionSessionReconciler.ComparisonNormalized(prefetched.PrecedingText);
+        string live = SuggestionSessionReconciler.ComparisonNormalized(field.PrecedingText);
         // The space added after accepting, or typed by the user, ends the same word. It is the one
         // difference allowed, and it takes the place of the continuation's own leading space.
         bool joinedBySpace = live == expected + " " && !expected.EndsWith(' ');

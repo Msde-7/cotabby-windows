@@ -146,6 +146,8 @@ public sealed partial class SuggestionCoordinator
         {
             // Any key between two accept presses breaks the pair. Modifiers alone do not.
             if (!KeyClassifier.IsModifier(ev.VirtualKey)) _doubleTap.Reset();
+            // Switching the input method's mode commits what it was composing.
+            if (ImeCompositionTracker.IsModeKey(ev.VirtualKey) && PausedReason() is null) HoldsForComposition(ev);
             return;
         }
 
@@ -252,6 +254,7 @@ public sealed partial class SuggestionCoordinator
             if (_session is not null) CancelSession("the input method is composing");
             _prediction = null;
             _work.Cancel();
+            ReobserveIme();
             return true;
         }
         if (!committed) return false;
@@ -260,6 +263,27 @@ public sealed partial class SuggestionCoordinator
         SchedulePrediction(typed: null);
         return true;
     }
+
+    /// <summary>
+    /// Reads the input method's mode again while keys are held for it. No request runs then, and
+    /// a request is what normally reads it, so the hold would last until Enter or Escape after the
+    /// user turned the input method off with the mouse or the language bar.
+    /// </summary>
+    private void ReobserveIme() => _ = Task.Run(() =>
+    {
+        try
+        {
+            if (_focus.Refresh() is not { } field) return;
+            Post(() =>
+            {
+                if (FocusIdentity(field) == _focusIdentity) _ime.Observe(field.ImeLanguageId);
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Reading the input method state failed.");
+        }
+    });
 
     /// <summary>
     /// A typed letter the running generation agrees with keeps it going instead of starting over,

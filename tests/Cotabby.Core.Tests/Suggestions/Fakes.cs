@@ -114,6 +114,9 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
     /// <summary>When true, edits are accepted but never show in the field, like a host that drops them.</summary>
     public bool IgnoresEdits { get; set; }
 
+    /// <summary>When true, inserted line breaks read back as CR LF, as in Notepad and RichEdit.</summary>
+    public bool StoresCrLf { get; set; }
+
     /// <summary>How many of the next insertions are rejected, as when the foreground window changed.</summary>
     public int FailingInserts { get; set; }
 
@@ -129,7 +132,7 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
             }
         }
         lock (_gate) Insertions.Add(text);
-        if (!IgnoresEdits) Append(text);
+        if (!IgnoresEdits) Append(StoresCrLf ? text.Replace("\n", "\r\n") : text);
         return true;
     }
 

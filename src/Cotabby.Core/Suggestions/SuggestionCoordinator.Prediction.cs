@@ -323,8 +323,8 @@ public sealed partial class SuggestionCoordinator
         var (baseline, delta, typed, requiresTextChange, awaitsChange) = wait;
         var preceding = field.PrecedingText;
         bool textChanged = baseline is not null
-            && SuggestionSessionReconciler.SpaceNormalized(preceding)
-                != SuggestionSessionReconciler.SpaceNormalized(baseline.PrecedingText);
+            && SuggestionSessionReconciler.ComparisonNormalized(preceding)
+                != SuggestionSessionReconciler.ComparisonNormalized(baseline.PrecedingText);
         if (requiresTextChange && baseline is not null) return textChanged;
         if (awaitsChange && baseline is not null)
         {
@@ -333,8 +333,8 @@ public sealed partial class SuggestionCoordinator
             // Forward Delete changes only the text after the caret.
             bool moved = !SameField(field, baseline) || field.CaretOffset != baseline.CaretOffset
                 || field.HasSelection != baseline.HasSelection
-                || SuggestionSessionReconciler.SpaceNormalized(field.TrailingText)
-                    != SuggestionSessionReconciler.SpaceNormalized(baseline.TrailingText);
+                || SuggestionSessionReconciler.ComparisonNormalized(field.TrailingText)
+                    != SuggestionSessionReconciler.ComparisonNormalized(baseline.TrailingText);
             return (textChanged || moved) && (typed is not { } t || EndsWithTyped(preceding, t));
         }
         if (baseline is null || baseline.ProcessId != field.ProcessId)
@@ -387,8 +387,8 @@ public sealed partial class SuggestionCoordinator
             var live = _focus.Refresh(readHostText: true);
             ct.ThrowIfCancellationRequested();
             if (live is not null && !live.HostIsPredicting && TypingPrediction.IsSameCaretPlace(field, live)
-                && SuggestionSessionReconciler.SpaceNormalized(live.PrecedingText)
-                    == SuggestionSessionReconciler.SpaceNormalized(expected))
+                && SuggestionSessionReconciler.ComparisonNormalized(live.PrecedingText)
+                    == SuggestionSessionReconciler.ComparisonNormalized(expected))
             {
                 if (prediction is null || prediction.Progress == (typed, sequence)) return (live, typed, sequence);
                 continue;

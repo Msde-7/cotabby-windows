@@ -69,6 +69,34 @@ public sealed class SuggestionCoordinatorParityTests : CoordinatorHarness
     }
 
     [Fact]
+    public async Task AnInputMethodModeKey_CommitsTheComposition()
+    {
+        Focus.Focus(Fields.Text("") with { ImeLanguageId = JapaneseIme });
+        Type("ka");
+        await StaysHidden();
+
+        Hook.Press(Keys.Special(KeyKind.Other, 0xF3));
+
+        await Eventually(() => !Engine.Requests.IsEmpty, "switching mode commits and asks for a suggestion");
+    }
+
+    [Fact]
+    public async Task AnInputMethodTurnedOffWithoutAKey_StopsHoldingSuggestions()
+    {
+        Focus.Focus(Fields.Text("") with { ImeLanguageId = JapaneseIme });
+        Type("ka");
+        await StaysHidden();
+
+        // Turned off from the language bar: no key, and no focus event.
+        Focus.Replace(Focus.Current! with { ImeLanguageId = 0 });
+        Type("n");
+        await Task.Delay(100);
+        Type("o");
+
+        await Eventually(() => !Engine.Requests.IsEmpty, "typing asks for suggestions again");
+    }
+
+    [Fact]
     public async Task AnInputMethodInDirectInput_LeavesSuggestionsAlone()
     {
         Focus.Focus(Fields.Text("") with { ImeLanguageId = 0 });

@@ -115,4 +115,21 @@ public sealed class SuggestionCoordinatorOrderingTests : CoordinatorHarness
         await Task.Delay(100);
         Assert.Equal("hello", Focus.Current!.Text);
     }
+
+    [Fact]
+    public async Task AcceptedLineBreak_ReadBackAsCrLf_KeepsTheSuggestion()
+    {
+        Focus.StoresCrLf = true;
+        Engine.Completion = r => r.Prefix == "hello" ? "\nworld again" : "";
+        Type("hello");
+        await Shown("\nworld again");
+
+        Hook.Press(Keys.Tab());
+        await Eventually(() => Focus.Current!.Text == "hello\r\nworld", "the line is inserted");
+        await Task.Delay(400);
+
+        Assert.Equal(" again", Overlay.Text);
+        Assert.True(Hook.Press(Keys.Tab()), "the next accept still belongs to the suggestion");
+        await Eventually(() => Focus.Current!.Text == "hello\r\nworld again", "the next word is inserted");
+    }
 }

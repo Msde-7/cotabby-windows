@@ -85,10 +85,38 @@ public sealed class ImeCompositionTrackerTests
     {
         var tracker = Converting(Japanese);
         tracker.Key(Char('k'));
+        tracker.Key(Char('a'));
         tracker.Key(Key(KeyKind.Arrow));
         tracker.Key(Key(KeyKind.Backspace));
         tracker.Key(new KeyboardEvent { Kind = KeyKind.Character, Character = 'c', IsKeyDown = true, Modifiers = KeyModifiers.Control });
         Assert.True(tracker.IsComposing);
+    }
+
+    [Fact]
+    public void BackspacingThroughTheCompositionEndsItWithoutACommit()
+    {
+        var tracker = Converting(Japanese);
+        tracker.Key(Char('k'));
+        tracker.Key(Char('a'));
+        Assert.False(tracker.Key(Key(KeyKind.Backspace)));
+        Assert.True(tracker.IsComposing);
+        Assert.False(tracker.Key(Key(KeyKind.Backspace)));
+        Assert.False(tracker.IsComposing);
+    }
+
+    [Theory]
+    [InlineData(0x15)]
+    [InlineData(0x19)]
+    [InlineData(0xF3)]
+    public void AModeKeyCommitsTheComposition(int virtualKey)
+    {
+        var tracker = Converting(Japanese);
+        tracker.Key(Char('k'));
+        var modeKey = new KeyboardEvent { Kind = KeyKind.Other, Character = '\0', IsKeyDown = true, VirtualKey = virtualKey };
+
+        Assert.True(tracker.Key(modeKey));
+        Assert.False(tracker.IsComposing);
+        Assert.False(tracker.Key(modeKey), "an idle input method commits nothing");
     }
 
     [Fact]

@@ -19,18 +19,35 @@ public sealed class ImeCompositionTracker
     /// <summary>The language of the converting input method, or 0 when none is converting.</summary>
     public int LanguageId { get; private set; }
 
+    // Keys typed into the composition, less the Backspaces since. A key can make less than one
+    // character, so this over-counts and the hold errs toward lasting a little longer.
+    private int _composedKeys;
+
     /// <summary>Takes the input method state from a fresh read of the focused field.</summary>
     public void Observe(int imeLanguageId)
     {
         LanguageId = imeLanguageId;
-        if (imeLanguageId == 0) IsComposing = false;
+        if (imeLanguageId == 0) EndComposition();
     }
 
     /// <summary>Focus moved, so nothing is being composed for the new field yet.</summary>
     public void Reset()
     {
-        IsComposing = false;
+        EndComposition();
         LanguageId = 0;
+    }
+
+    /// <summary>
+    /// True for the keys that switch an input method's mode: Kana or Hangul, Junja, Final, Kanji or
+    /// Hanja, IME on and off, and the Japanese half-width and full-width key. Switching mode commits
+    /// what was being composed.
+    /// </summary>
+    public static bool IsModeKey(int virtualKey) => virtualKey is (>= 0x15 and <= 0x1A) or 0xF3 or 0xF4;
+
+    private void EndComposition()
+    {
+        IsComposing = false;
+        _composedKeys = 0;
     }
 
     /// <summary>
@@ -45,17 +62,25 @@ public sealed class ImeCompositionTracker
         {
             case KeyKind.Enter:
             case KeyKind.Escape:
-                IsComposing = false;
+                EndComposition();
                 return was && ev.Kind == KeyKind.Enter;
+            case KeyKind.Other when IsModeKey(ev.VirtualKey):
+                EndComposition();
+                return was;
+            case KeyKind.Backspace when was && !ev.HasNonShiftModifier:
+                // Deleting every composed key leaves nothing to commit.
+                if (--_composedKeys <= 0) EndComposition();
+                return false;
             case KeyKind.Character when !ev.HasNonShiftModifier:
                 if (was && CommitsComposition(ev.Character))
                 {
-                    IsComposing = false;
+                    EndComposition();
                     return true;
                 }
                 // Space and punctuation pass straight through an idle input method.
                 if (!was && !StartsComposition(ev.Character)) return false;
                 IsComposing = true;
+                _composedKeys++;
                 return false;
             default:
                 return false;

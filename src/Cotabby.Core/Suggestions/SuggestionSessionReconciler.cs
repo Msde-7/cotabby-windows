@@ -53,14 +53,25 @@ public static class SuggestionSessionReconciler
     private const char NoBreakSpace = '\u00A0';
 
     /// <summary>
+    /// <see cref="SpaceNormalized"/> with every line ending as LF. Cotabby inserts LF, but Notepad
+    /// and RichEdit read it back as CR LF or a lone CR. Offsets do not hold, so the result is only
+    /// for comparing texts, and lengths are only compared between two normalized texts.
+    /// </summary>
+    public static string ComparisonNormalized(string text)
+    {
+        text = SpaceNormalized(text);
+        return text.Contains('\r') ? text.Replace("\r\n", "\n").Replace('\r', '\n') : text;
+    }
+
+    /// <summary>
     /// True when <paramref name="live"/> is the expected text, or the expected text less a few
     /// trailing characters the host has not published yet. A long text is compared through its
     /// last <paramref name="comparedTail"/> characters, since the field is read through a moving window.
     /// </summary>
     public static bool FollowsExpected(string expected, string live, int allowedLag, int comparedTail = 256)
     {
-        expected = SpaceNormalized(expected);
-        live = SpaceNormalized(live);
+        expected = ComparisonNormalized(expected);
+        live = ComparisonNormalized(live);
         // A short text is the whole of what precedes the caret, so it has to match from the start.
         if (live.Length < comparedTail)
         {

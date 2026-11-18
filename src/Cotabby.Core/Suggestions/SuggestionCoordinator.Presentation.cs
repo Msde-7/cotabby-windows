@@ -104,8 +104,8 @@ public sealed partial class SuggestionCoordinator
     private bool IsStillAtOffer(FocusedField? live) =>
         live is not null && _sessionField is { } offeredIn && SameField(live, offeredIn)
         && !live.HasSelection
-        && SuggestionSessionReconciler.SpaceNormalized(live.TrailingText)
-            == SuggestionSessionReconciler.SpaceNormalized(offeredIn.TrailingText)
+        && SuggestionSessionReconciler.ComparisonNormalized(live.TrailingText)
+            == SuggestionSessionReconciler.ComparisonNormalized(offeredIn.TrailingText)
         && SuggestionSessionReconciler.FollowsExpected(
             _expectedPreceding, live.PrecedingText, PublishLagChars + _pendingInsertChars);
 
