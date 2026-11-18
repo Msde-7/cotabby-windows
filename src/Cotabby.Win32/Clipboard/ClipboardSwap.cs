@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using static Cotabby.Win32.Interop.NativeMethods;
 
@@ -51,6 +52,19 @@ public static class ClipboardSwap
     private const int OpenAttempts = 10;
     private const int OpenRetryMs = 10;
 
+    /// <summary>
+    /// How long saving may keep making the copying app render formats. A range or a remote
+    /// clipboard can take seconds per format, all with the clipboard held open, so past this the
+    /// swap is given up and nothing is pasted.
+    /// </summary>
+    private static readonly TimeSpan CaptureBudget = TimeSpan.FromSeconds(1);
+
+    private static readonly object RestoreGate = new();
+    private static RestoredClipboard? _lastRestore;
+
+    private static readonly Lazy<ClipboardRegisteredFormats> RegisteredFormats = new(() => new(
+        Ids(ClipboardFormatPolicy.RegisteredPictureNames), Ids(ClipboardFormatPolicy.ExcludedRegisteredNames)));
+
     private static readonly Lazy<uint> ExcludeFromMonitoringFormat =
         new(() => RegisterClipboardFormat("ExcludeClipboardContentFromMonitorProcessing"));
 
@@ -102,16 +116,21 @@ public static class ClipboardSwap
     /// <paramref name="expectedSequence"/>, which means the user or another app copied something
     /// that must not be overwritten.
     /// </summary>
-    /// <param name="sequence">The clipboard sequence number right after a restore, otherwise 0.</param>
+    /// <param name="sequence">
+    /// The clipboard sequence number right after the restore wrote to the clipboard, otherwise 0. A
+    /// restore that failed part way wrote too, and a retry is checked against this number.
+    /// </param>
     public static ClipboardRestoreOutcome TryRestore(ClipboardSnapshot saved, uint expectedSequence, out uint sequence)
     {
         sequence = 0;
         if (!TryOpen(OpenAttempts, OpenRetryMs)) return ClipboardRestoreOutcome.Failed;
         var outcome = ClipboardRestoreOutcome.Failed;
+        bool wrote = false;
         try
         {
             if (GetClipboardSequenceNumber() != expectedSequence) return ClipboardRestoreOutcome.ChangedSince;
             if (!EmptyClipboard()) return ClipboardRestoreOutcome.Failed;
+            wrote = true;
             if (saved.IsEmpty)
             {
                 outcome = ClipboardRestoreOutcome.Restored;
@@ -127,7 +146,11 @@ public static class ClipboardSwap
         {
             CloseClipboard();
         }
-        if (outcome == ClipboardRestoreOutcome.Restored) sequence = GetClipboardSequenceNumber();
+        if (wrote)
+        {
+            sequence = GetClipboardSequenceNumber();
+            lock (RestoreGate) _lastRestore = new RestoredClipboard(sequence, saved.IsPrivate);
+        }
         return outcome;
     }
 
@@ -144,21 +167,29 @@ public static class ClipboardSwap
         return ClipboardFormatPolicy.IsPrivate(false, false, ReadBytes(GetClipboardData(canInclude), sizeof(uint) * 16) ?? []);
     }
 
+    private static HashSet<uint> Ids(IEnumerable<string> names) =>
+        names.Select(RegisterClipboardFormat).Where(id => id != 0).ToHashSet();
+
     /// <summary>
-    /// Copies every format out of the open clipboard. Null when one of them cannot be saved
-    /// faithfully or read, or they add up past <see cref="MaxSnapshotBytes"/>.
+    /// Copies the formats <see cref="ClipboardFormatPolicy"/> keeps out of the open clipboard. Null
+    /// when one of them cannot be read, they add up past <see cref="MaxSnapshotBytes"/>, or making
+    /// them takes longer than <see cref="CaptureBudget"/>.
     /// </summary>
     private static ClipboardSnapshot? Capture()
     {
+        long started = Stopwatch.GetTimestamp();
         var available = new List<uint>();
         for (uint format = EnumClipboardFormats(0); format != 0; format = EnumClipboardFormats(format)) available.Add(format);
-        if (ClipboardFormatPolicy.Plan(available) is not { } plan) return null;
+        var plan = ClipboardFormatPolicy.Plan(available, RegisteredFormats.Value);
 
         var formats = new List<(ClipboardSaveStep, byte[])>();
         long total = 0;
         foreach (var step in plan)
         {
+            if (Stopwatch.GetElapsedTime(started) > CaptureBudget) return null;
             IntPtr handle = GetClipboardData(step.Format);
+            // A format its app could not make holds nothing to put back.
+            if (handle == IntPtr.Zero) continue;
             byte[]? bytes = step.Kind == ClipboardSaveKind.EnhancedMetafile
                 ? ReadMetafile(handle, MaxSnapshotBytes - total)
                 : ReadBytes(handle, MaxSnapshotBytes - total);
@@ -168,8 +199,11 @@ public static class ClipboardSwap
         }
 
         byte[]? canInclude = formats.FirstOrDefault(saved => saved.Item1.Format == CanIncludeInHistoryFormat.Value).Item2;
-        bool isPrivate = ClipboardFormatPolicy.IsPrivate(
+        bool markedPrivate = ClipboardFormatPolicy.IsPrivate(
             available.Contains(ExcludeFromMonitoringFormat.Value), available.Contains(ViewerIgnoreFormat.Value), canInclude);
+        // Content an earlier paste put back carries Cotabby's own markers, which read as private.
+        bool isPrivate;
+        lock (RestoreGate) isPrivate = RestoredClipboard.IsPrivateAt(_lastRestore, GetClipboardSequenceNumber(), markedPrivate);
         return new ClipboardSnapshot(formats, isPrivate);
     }
 

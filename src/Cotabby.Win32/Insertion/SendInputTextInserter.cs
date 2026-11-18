@@ -16,12 +16,14 @@ namespace Cotabby.Win32.Insertion;
 /// of forty before its input queue overflows. A paste goes through the host's own paste handler,
 /// which inserts any length at once.
 /// <para>
-/// The paste saves every format on the clipboard, writes the suggestion, sends Ctrl+V and later
-/// puts the saved content back. The restore waits long enough for a slow host to read the
-/// clipboard, and it is skipped when anything else wrote to the clipboard meanwhile, so a copy the
-/// user made in that time is kept. When the clipboard cannot be read or holds content that cannot
-/// be saved faithfully, single-line text is typed in short bursts instead and multi-line text is
-/// not inserted, since typing a line break as Enter could send a chat message.
+/// The paste saves the formats on the clipboard that <see cref="ClipboardFormatPolicy"/> keeps,
+/// writes the suggestion, sends any backspaces and Ctrl+V, and later puts the saved content back.
+/// The restore waits long enough for a slow host to read the clipboard, and it is skipped when
+/// anything else wrote to the clipboard meanwhile, so a copy the user made in that time is kept.
+/// When the clipboard cannot be read, saved within its limits or written, single-line text is
+/// typed in short bursts instead and multi-line text is not inserted, since typing a line break as
+/// Enter could send a chat message. The clipboard is swapped before any backspace, so then nothing
+/// is deleted either.
 /// </para>
 /// <para>
 /// Before every batch of keys the foreground window is checked against the target field, so
@@ -87,8 +89,7 @@ public sealed class SendInputTextInserter : ITextInserter
             }
             // The count is in UTF-16 units, and a host takes an emoji or a line break with one key.
             int backspaces = EditRepair.BackspacesFor(before ?? target.PrecedingText, deleteCount);
-            if (!await SendBackspacesAsync(target, backspaces, ct).ConfigureAwait(false)) return false;
-            (bool inserted, restore) = await InsertLockedAsync(target, text, ct).ConfigureAwait(false);
+            (bool inserted, restore) = await EditLockedAsync(target, backspaces, text, ct).ConfigureAwait(false);
             if (inserted && restore is null) await RepairAsync(target, before, deleteCount, text, ct).ConfigureAwait(false);
             return inserted;
         }
@@ -175,11 +176,14 @@ public sealed class SendInputTextInserter : ITextInserter
             TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
-    /// <summary>Inserts with the gate held. A paste also returns its pending clipboard restore.</summary>
-    private async Task<(bool Inserted, Task? Restore)> InsertLockedAsync(
-        FocusedField target, string text, CancellationToken ct)
+    /// <summary>
+    /// Deletes before the caret and inserts, with the gate held. A paste also returns its pending
+    /// clipboard restore.
+    /// </summary>
+    private async Task<(bool Inserted, Task? Restore)> EditLockedAsync(
+        FocusedField target, int backspaces, string text, CancellationToken ct)
     {
-        if (string.IsNullOrEmpty(text)) return (true, null);
+        if (string.IsNullOrEmpty(text)) return (await SendBackspacesAsync(target, backspaces, ct).ConfigureAwait(false), null);
         ct.ThrowIfCancellationRequested();
 
         // The text itself is logged at Debug only, so the default log never holds it.
@@ -189,11 +193,20 @@ public sealed class SendInputTextInserter : ITextInserter
             typed ? "unicode" : "clipboard paste", text.Length, target.ProcessId, target.ProcessName);
         _logger.LogDebug("Inserter text \"{Text}\" hex={Hex}", LogText.Escape(text), LogText.Hex(text));
 
-        if (typed) return (Send(target, () => KeySender.SendText(text), "text"), null);
-        return await PasteAsync(target, text, ct).ConfigureAwait(false);
+        if (typed)
+        {
+            if (!await SendBackspacesAsync(target, backspaces, ct).ConfigureAwait(false)) return (false, null);
+            return (Send(target, () => KeySender.SendText(text), "text"), null);
+        }
+        return await PasteAsync(target, backspaces, text, ct).ConfigureAwait(false);
     }
 
-    private async Task<(bool Inserted, Task? Restore)> PasteAsync(FocusedField target, string text, CancellationToken ct)
+    /// <summary>
+    /// Swaps the clipboard before anything is deleted, so an edit whose text cannot be pasted
+    /// leaves the field as it was.
+    /// </summary>
+    private async Task<(bool Inserted, Task? Restore)> PasteAsync(
+        FocusedField target, int backspaces, string text, CancellationToken ct)
     {
         if (!ForegroundTarget.Holds(target))
         {
@@ -210,6 +223,9 @@ public sealed class SendInputTextInserter : ITextInserter
         {
             _clipboardContext?.EndOwnWrite(restored: true);
             _logger.LogWarning("Clipboard could not be read or written, so the suggestion is not pasted.");
+            // Text with a line break cannot be typed either, so nothing is deleted for it.
+            if (SyntheticKeys.HasLineBreak(text)) return (false, null);
+            if (!await SendBackspacesAsync(target, backspaces, ct).ConfigureAwait(false)) return (false, null);
             return (await TypeInBurstsAsync(target, text, ct).ConfigureAwait(false), null);
         }
 
@@ -218,8 +234,12 @@ public sealed class SendInputTextInserter : ITextInserter
         bool pasted;
         try
         {
-            await Task.Delay(ClipboardSettleMs, ct).ConfigureAwait(false);
-            pasted = Send(target, KeySender.SendPaste, "paste");
+            pasted = await SendBackspacesAsync(target, backspaces, ct).ConfigureAwait(false);
+            if (pasted)
+            {
+                await Task.Delay(ClipboardSettleMs, ct).ConfigureAwait(false);
+                pasted = Send(target, KeySender.SendPaste, "paste");
+            }
         }
         catch
         {
@@ -255,6 +275,12 @@ public sealed class SendInputTextInserter : ITextInserter
                     ownTextGone = true;
                     restoredSequence = sequence;
                     return;
+                }
+                // A restore that failed part way changed the clipboard itself, so the retry expects that.
+                if (sequence != 0)
+                {
+                    ownSequence = sequence;
+                    ownTextGone = true;
                 }
                 if (attempt < RestoreAttempts) await Task.Delay(RestoreRetryMs).ConfigureAwait(false);
             }

@@ -29,8 +29,7 @@ public sealed class ClipboardTextReader : IClipboardReader
     private uint _ownChanges;
     private uint? _ownWriteStart;
     private uint? _ownTextSequence;
-    private uint? _restoredSequence;
-    private bool _restoredIsPrivate;
+    private RestoredClipboard? _restored;
 
     public uint SequenceNumber
     {
@@ -46,8 +45,8 @@ public sealed class ClipboardTextReader : IClipboardReader
         {
             uint now = GetClipboardSequenceNumber();
             if (_ownWriteStart is not null || now == _ownTextSequence) return null;
-            bool restored = now == _restoredSequence;
-            if (restored && _restoredIsPrivate) return null;
+            bool restored = now == _restored?.Sequence;
+            if (restored && _restored!.Value.IsPrivate) return null;
             return ReadUnicodeText(skipPrivate: !restored);
         }
     }
@@ -70,8 +69,8 @@ public sealed class ClipboardTextReader : IClipboardReader
             _ownChanges = unchecked(_ownChanges + now - start);
             _ownTextSequence = restored || now == start ? null : now;
             _ownWriteStart = null;
-            _restoredSequence = restoredSequence;
-            _restoredIsPrivate = restoredIsPrivate;
+            _restored = RestoredClipboard.After(
+                _restored, restoredSequence is { } sequence ? new RestoredClipboard(sequence, restoredIsPrivate) : null, now);
         }
     }
 
