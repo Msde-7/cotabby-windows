@@ -35,4 +35,15 @@ public static class KeyTranslation
         afterDeadKey = false;
         return Unknown;
     }
+
+    /// <summary>
+    /// Records a key down the hook does not translate. Backspace, Tab, Enter and Escape make a
+    /// control character, which uses up a dead key in the host as any character does, so the letter
+    /// after them is the plain letter. Arrows, chords and other keys that make no character are left
+    /// alone: the host may still hold the dead key, and an unknown character only costs a field read.
+    /// </summary>
+    public static void Untranslated(int virtualKey, ref bool afterDeadKey)
+    {
+        if (virtualKey is 0x08 or 0x09 or 0x0D or 0x1B) afterDeadKey = false;
+    }
 }

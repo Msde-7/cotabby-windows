@@ -306,6 +306,15 @@ internal static partial class NativeMethods
     [LibraryImport("gdi32.dll")]
     public static partial uint GetEnhMetaFileBits(IntPtr hemf, uint size, Span<byte> data);
 
+    /// <summary>
+    /// The size of a metafile's bits. The size query needs a null buffer, which an empty span only
+    /// gives by accident: one made from an empty array is not null, and the call then returns 0.
+    /// </summary>
+    public static uint GetEnhMetaFileBitsSize(IntPtr hemf) => GetEnhMetaFileBitsSize(hemf, 0, IntPtr.Zero);
+
+    [LibraryImport("gdi32.dll", EntryPoint = "GetEnhMetaFileBits")]
+    private static partial uint GetEnhMetaFileBitsSize(IntPtr hemf, uint size, IntPtr data);
+
     [LibraryImport("gdi32.dll")]
     public static partial IntPtr SetEnhMetaFileBits(uint size, ReadOnlySpan<byte> data);
 

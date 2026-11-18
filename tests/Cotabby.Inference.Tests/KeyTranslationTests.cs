@@ -23,6 +23,31 @@ public class KeyTranslationTests
         Assert.Equal(KeyTranslation.Unknown, KeyTranslation.FromLayout(1, 'a', ref afterDeadKey));
     }
 
+    [Theory]
+    [InlineData(0x08)] // Backspace
+    [InlineData(0x09)] // Tab
+    [InlineData(0x0D)] // Enter
+    [InlineData(0x1B)] // Escape
+    public void AKeyThatMakesAControlCharacter_UsesUpTheDeadKey(int virtualKey)
+    {
+        bool afterDeadKey = false;
+        KeyTranslation.FromLayout(-1, '\'', ref afterDeadKey);
+        KeyTranslation.Untranslated(virtualKey, ref afterDeadKey);
+        Assert.Equal('e', KeyTranslation.FromLayout(1, 'e', ref afterDeadKey));
+    }
+
+    [Theory]
+    [InlineData(0x25)] // Left arrow
+    [InlineData(0x2E)] // Delete
+    [InlineData(0x10)] // Shift
+    public void AKeyThatMakesNoCharacter_KeepsTheDeadKeyPending(int virtualKey)
+    {
+        bool afterDeadKey = false;
+        KeyTranslation.FromLayout(-1, '\'', ref afterDeadKey);
+        KeyTranslation.Untranslated(virtualKey, ref afterDeadKey);
+        Assert.Equal(KeyTranslation.Unknown, KeyTranslation.FromLayout(1, 'e', ref afterDeadKey));
+    }
+
     [Fact]
     public void PlainKeys_ReportTheirCharacter()
     {

@@ -335,6 +335,7 @@ public sealed class KeyboardHook : IKeyboardHook
             _pendingVk = data.vkCode;
             _pendingScanCode = data.scanCode;
             var key = KeyClassifier.Classify((int)data.vkCode, CurrentModifiers(), isDown, _translatePending);
+            if (isDown) KeyTranslation.Untranslated((int)data.vkCode, ref _afterDeadKey);
             bool isRepeat = isDown && _heldKeys.Down(data.vkCode, data.time);
             if (isUp) _heldKeys.Up(data.vkCode);
 

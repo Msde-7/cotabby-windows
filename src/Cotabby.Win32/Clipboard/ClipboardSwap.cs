@@ -93,8 +93,7 @@ public static class ClipboardSwap
         try
         {
             if (Capture() is not { } snapshot || !EmptyClipboard()) return false;
-            // Classic edit controls show a bare line feed as no break at all.
-            if (!Put(CF_UNICODETEXT, TextBytes(text.ReplaceLineEndings("\r\n"))))
+            if (!Put(CF_UNICODETEXT, TextBytes(WithCrLf(text))))
             {
                 // The clipboard is already empty, so the user's content goes straight back.
                 PutAll(snapshot);
@@ -110,6 +109,16 @@ public static class ClipboardSwap
         sequence = GetClipboardSequenceNumber();
         return true;
     }
+
+    /// <summary>
+    /// <paramref name="text"/> with every CR LF, lone CR and lone LF as CR LF. Classic edit controls
+    /// show a bare line feed as no break at all. Other separators, such as U+2028 or a form feed,
+    /// are left as the suggestion has them.
+    /// </summary>
+    public static string WithCrLf(string text) =>
+        text.AsSpan().IndexOfAny('\r', '\n') < 0
+            ? text
+            : text.Replace("\r\n", "\n").Replace('\r', '\n').Replace("\n", "\r\n");
 
     /// <summary>
     /// Puts <paramref name="saved"/> back, unless the clipboard changed since
@@ -230,7 +239,7 @@ public static class ClipboardSwap
     private static byte[]? ReadMetafile(IntPtr handle, long limit)
     {
         if (handle == IntPtr.Zero) return null;
-        uint size = GetEnhMetaFileBits(handle, 0, []);
+        uint size = GetEnhMetaFileBitsSize(handle);
         if (size == 0 || size > limit) return null;
         var bytes = new byte[size];
         return GetEnhMetaFileBits(handle, size, bytes) == size ? bytes : null;
