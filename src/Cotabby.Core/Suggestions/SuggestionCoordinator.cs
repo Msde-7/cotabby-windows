@@ -137,6 +137,11 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
     private bool _publishAwaitsChange;
     private long _keySequence;
 
+    // The field whose screen text was read at least once, and the key count when changed screen
+    // text last asked for a new suggestion there. Both are touched on the UI context only.
+    private string? _screenReadIdentity;
+    private long _screenRegeneratedAt = -1;
+
     /// <summary>When the last key went down, as a timestamp of the clock. Written on the hook thread.</summary>
     private long _lastKeyAt;
     private int _focusedPid;

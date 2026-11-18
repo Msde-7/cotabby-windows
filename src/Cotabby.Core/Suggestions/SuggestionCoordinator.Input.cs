@@ -303,6 +303,23 @@ public sealed partial class SuggestionCoordinator
     private void OnScreenExcerptChanged(FocusedField field) => Post(() =>
     {
         if (_disposed || FocusIdentity(field) != _focusIdentity) return;
+        // Upstream asks again on every change of the screen text. A window whose text keeps changing
+        // on its own, such as a clock, a feed or a game beside the field, then generates every few
+        // seconds while nobody types, and each answer replaces the last. So after the first read
+        // of a field, changed screen text asks again at most once until the next key.
+        if (_screenReadIdentity != _focusIdentity)
+        {
+            _screenReadIdentity = _focusIdentity;
+        }
+        else if (Volatile.Read(ref _keySequence) == _screenRegeneratedAt)
+        {
+            _logger.LogDebug("The screen text changed again with no key since the last change; the suggestion stays.");
+            return;
+        }
+        else
+        {
+            _screenRegeneratedAt = Volatile.Read(ref _keySequence);
+        }
         // A quick second press after the last chunk still goes to the continuation asked for below.
         var ownership = _ownership;
         bool queuedAccept = _queuedAccept;

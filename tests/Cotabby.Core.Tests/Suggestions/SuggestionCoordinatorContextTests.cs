@@ -269,6 +269,37 @@ public sealed class SuggestionCoordinatorContextTests : CoordinatorHarness
     }
 
     [Fact]
+    public async Task ScreenTextThatKeepsChanging_AsksAgainOnlyOnceUntilTheNextKey()
+    {
+        var reader = WatchTheScreen();
+        Engine.Completion = r =>
+            r.ScreenContext.Contains("travel") ? " see you there"
+            : r.ScreenContext.Contains("weather") ? " stay dry"
+            : r.ScreenContext.Contains("lunch") ? " at noon"
+            : " world again";
+        Type("hello");
+        await Shown(" world again");
+
+        reader.Topic = "the travel plans for the conference in Lisbon";
+        await Shown(" see you there");
+        await Settled();
+        int requests = Engine.Requests.Count;
+
+        // A clock or a feed beside the field changes again while nobody types.
+        reader.Topic = "the weather forecast for the long weekend";
+        await Task.Delay(200);
+        await Settled();
+        Assert.Equal(" see you there", Overlay.Text);
+        Assert.Equal(requests, Engine.Requests.Count);
+
+        // A key opens the way for the next change.
+        Type(" ");
+        await Settled();
+        reader.Topic = "the lunch order for the team offsite";
+        await Eventually(() => Engine.Requests.Any(r => r.ScreenContext.Contains("lunch")), "the changed screen is asked about");
+    }
+
+    [Fact]
     public async Task ChangedScreenText_LeavesAQuickSecondAcceptToTheContinuation()
     {
         var reader = WatchTheScreen();
