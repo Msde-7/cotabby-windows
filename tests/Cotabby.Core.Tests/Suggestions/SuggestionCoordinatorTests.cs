@@ -259,6 +259,48 @@ public sealed class SuggestionCoordinatorTests : CoordinatorHarness
     }
 
     [Fact]
+    public async Task Enter_DismissesWithoutAskingAgain()
+    {
+        Type("hello");
+        await Shown(" world again");
+        Engine.Requests.Clear();
+
+        Hook.Press(Keys.Special(KeyKind.Enter, 0x0D));
+        Focus.Append("\n");
+
+        await StaysHidden();
+        Assert.Empty(Engine.Requests);
+    }
+
+    [Fact]
+    public async Task ShortcutThatDoesNotEdit_ClearsWithoutAskingAgain()
+    {
+        Type("hello");
+        await Shown(" world again");
+        Engine.Requests.Clear();
+
+        Hook.Press(Keys.Special(KeyKind.Shortcut, 'S') with { Modifiers = KeyModifiers.Control });
+
+        await StaysHidden();
+        Assert.Empty(Engine.Requests);
+    }
+
+    [Theory]
+    [InlineData(KeyKind.Delete, KeyModifiers.None)]
+    [InlineData(KeyKind.Backspace, KeyModifiers.Control)]
+    public async Task Deleting_AsksAgain(KeyKind kind, KeyModifiers held)
+    {
+        Type("hello there");
+        await Shown(" world again");
+        Engine.Requests.Clear();
+
+        Hook.Press(Keys.Special(kind) with { Modifiers = held });
+        Focus.Replace(Fields.Text("hello "));
+
+        await Eventually(() => !Engine.Requests.IsEmpty, "a request is sent");
+    }
+
+    [Fact]
     public async Task FocusMovingToAnotherApp_HidesTheSuggestion()
     {
         Type("hello");

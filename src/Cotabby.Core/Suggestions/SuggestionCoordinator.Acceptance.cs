@@ -103,6 +103,10 @@ public sealed partial class SuggestionCoordinator
     {
         try
         {
+            // Each word was checked against the ones before it landing, so once one fails the rest
+            // of the same suggestion would land with a gap.
+            if (Volatile.Read(ref _abandonedAccept) == accepted.RequestId) return;
+
             // The text goes where the caret is, so it is only sent if the caret is still where the
             // suggestion was shown.
             var field = _focus.Refresh();
@@ -111,14 +115,14 @@ public sealed partial class SuggestionCoordinator
                 || !SuggestionSessionReconciler.FollowsExpected(
                     accepted.ExpectedPreceding, field.PrecedingText, PublishLagChars + accepted.PendingBefore))
             {
-                Post(() => CancelSession("the caret left the suggestion before the accept"));
+                AbandonAccept(accepted, "the caret left the suggestion before the accept");
                 return;
             }
 
             if (accepted.Insertion.Length > 0
                 && !await _inserter.InsertAsync(field, accepted.Insertion, CancellationToken.None).ConfigureAwait(false))
             {
-                Post(() => CancelSession("insertion failed"));
+                AbandonAccept(accepted, "insertion failed");
                 return;
             }
             Metrics.RecordAccepted(accepted.Chunk, accepted.FirstChunk);
@@ -146,12 +150,23 @@ public sealed partial class SuggestionCoordinator
         catch (Exception ex)
         {
             _logger.LogError(ex, "Accept failed for {ReqId}.", accepted.RequestId);
-            Post(() => CancelSession("accept failed"));
+            AbandonAccept(accepted, "accept failed");
         }
         finally
         {
             Post(() => _pendingInsertChars -= accepted.Insertion.Length);
         }
+    }
+
+    private void AbandonAccept(AcceptedChunk accepted, string reason)
+    {
+        Volatile.Write(ref _abandonedAccept, accepted.RequestId);
+        Post(() =>
+        {
+            // A newer suggestion may already show, and this failure says nothing about it.
+            if (_session is { } current && current.RequestId != accepted.RequestId) return;
+            CancelSession(reason);
+        });
     }
 
     /// <summary>

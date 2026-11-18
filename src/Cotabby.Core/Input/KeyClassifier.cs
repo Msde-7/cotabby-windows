@@ -9,6 +9,9 @@ public static class KeyClassifier
     private const KeyModifiers AltGr = KeyModifiers.Control | KeyModifiers.Alt;
     private const KeyModifiers Chord = AltGr | KeyModifiers.Win;
 
+    /// <summary>Insert. With Shift it pastes, so it is reported as a shortcut.</summary>
+    public const int VkInsert = 0x2D;
+
     /// <param name="translate">
     /// Returns the character the active layout produces for the key, or '\0' for none. It is only
     /// called on key down, and never for Ctrl, Alt or Win chords other than AltGr.
@@ -16,6 +19,7 @@ public static class KeyClassifier
     public static ClassifiedKey Classify(int virtualKey, KeyModifiers held, bool isKeyDown, Func<char> translate)
     {
         if (NamedKind(virtualKey) is { } named) return new(named, '\0', held);
+        if (virtualKey == VkInsert && held == KeyModifiers.Shift) return new(KeyKind.Shortcut, '\0', held);
 
         // AltGr reports as Ctrl+Alt, and only the layout knows whether it makes a character.
         var chord = held & Chord;

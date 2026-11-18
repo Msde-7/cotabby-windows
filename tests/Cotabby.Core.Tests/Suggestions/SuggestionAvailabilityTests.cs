@@ -145,22 +145,69 @@ public sealed class SuggestionAvailabilityTests
         Assert.Equal(CredentialFieldDetector.BlockedReason, SuggestionAvailability.DisabledReason(Settings, credential));
     }
 
+    // Upstream's rules: Enter dismisses, Backspace and Delete predict whatever modifier is held,
+    // and only the shortcuts that edit text predict. Enter used to predict here and Delete did not.
     [Theory]
     [InlineData(KeyKind.Character, true)]
     [InlineData(KeyKind.Backspace, true)]
-    [InlineData(KeyKind.Enter, true)]
+    [InlineData(KeyKind.Delete, true)]
+    [InlineData(KeyKind.Enter, false)]
     [InlineData(KeyKind.Tab, false)]
     [InlineData(KeyKind.Escape, false)]
-    [InlineData(KeyKind.Delete, false)]
     [InlineData(KeyKind.Arrow, false)]
     [InlineData(KeyKind.Other, false)]
-    public void SchedulesPrediction_OnlyForUnmodifiedKeyDownsThatEditText(KeyKind kind, bool expected)
+    public void SchedulesPrediction_ForKeyDownsThatEditText(KeyKind kind, bool expected)
     {
         var press = Keys.Special(kind);
 
         Assert.Equal(expected, SuggestionAvailability.SchedulesPrediction(press));
         Assert.False(SuggestionAvailability.SchedulesPrediction(press with { IsKeyDown = false }));
-        Assert.False(SuggestionAvailability.SchedulesPrediction(press with { Modifiers = KeyModifiers.Control }));
+    }
+
+    [Theory]
+    [InlineData(KeyKind.Backspace, true)]
+    [InlineData(KeyKind.Delete, true)]
+    [InlineData(KeyKind.Character, false)]
+    [InlineData(KeyKind.Enter, false)]
+    public void SchedulesPrediction_WithControlHeld_OnlyForDeletion(KeyKind kind, bool expected)
+    {
+        var press = Keys.Special(kind) with { Modifiers = KeyModifiers.Control };
+
+        Assert.Equal(expected, SuggestionAvailability.SchedulesPrediction(press));
+    }
+
+    [Theory]
+    [InlineData('A', KeyModifiers.Control, true)]
+    [InlineData('Z', KeyModifiers.Control, true)]
+    [InlineData('Z', KeyModifiers.Control | KeyModifiers.Shift, true)]
+    [InlineData('Y', KeyModifiers.Control, true)]
+    [InlineData('X', KeyModifiers.Control, true)]
+    [InlineData('V', KeyModifiers.Control, true)]
+    [InlineData(0x2D, KeyModifiers.Shift, true)]
+    [InlineData('S', KeyModifiers.Control, false)]
+    [InlineData('C', KeyModifiers.Control, false)]
+    [InlineData('B', KeyModifiers.Control, false)]
+    [InlineData('F', KeyModifiers.Control, false)]
+    [InlineData('V', KeyModifiers.Control | KeyModifiers.Alt, false)]
+    [InlineData('V', KeyModifiers.Win, false)]
+    public void Shortcuts_PredictOnlyWhenTheyEditText(int virtualKey, KeyModifiers held, bool edits)
+    {
+        var press = Keys.Special(KeyKind.Shortcut, virtualKey) with { Modifiers = held };
+
+        Assert.Equal(edits, SuggestionAvailability.SchedulesPrediction(press));
+        Assert.Equal(!edits, SuggestionAvailability.Dismisses(press));
+        Assert.True(SuggestionAvailability.ClearsSuggestion(press));
+    }
+
+    [Theory]
+    [InlineData(KeyKind.Escape, true)]
+    [InlineData(KeyKind.Enter, true)]
+    [InlineData(KeyKind.Backspace, false)]
+    [InlineData(KeyKind.Arrow, false)]
+    [InlineData(KeyKind.Character, false)]
+    public void Dismisses_EscapeAndEnter(KeyKind kind, bool expected)
+    {
+        Assert.Equal(expected, SuggestionAvailability.Dismisses(Keys.Special(kind)));
     }
 
     [Theory]

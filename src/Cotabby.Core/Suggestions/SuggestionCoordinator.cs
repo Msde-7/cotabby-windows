@@ -98,6 +98,9 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
     private volatile string? _lastAutoFixedText;
     private Task _insertChain = Task.CompletedTask;
 
+    /// <summary>The suggestion whose accept failed. Words of it accepted after the failure are not inserted.</summary>
+    private string? _abandonedAccept;
+
     // Accepts and held keys not sent to the host yet, read on the hook thread, and when the hold lapses.
     private int _heldEdits;
     private long _typingHoldEndsAt;

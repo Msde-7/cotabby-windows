@@ -123,6 +123,15 @@ public sealed class KeyClassifierTests
     }
 
     [Theory]
+    [InlineData(KeyModifiers.Shift, KeyKind.Shortcut)]
+    [InlineData(KeyModifiers.None, KeyKind.Other)]
+    [InlineData(KeyModifiers.Control, KeyKind.Shortcut)]
+    public void ShiftInsertPastes(KeyModifiers held, KeyKind kind)
+    {
+        Assert.Equal(kind, Down(KeyClassifier.VkInsert, held).Kind);
+    }
+
+    [Theory]
     [InlineData(KeyModifiers.None, KeyKind.Other)]
     [InlineData(KeyModifiers.Shift, KeyKind.Other)]
     [InlineData(KeyModifiers.Control, KeyKind.Shortcut)]

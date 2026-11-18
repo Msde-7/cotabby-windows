@@ -95,4 +95,24 @@ public sealed class SuggestionCoordinatorOrderingTests : CoordinatorHarness
         await Eventually(() => !Engine.Requests.IsEmpty, "a request is sent");
         Assert.Equal("hello pasted", Engine.Requests.First().Prefix);
     }
+
+    [Fact]
+    public async Task AFailedWord_StopsTheWordsAcceptedAfterIt()
+    {
+        Engine.Completion = r => r.Prefix == "hello" ? " one two three" : "";
+        Type("hello");
+        await Shown(" one two three");
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Focus.InsertGate = gate;
+        Focus.FailingInserts = 1;
+
+        Assert.True(Hook.Press(Keys.Tab()));
+        Assert.True(Hook.Press(Keys.Tab()));
+        await Shown(" three");
+        gate.SetResult();
+
+        await Shown("");
+        await Task.Delay(100);
+        Assert.Equal("hello", Focus.Current!.Text);
+    }
 }

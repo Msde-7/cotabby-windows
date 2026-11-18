@@ -36,11 +36,31 @@ public static class SuggestionAvailability
         return null;
     }
 
-    /// <summary>True when a key press may start a fresh prediction.</summary>
+    /// <summary>
+    /// True when a key press may start a fresh prediction. As upstream, that is typing, Backspace
+    /// and Delete with any modifier, and the shortcuts that edit text. Enter is a dismissal: it
+    /// often sends or submits rather than starting a line, and the next key asks again anyway.
+    /// </summary>
     public static bool SchedulesPrediction(KeyboardEvent ev) =>
         ev.IsKeyDown
-        && (ev.Kind == KeyKind.Shortcut
-            || (!ev.HasNonShiftModifier && ev.Kind is KeyKind.Character or KeyKind.Backspace or KeyKind.Enter));
+        && ((ev.Kind == KeyKind.Character && !ev.HasNonShiftModifier)
+            || ev.Kind is KeyKind.Backspace or KeyKind.Delete
+            || IsEditingShortcut(ev));
+
+    /// <summary>
+    /// Select all, undo, redo, cut and paste: the shortcuts upstream predicts after. Every other
+    /// shortcut, such as save or copy, only clears the suggestion.
+    /// </summary>
+    public static bool IsEditingShortcut(KeyboardEvent ev) =>
+        ev.Kind == KeyKind.Shortcut
+        && ((ev.Modifiers & (KeyModifiers.Control | KeyModifiers.Alt | KeyModifiers.Win)) == KeyModifiers.Control
+                && ev.VirtualKey is 'A' or 'Z' or 'Y' or 'X' or 'V'
+            || (ev.Modifiers == KeyModifiers.Shift && ev.VirtualKey == KeyClassifier.VkInsert));
+
+    /// <summary>True for a key that turns down a visible suggestion, which is then not offered again for the same text.</summary>
+    public static bool Dismisses(KeyboardEvent ev) =>
+        ev.IsKeyDown
+        && (ev.Kind is KeyKind.Escape or KeyKind.Enter || (ev.Kind == KeyKind.Shortcut && !IsEditingShortcut(ev)));
 
     /// <summary>True when a key press invalidates a visible suggestion that it does not type through.</summary>
     public static bool ClearsSuggestion(KeyboardEvent ev) =>

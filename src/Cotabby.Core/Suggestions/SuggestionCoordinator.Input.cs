@@ -168,7 +168,8 @@ public sealed partial class SuggestionCoordinator
 
         if (_session is { } session)
         {
-            if (ev.Kind == KeyKind.Escape && _sessionField is { } dismissedIn)
+            // Like upstream, Enter and shortcuts that do not edit turn the suggestion down as Escape does.
+            if (SuggestionAvailability.Dismisses(ev) && _sessionField is { } dismissedIn)
             {
                 _dismissals.Record(
                     DismissalScope(dismissedIn), dismissedIn.PrecedingText, dismissedIn.TrailingText,

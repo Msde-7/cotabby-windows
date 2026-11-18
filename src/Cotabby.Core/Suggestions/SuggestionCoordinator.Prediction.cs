@@ -330,8 +330,11 @@ public sealed partial class SuggestionCoordinator
         {
             // Like upstream, the read is taken once the text, the field or the caret moved on from
             // the snapshot at the key. A key typed after that must also have arrived.
+            // Forward Delete changes only the text after the caret.
             bool moved = !SameField(field, baseline) || field.CaretOffset != baseline.CaretOffset
-                || field.HasSelection != baseline.HasSelection;
+                || field.HasSelection != baseline.HasSelection
+                || SuggestionSessionReconciler.SpaceNormalized(field.TrailingText)
+                    != SuggestionSessionReconciler.SpaceNormalized(baseline.TrailingText);
             return (textChanged || moved) && (typed is not { } t || EndsWithTyped(preceding, t));
         }
         if (baseline is null || baseline.ProcessId != field.ProcessId)

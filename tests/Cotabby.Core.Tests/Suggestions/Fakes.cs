@@ -114,9 +114,20 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
     /// <summary>When true, edits are accepted but never show in the field, like a host that drops them.</summary>
     public bool IgnoresEdits { get; set; }
 
+    /// <summary>How many of the next insertions are rejected, as when the foreground window changed.</summary>
+    public int FailingInserts { get; set; }
+
     public async Task<bool> InsertAsync(FocusedField target, string text, CancellationToken ct)
     {
         if (InsertGate is { } gate) await gate.Task.WaitAsync(ct);
+        lock (_gate)
+        {
+            if (FailingInserts > 0)
+            {
+                FailingInserts--;
+                return false;
+            }
+        }
         lock (_gate) Insertions.Add(text);
         if (!IgnoresEdits) Append(text);
         return true;
