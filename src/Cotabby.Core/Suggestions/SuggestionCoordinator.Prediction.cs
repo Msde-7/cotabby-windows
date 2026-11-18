@@ -405,6 +405,9 @@ public sealed partial class SuggestionCoordinator
 
             case TypoGateAction.ApplyCorrection when advice.Replacement is not null:
                 if (_lastAutoFixedText == preceding) return true;
+                // A key typed after this request was scheduled has a request of its own, which makes
+                // the fix. Marking the text here would make that request skip it as already done.
+                if (Interlocked.Read(ref _keySequence) != sequence) return true;
                 _lastAutoFixedText = preceding;
                 ct.ThrowIfCancellationRequested();
                 await ApplyCorrectionAsync(

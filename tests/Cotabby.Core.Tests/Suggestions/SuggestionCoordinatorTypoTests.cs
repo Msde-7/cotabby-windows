@@ -43,7 +43,9 @@ public sealed class SuggestionCoordinatorTypoTests : CoordinatorHarness
         Type("hello teh ");
 
         await StaysHidden();
-        Assert.Empty(Engine.Requests);
+        // A pause between keys under load may ask about "hello " first, which is fine. Nothing may
+        // ask to continue the typo.
+        Assert.DoesNotContain(Engine.Requests, r => r.Prefix.EndsWith("teh ", StringComparison.Ordinal));
     }
 
     [Fact]
