@@ -620,6 +620,7 @@ public sealed class AppHost : IAsyncDisposable
         Step("screen context", () => _screenContext?.Dispose());
         // Write the field being typed in now. The debounced background save may not have run yet.
         Step("typing history", TypingHistory.Flush);
+        Step("request log", RequestLog.Dispose);
         await StepAsync("model runtime", () => Runtime.DisposeAsync().AsTask()).ConfigureAwait(false);
         Step("endpoint client", EndpointClient.Dispose);
         Step("keyboard hook", _hook.Dispose);

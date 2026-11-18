@@ -236,6 +236,53 @@ public class OpenAICompatibleApiClientTests : IDisposable
     }
 
     [Fact]
+    public async Task Generation_NonSuccessStatusWithAStalledBody_ReportsTheStatusPromptly()
+    {
+        _server.Respond(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StalledContent() });
+
+        var ex = await Assert.ThrowsAsync<OpenAICompatibleClientException>(
+            () => _client.GenerateAsync(Configuration(), null, "text", Options).WaitAsync(TimeSpan.FromSeconds(10)));
+
+        Assert.Equal("The endpoint returned HTTP 503.", ex.Message);
+    }
+
+    /// <summary>A body whose bytes never arrive.</summary>
+    private sealed class StalledContent : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context) =>
+            Task.Delay(Timeout.Infinite);
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new StalledStream());
+    }
+
+    private sealed class StalledStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+            return 0;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    [Fact]
     public async Task ServerErrorMessage_IsTruncatedAndNeverContainsTheApiKey()
     {
         string echoed = "Incorrect API key provided: sk-secret-123. " + new string('x', 500);

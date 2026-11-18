@@ -219,6 +219,12 @@ public sealed class OpenAICompatibleApiClient : IDisposable
     private const int ErrorBodyBytes = 8 * 1024;
 
     /// <summary>
+    /// Longest wait for a failed response's explanation. The status is already known, so a body
+    /// that stalls must not hold it back until the request's own timeout.
+    /// </summary>
+    private static readonly TimeSpan ErrorBodyTimeout = TimeSpan.FromSeconds(2);
+
+    /// <summary>
     /// The server's explanation of a failed status, or null when the body has none worth
     /// showing. A failure to read it only loses the explanation. The API key is redacted, since
     /// some servers echo the credential they rejected.
@@ -227,19 +233,22 @@ public sealed class OpenAICompatibleApiClient : IDisposable
         HttpResponseMessage response, string? apiKey, CancellationToken ct)
     {
         string body;
+        using var bodyTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        bodyTimeout.CancelAfter(ErrorBodyTimeout);
         try
         {
-            await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            await using var stream = await response.Content.ReadAsStreamAsync(bodyTimeout.Token).ConfigureAwait(false);
             var buffer = new byte[ErrorBodyBytes];
             int length = 0;
             while (length < buffer.Length
-                && await stream.ReadAsync(buffer.AsMemory(length), ct).ConfigureAwait(false) is var read and > 0)
+                && await stream.ReadAsync(buffer.AsMemory(length), bodyTimeout.Token).ConfigureAwait(false) is var read and > 0)
             {
                 length += read;
             }
             body = Encoding.UTF8.GetString(buffer, 0, length);
         }
-        catch (Exception ex) when (ex is IOException or HttpRequestException)
+        catch (Exception ex) when (ex is IOException or HttpRequestException
+                                   || (ex is OperationCanceledException && !ct.IsCancellationRequested))
         {
             return null;
         }
