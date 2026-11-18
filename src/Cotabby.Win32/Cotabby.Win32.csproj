@@ -2,10 +2,6 @@
 
   <PropertyGroup>
     <TargetFramework>net9.0-windows10.0.19041.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-    <LangVersion>latest</LangVersion>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <RootNamespace>Cotabby.Win32</RootNamespace>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>false</UseWindowsForms>
