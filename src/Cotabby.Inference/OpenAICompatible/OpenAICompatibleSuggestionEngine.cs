@@ -57,12 +57,14 @@ public sealed class OpenAICompatibleSuggestionEngine : ISuggestionEngine
         var prompt = CompletionPipeline.EndpointPrompt(request);
         if (prompt.Length == 0) return string.Empty;
 
+        // Every partial and the final text are normalized against the same request.
+        var normalizer = new CompletionNormalizer(prompt, request);
         Action<string>? partialHandler = null;
         if (onPartial is not null)
         {
             partialHandler = cumulativeRaw =>
             {
-                string text = CompletionPipeline.Normalize(cumulativeRaw, prompt, request).Text;
+                string text = normalizer.Normalize(cumulativeRaw).Text;
                 if (text.Length > 0) onPartial(text);
             };
         }
@@ -91,7 +93,7 @@ public sealed class OpenAICompatibleSuggestionEngine : ISuggestionEngine
 
         if (ct.IsCancellationRequested) return string.Empty;
 
-        var normalized = CompletionPipeline.Normalize(raw, prompt, request);
+        var normalized = normalizer.Normalize(raw);
         _logger.LogInformation(
             "Req {ReqId}: endpoint model {Model} answered in {Ms} ms ({Reason}).",
             request.RequestId, configuration.ModelName,

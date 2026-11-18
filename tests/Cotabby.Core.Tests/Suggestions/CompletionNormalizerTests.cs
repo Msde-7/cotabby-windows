@@ -27,10 +27,12 @@ public sealed class CompletionNormalizerTests
     }
 
     [Theory]
-    [InlineData(true, true)]
-    [InlineData(false, true)]
-    [InlineData(true, false)]
-    public void OneNormalizerPerRequestMatchesNormalizingEachPartialAfresh(bool singleLine, bool withScreen)
+    [InlineData(true, true, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, true)]
+    [InlineData(true, false, true)]
+    public void OneNormalizerPerRequestMatchesNormalizingEachPartialAfresh(bool singleLine, bool withScreen, bool forEndpoint)
     {
         string prefix = StableTextCutTests.Prose(9000, 31)
             + " the numbers look strong again this quarter and the team agreed. Then we ";
@@ -46,7 +48,8 @@ public sealed class CompletionNormalizerTests
             SurfaceLines = ["Format: notes; App: Notepad."],
             WordRange = new SuggestionWordRange(3, 12),
         };
-        string prompt = CompletionPipeline.Prompt(request, 4000);
+        // The endpoint engine streams through the same normalizer with its own prompt.
+        string prompt = forEndpoint ? CompletionPipeline.EndpointPrompt(request) : CompletionPipeline.Prompt(request, 4000);
         var normalizer = new CompletionNormalizer(prompt, request);
         string shown = string.Join('\n', new[] { request.ScreenContext, request.LanguageInstruction }.Concat(request.SurfaceLines));
 

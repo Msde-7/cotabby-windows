@@ -574,6 +574,10 @@ public sealed class LlamaRuntimeCore : IDisposable
                 }
             }
 
+            // The text before the invalid bytes is published and can never grow, so further
+            // tokens would only spend the budget.
+            if (buffer.HasInvalidBytes) { stopReason = "invalid_utf8"; break; }
+
             if (DecodeStopPolicy.Verdict(
                     generatedText, tokensGenerated,
                     SentenceStopMinimumTokens, options.SentenceStopMinimumWords) is { } earlyStop)

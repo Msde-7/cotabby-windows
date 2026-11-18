@@ -124,15 +124,13 @@ public sealed class SendInputTextInserter : ITextInserter
     {
         try
         {
-            return _focus?.Refresh() is { } field && SameField(field, target) ? field.PrecedingText : null;
+            return _focus?.Refresh() is { } field && field.IsSameField(target) ? field.PrecedingText : null;
         }
         catch (Exception)
         {
             return null;
         }
     }
-
-    private static bool SameField(FocusedField a, FocusedField b) => a.ProcessId == b.ProcessId && a.FieldId == b.FieldId;
 
     /// <summary>
     /// Checks a typed edit once the host has had time to show it, and sends the keys it dropped. Only
