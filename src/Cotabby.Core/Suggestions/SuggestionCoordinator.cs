@@ -198,9 +198,17 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
         get => _screen;
         set
         {
-            if (_screen is not null) _screen.ExcerptChanged -= OnScreenExcerptChanged;
+            if (_screen is not null)
+            {
+                _screen.ExcerptChanged -= OnScreenExcerptChanged;
+                _screen.FirstReadFinished -= OnScreenFirstReadFinished;
+            }
             _screen = value;
-            if (value is not null) value.ExcerptChanged += OnScreenExcerptChanged;
+            if (value is not null)
+            {
+                value.ExcerptChanged += OnScreenExcerptChanged;
+                value.FirstReadFinished += OnScreenFirstReadFinished;
+            }
         }
     }
 

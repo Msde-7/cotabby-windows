@@ -106,6 +106,9 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
 
     /// <summary>The scheduled save is a prompt one, which typing does not put off.</summary>
     private bool _saveIsPrompt;
+
+    /// <summary>When the first change the scheduled save covers was made, in <see cref="Environment.TickCount64"/> milliseconds.</summary>
+    private long _saveWaitStartedTicks;
     private ActiveRecording? _active;
 
     /// <summary>
@@ -306,15 +309,20 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
 
     /// <summary>
     /// Saves after <paramref name="delay"/>, by default once typing pauses. Each call restarts the
-    /// wait, except that a prompt save already due is never put off.
+    /// wait, except that a prompt save already due is never put off, and typing that never pauses
+    /// is saved twice the pause after its first unsaved change.
     /// </summary>
     private void ScheduleSave(TimeSpan? delay = null)
     {
         if (_status != TypingHistoryStatus.Ready) return;
         bool prompt = delay is { } shorter && shorter < _saveDelay;
         var wait = prompt ? delay!.Value : _saveDelay;
-        long due = Environment.TickCount64 + (long)wait.TotalMilliseconds;
-        if (_saveCancellation is { IsCancellationRequested: false } && _saveIsPrompt && _saveDueTicks <= due) return;
+        long now = Environment.TickCount64;
+        bool pending = _saveCancellation is { IsCancellationRequested: false };
+        if (!pending) _saveWaitStartedTicks = now;
+        long due = Math.Min(now + (long)wait.TotalMilliseconds, _saveWaitStartedTicks + 2 * (long)_saveDelay.TotalMilliseconds);
+        wait = TimeSpan.FromMilliseconds(Math.Max(0, due - now));
+        if (pending && _saveIsPrompt && _saveDueTicks <= due) return;
         _saveCancellation?.Cancel();
         var cancellation = _saveCancellation = new CancellationTokenSource();
         _saveDueTicks = due;

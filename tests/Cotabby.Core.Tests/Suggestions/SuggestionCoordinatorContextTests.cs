@@ -344,6 +344,34 @@ public sealed class SuggestionCoordinatorContextTests : CoordinatorHarness
     }
 
     [Fact]
+    public async Task WithScreenTextThatCannotBeRead_TheFieldIsStillPrewarmed()
+    {
+        // OCR is unavailable or the window is protected, so the first read finds nothing.
+        Coordinator.ScreenContext = new ScreenContextSource(
+            new BlankScreenReader(), () => Focus.Current, NullLogger.Instance, settle: TimeSpan.FromMilliseconds(20),
+            refreshInterval: TimeSpan.FromMilliseconds(20));
+        Coordinator.Settings = SuggestionSettings.Default with { ScreenContext = true };
+        int prewarms = 0;
+        Coordinator.Prewarm = (_, _) =>
+        {
+            Interlocked.Increment(ref prewarms);
+            return Task.CompletedTask;
+        };
+
+        Focus.Focus(Fields.Text("Dear team,") with { FieldId = "body" });
+
+        await Eventually(() => Volatile.Read(ref prewarms) == 1, "the field is prewarmed");
+        await Task.Delay(100);
+        Assert.Equal(1, Volatile.Read(ref prewarms));
+    }
+
+    private sealed class BlankScreenReader : IScreenTextReader
+    {
+        public Task<ScreenCapture?> ReadAsync(FocusedField field, VisualContextConfiguration configuration, CancellationToken ct) =>
+            Task.FromResult<ScreenCapture?>(null);
+    }
+
+    [Fact]
     public async Task UnchangedScreenText_LeavesTheSuggestionAlone()
     {
         WatchTheScreen();

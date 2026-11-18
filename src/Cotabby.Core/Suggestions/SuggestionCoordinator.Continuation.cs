@@ -30,7 +30,8 @@ public sealed partial class SuggestionCoordinator
         }
         // The first screen text read for this field asks for a suggestion with that text ahead of
         // the field's, so the prompt is evaluated again from there. That request warms it instead.
-        if (settings.ScreenContext && _screen is { } screen && screen.For(field) is null) return;
+        // A first read that found nothing warms the field without screen text.
+        if (settings.ScreenContext && _screen is { } screen && screen.For(field) is null && !screen.HasRead(field)) return;
         var cts = _prewarm = new CancellationTokenSource();
         _ = Task.Run(async () =>
         {
@@ -48,6 +49,18 @@ public sealed partial class SuggestionCoordinator
             }
         });
     }
+
+    /// <summary>
+    /// Warms a focused field whose first screen read found no text, which asks for no suggestion.
+    /// One that found text asks for one through <see cref="OnScreenExcerptChanged"/>.
+    /// </summary>
+    private void OnScreenFirstReadFinished(FocusedField field) => Post(() =>
+    {
+        if (_disposed || FocusIdentity(field) != _focusIdentity || _screen?.For(field) is not null) return;
+        // Typing since the read asks for suggestions of its own.
+        if (_focus.Current is not { } now || now.Text != field.Text || now.CaretOffset != field.CaretOffset) return;
+        PrewarmField(now);
+    });
 
     private void CancelPrewarm()
     {

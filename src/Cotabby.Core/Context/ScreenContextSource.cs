@@ -68,6 +68,9 @@ public sealed partial class ScreenContextSource : IDisposable
 
         /// <summary>The last text read, kept through a failed capture so reading it again is no change.</summary>
         public string? LastText;
+
+        /// <summary>The first capture finished, whether or not it found text.</summary>
+        public bool Read;
     }
 
     public ScreenContextSource(
@@ -88,6 +91,12 @@ public sealed partial class ScreenContextSource : IDisposable
 
     /// <summary>Raised on the thread pool the first time a field's excerpt becomes ready.</summary>
     public event Action<FocusedField>? FirstExcerptReady;
+
+    /// <summary>
+    /// Raised on the thread pool once a field's first capture finished, also when it found no
+    /// text, such as when recognition is unavailable or the window is protected.
+    /// </summary>
+    public event Action<FocusedField>? FirstReadFinished;
 
     /// <summary>
     /// Raised on the thread pool when a field's excerpt reads differently from the last one,
@@ -177,6 +186,12 @@ public sealed partial class ScreenContextSource : IDisposable
         }
     }
 
+    /// <summary>True once the first capture for this field finished, whether or not it found text.</summary>
+    public bool HasRead(FocusedField field)
+    {
+        lock (_gate) return _session is { Read: true } session && session.Identity == IdentityOf(field);
+    }
+
     private async Task RunAsync(Session session)
     {
         CancellationToken ct;
@@ -207,12 +222,15 @@ public sealed partial class ScreenContextSource : IDisposable
                 long capturedAt = _clock.GetTimestamp();
                 string? excerpt = await ExcerptAsync(field, session.Configuration, ct).ConfigureAwait(false);
                 bool first = false;
+                bool firstRead = false;
                 bool changed = false;
                 TimeSpan wait;
                 TaskCompletionSource? wake;
                 lock (_gate)
                 {
                     if (_session != session) return;
+                    firstRead = !session.Read;
+                    session.Read = true;
                     first = session.Excerpt is null && excerpt is not null && session.LastText is null;
                     changed = excerpt is not null && excerpt != session.LastText;
                     session.Excerpt = excerpt;
@@ -225,6 +243,7 @@ public sealed partial class ScreenContextSource : IDisposable
                     // Set in the same lock as the decision, so an edit right after it still wakes the wait.
                     wake = session.Wake = idle ? new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously) : null;
                 }
+                if (firstRead) FirstReadFinished?.Invoke(field);
                 if (first) FirstExcerptReady?.Invoke(field);
                 if (changed) ExcerptChanged?.Invoke(field);
                 await WaitAsync(wait, wake, ct).ConfigureAwait(false);

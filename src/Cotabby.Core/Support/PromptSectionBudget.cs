@@ -85,6 +85,8 @@ public static class PromptSectionBudget
                 // What the live text leaves changes with every keystroke. Sections filled from it
                 // would be cut one character differently each time, and each such change makes the
                 // model evaluate everything after it again.
+                // Upstream passes on the exact remainder. Rounding it down to 1/64 of the budget
+                // is deliberate, so the evaluated prompt can be reused across keystrokes.
                 remainingTokens = budgetCut ? 0 : remainingTokens / liveStep * liveStep;
             }
         }

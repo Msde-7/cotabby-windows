@@ -311,8 +311,10 @@ public sealed class LlamaRuntimeCore : IDisposable
         _memoryExact = true;
 
         // The checkpoint lands on a chunk boundary near the end of the prompt. A prompt that adds
-        // only a few tokens saves it where evaluation starts, unless it is already there.
-        int checkpointAt = _checkpoint is null ? -1 : PartialStateReuse.CheckpointPosition(evalFrom, promptTokens.Length);
+        // only a few tokens saves it where evaluation starts, unless one near the end is kept.
+        int checkpointAt = _checkpoint is null
+            ? -1
+            : PartialStateReuse.CheckpointPosition(evalFrom, promptTokens.Length, _checkpoint.Position);
         if (checkpointAt > 0 && checkpointAt == evalFrom && _checkpoint!.Position != evalFrom) SaveCheckpoint(evalFrom);
 
         reused = evalFrom;

@@ -803,6 +803,27 @@ public sealed class TypingHistoryStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task SteadyTypingIsSavedWithinTwiceThePause()
+    {
+        var vault = MakeVault();
+        var store = MakeStore(vault, saveDelay: TimeSpan.FromMilliseconds(400));
+        store.SetRecording(true);
+        string text = "Hi Arnaud, the Imperum POC is ready for review";
+        var typing = Stopwatch.StartNew();
+
+        // Keys come faster than the pause, so the wait for one never runs out.
+        bool saved = false;
+        while (typing.Elapsed < TimeSpan.FromSeconds(3) && !(saved = File.Exists(vault.FilePath)))
+        {
+            text += "x";
+            store.Observe(Focus(text), () => true);
+            await Task.Delay(50);
+        }
+
+        Assert.True(saved, "typing that never paused was never saved");
+    }
+
+    [Fact]
     public async Task FieldsFinishedInQuickSuccessionShareARebuild()
     {
         var store = new TypingHistoryStore(MakeVault(), loadsArchive: false, rebuildInterval: TimeSpan.FromHours(1));

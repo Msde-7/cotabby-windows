@@ -80,6 +80,32 @@ public sealed class SecureFieldDetectorTests
     [InlineData("搜索")]
     [InlineData("Сообщение")]
     [InlineData("Postal PIN code")]
+    // A marker inside another word: a review, to draw, cryptocurrency, encryption, cryptography.
+    [InlineData("Escreva sua resenha")]
+    [InlineData("Desenhar um diagrama")]
+    [InlineData("암호화폐 뉴스")]
+    [InlineData("파일 암호화 설정")]
+    [InlineData("密码学笔记")]
+    [InlineData("密碼學筆記")]
     public void IsSecure_LocalizedEverydayFieldsAreNotSecure(string marker) =>
         Assert.False(SecureFieldDetector.IsSecure("Edit", null, marker));
+
+    [Theory]
+    [InlineData("Senha")]
+    [InlineData("Confirme as senhas")]
+    [InlineData("Nova senha:")]
+    [InlineData("(senha)")]
+    [InlineData("암호")]
+    [InlineData("암호를 입력하세요")]
+    [InlineData("새 암호 확인")]
+    [InlineData("密码")]
+    [InlineData("确认密码")]
+    [InlineData("Passwortbestätigung")]
+    [InlineData("Anmeldepasswort")]
+    [InlineData("Engångslösenord")]
+    [InlineData("Podaj hasło")]
+    [InlineData("Zadejte heslo")]
+    [InlineData("Şifrenizi girin")]
+    public void IsSecure_LocalizedMarkersAtAWordOrCompoundStillMatch(string marker) =>
+        Assert.True(SecureFieldDetector.IsSecure("Edit", null, marker));
 }

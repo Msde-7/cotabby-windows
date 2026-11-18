@@ -20,10 +20,21 @@ public static class PartialStateReuse
 
     /// <summary>
     /// The position at which a prompt evaluation of <paramref name="promptLength"/> tokens that
-    /// starts at <paramref name="evaluateFrom"/> saves its checkpoint.
+    /// starts at <paramref name="evaluateFrom"/> saves its checkpoint, or 0 to save none.
     /// </summary>
-    public static int CheckpointPosition(int evaluateFrom, int promptLength) =>
-        Math.Max(evaluateFrom, promptLength - TailTokens);
+    /// <param name="existing">The current checkpoint's position, 0 when there is none.</param>
+    public static int CheckpointPosition(int evaluateFrom, int promptLength, int existing = 0)
+    {
+        int at = Math.Max(evaluateFrom, promptLength - TailTokens);
+        // Nothing is evaluated. A checkpoint at the very end lies past the prefix the next
+        // keystroke shares, which would make that request evaluate the prompt cold.
+        if (at >= promptLength) return 0;
+        // Evaluation starts within the tail. A checkpoint the shared prefix reaches that is still
+        // near the end serves the next keystroke better than one where evaluation starts.
+        bool keepsExisting = at == evaluateFrom && existing > 0 && existing <= evaluateFrom
+            && existing >= promptLength - 2 * TailTokens;
+        return keepsExisting ? 0 : at;
+    }
 
     /// <summary>
     /// The position to evaluate from, and whether the checkpoint must be restored first. Zero means

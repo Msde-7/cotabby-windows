@@ -29,9 +29,13 @@ public sealed class ScreenContextSourceTests : IDisposable
         /// <summary>What the screen says, ahead of the window title.</summary>
         public volatile string Topic = "budget spreadsheet";
 
+        /// <summary>Nothing can be captured, as for a protected window.</summary>
+        public volatile bool Blank;
+
         public Task<ScreenCapture?> ReadAsync(FocusedField field, VisualContextConfiguration configuration, CancellationToken ct)
         {
             Reads.Enqueue(field);
+            if (Blank) return Task.FromResult<ScreenCapture?>(null);
             OcrLine[] lines = [new($"Please review the {Topic} in {field.WindowTitle}", 0.95f)];
             return Task.FromResult<ScreenCapture?>(new ScreenCapture(lines, null, field.WindowTitle));
         }
@@ -156,6 +160,26 @@ public sealed class ScreenContextSourceTests : IDisposable
 
         Assert.Null(source.For(field));
         Assert.Null(source.For(secure));
+    }
+
+    [Fact]
+    public async Task AFirstReadThatFindsNothing_StillCountsAsRead()
+    {
+        var source = Source(refreshInterval: TimeSpan.FromMilliseconds(5));
+        var finished = new ConcurrentQueue<FocusedField>();
+        source.FirstReadFinished += finished.Enqueue;
+        var field = Field();
+        _reader.Blank = true;
+        _current = field;
+        Assert.False(source.HasRead(field));
+
+        source.Track(field, usesEndpoint: false);
+        await WaitUntil(() => source.HasRead(field));
+        await WaitUntil(() => _reader.Reads.Count >= 3);
+
+        Assert.Null(source.For(field));
+        Assert.Equal([field], finished);
+        Assert.False(source.HasRead(Field(fieldId: "search")));
     }
 
     [Fact]

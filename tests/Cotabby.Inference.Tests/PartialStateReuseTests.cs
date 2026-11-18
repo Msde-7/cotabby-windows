@@ -14,6 +14,26 @@ public class PartialStateReuseTests
         Assert.Equal(expected, PartialStateReuse.CheckpointPosition(evaluateFrom, promptLength));
 
     [Theory]
+    // An unchanged prompt, such as a prewarm repeated when focus flaps, evaluates nothing. A
+    // checkpoint at its very end would lie past the prefix the next keystroke shares.
+    [InlineData(200, 200, 192, 0)]
+    [InlineData(200, 200, 0, 0)]
+    // A prompt that adds a few tokens keeps a checkpoint that is still near its end.
+    [InlineData(195, 200, 192, 0)]
+    [InlineData(195, 200, 184, 0)]
+    [InlineData(199, 200, 192, 0)]
+    // One too far back, or none, is replaced where evaluation starts.
+    [InlineData(195, 200, 183, 195)]
+    [InlineData(195, 200, 0, 195)]
+    // A checkpoint past the start belongs to another prompt.
+    [InlineData(195, 200, 197, 195)]
+    // A long evaluation saves near its end whatever was there.
+    [InlineData(0, 200, 192, 192)]
+    [InlineData(100, 200, 120, 192)]
+    public void CheckpointPosition_KeepsACheckpointStillNearTheEnd(int evaluateFrom, int promptLength, int existing, int expected) =>
+        Assert.Equal(expected, PartialStateReuse.CheckpointPosition(evaluateFrom, promptLength, existing));
+
+    [Theory]
     // Nothing shared is a cold evaluation.
     [InlineData(0, 200, true, 192, 0, false)]
     // Memory that holds exactly the shared prefix continues from it without a restore.
