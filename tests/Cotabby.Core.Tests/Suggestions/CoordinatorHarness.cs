@@ -36,6 +36,28 @@ public abstract class CoordinatorHarness : IAsyncDisposable
             clipboard: clipboard);
         Coordinator.Start();
         Focus.Focus(Fields.Text(""));
+        Hook.HostReceives = ApplyKey;
+    }
+
+    /// <summary>What the host does with a key it receives.</summary>
+    private void ApplyKey(KeyboardEvent ev)
+    {
+        if (!ev.IsKeyDown || ev.HasNonShiftModifier) return;
+        switch (ev.Kind)
+        {
+            case KeyKind.Character:
+                Focus.Append(ev.Character.ToString());
+                break;
+            case KeyKind.Tab:
+                Focus.Append("\t");
+                break;
+            case KeyKind.Enter:
+                Focus.Append("\n");
+                break;
+            case KeyKind.Backspace:
+                Focus.DeleteBack();
+                break;
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -47,12 +69,9 @@ public abstract class CoordinatorHarness : IAsyncDisposable
 
     protected void Type(string text)
     {
-        foreach (char c in text)
-        {
-            // The hook sees the key before the host applies it.
-            Hook.Press(Keys.Char(c));
-            Focus.Append(c.ToString());
-        }
+        // The hook sees each key before the host applies it, and a key held behind an accept is
+        // applied when it is sent again.
+        foreach (char c in text) Hook.Hit(Keys.Char(c));
     }
 
     protected static async Task Eventually(Func<bool> condition, string because)
@@ -64,6 +83,9 @@ public abstract class CoordinatorHarness : IAsyncDisposable
             await Task.Delay(5);
         }
     }
+
+    /// <summary>Waits until the hook holds no keys behind an accept and has none on their way back.</summary>
+    protected Task HoldEnded() => Eventually(() => !Hook.IsHolding, "the hook holds no keys");
 
     protected Task Shown(string text) => Eventually(() => Overlay.Text == text, $"the overlay shows \"{text}\"");
 

@@ -23,11 +23,36 @@ public sealed class SuggestionCoordinatorOrderingTests : CoordinatorHarness
         gate.SetResult();
 
         await Eventually(() => Focus.Current!.Text == "hello a", "the held keys follow the accepted text");
+        await HoldEnded();
         Assert.False(Hook.Press(Keys.Char('b')), "typing passes through once the insertion is done");
     }
 
     [Fact]
-    public async Task AKeyOfUnknownCharacterTypedWhileAnAcceptIsInserting_GoesStraightToTheHost()
+    public async Task ABackspaceTypedWhileAnAcceptIsInserting_DeletesTheKeyTypedBeforeIt()
+    {
+        Engine.Completion = r => r.Prefix.EndsWith("hel") ? "lo world" : "";
+        Type("hel");
+        await Shown("lo world");
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Focus.InsertGate = gate;
+        int handledX = 0;
+        Hook.KeyEvent += (_, args) => handledX += args.Event.Character == 'x' ? 1 : 0;
+
+        Assert.True(Hook.Press(Keys.Tab()));
+        Assert.True(Hook.Hit(Keys.Char('x')));
+        Assert.True(Hook.Hit(Keys.Special(KeyKind.Backspace, 0x08)), "a Backspace is held like a character");
+        Assert.Equal(0, handledX);
+        gate.SetResult();
+
+        await HoldEnded();
+        await Settled();
+        Assert.Equal("hello", Focus.Current!.Text);
+        Assert.Equal(1, handledX);
+        Assert.Equal(["lo"], Focus.Insertions);
+    }
+
+    [Fact]
+    public async Task AnEnterTypedWhileAnAcceptIsInserting_BreaksTheLineAfterTheAcceptedText()
     {
         Engine.Completion = r => r.Prefix.EndsWith("hel") ? "lo world" : "";
         Type("hel");
@@ -36,14 +61,94 @@ public sealed class SuggestionCoordinatorOrderingTests : CoordinatorHarness
         Focus.InsertGate = gate;
 
         Assert.True(Hook.Press(Keys.Tab()));
-        // The hook reports U+FFFD for the letter after a dead key, which the host may show accented.
-        Assert.False(Hook.Press(Keys.Char('\uFFFD')), "a key Cotabby cannot retype reaches the host");
-        Assert.False(Hook.Press(Keys.Char('s')), "keys after it are not held ahead of it");
+        Assert.True(Hook.Hit(Keys.Special(KeyKind.Enter, 0x0D)));
         gate.SetResult();
 
-        await Eventually(() => Focus.Insertions.Contains("lo"), "the accepted word is inserted");
+        await HoldEnded();
+        Assert.Equal("hello\n", Focus.Current!.Text);
+    }
+
+    [Fact]
+    public async Task ADeadKeyAndItsLetterTypedWhileAnAcceptIsInserting_FollowTheAcceptedText()
+    {
+        Engine.Completion = r => r.Prefix.EndsWith("hel") ? "lo world" : "";
+        Type("hel");
+        await Shown("lo world");
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Focus.InsertGate = gate;
+
+        Assert.True(Hook.Press(Keys.Tab()));
+        // The dead key makes no character. The hook reports U+FFFD for the letter after it, which
+        // the host shows accented; here the host shows the U+FFFD itself.
+        Assert.True(Hook.Hit(Keys.Special(KeyKind.Other, 0xDE)), "the dead key is held");
+        Assert.True(Hook.Hit(Keys.Char('\uFFFD')), "the letter is held");
+        gate.SetResult();
+
+        await HoldEnded();
+        Assert.Equal("hello\uFFFD", Focus.Current!.Text);
+        Assert.Equal(["lo"], Focus.Insertions);
+        // Both reach the host as typed, the dead key first, so the host composes them itself.
+        var lastTwo = Hook.HostKeys.TakeLast(2).ToList();
+        Assert.Equal(0xDE, lastTwo[0].VirtualKey);
+        Assert.Equal('\uFFFD', lastTwo[1].Character);
+        Assert.All(lastTwo, key => Assert.True(key.IsReplay));
+    }
+
+    [Fact]
+    public async Task KeysTypedDuringASlowAccept_StayInOrderPastASecond()
+    {
+        Engine.Completion = r => r.Prefix.EndsWith("hel") ? "lo world" : "";
+        Type("hel");
+        await Shown("lo world");
+        // A paste-accept keeps the host busy for half a second and more.
+        Focus.InsertDelay = TimeSpan.FromMilliseconds(600);
+
+        Assert.True(Hook.Press(Keys.Tab()));
+        Assert.True(Hook.Hit(Keys.Char('a')));
+        await Task.Delay(200);
+        Assert.True(Hook.Hit(Keys.Char('b')));
+        await Task.Delay(900);
+        Hook.Hit(Keys.Char('c'));
+
+        await HoldEnded();
         await Settled();
-        Assert.DoesNotContain(Focus.Insertions, inserted => inserted.Contains('\uFFFD'));
+        Assert.Equal("helloabc", Focus.Current!.Text);
+    }
+
+    [Fact]
+    public async Task AnAcceptKeyTypedWhileAnAcceptIsInserting_AcceptsTheNextWordAheadOfTheKeysAfterIt()
+    {
+        Engine.Completion = r => r.Prefix == "hello" ? " world again" : "";
+        Type("hello");
+        await Shown(" world again");
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Focus.InsertGate = gate;
+
+        Assert.True(Hook.Press(Keys.Tab()));
+        Assert.True(Hook.Press(Keys.Tab()), "the second press waits for the first word");
+        Assert.True(Hook.Hit(Keys.Char('x')));
+        gate.SetResult();
+
+        await HoldEnded();
+        await Settled();
+        Assert.Equal("hello world againx", Focus.Current!.Text);
+    }
+
+    [Fact]
+    public async Task AnAcceptWithNothingToInsert_GivesTheTabBackAheadOfTheKeysTypedAfterIt()
+    {
+        Type("hello");
+        await Shown(" world again");
+
+        Focus.Replace(Fields.Text("Search"));
+        Assert.True(Hook.Press(Keys.Tab()));
+        Hook.Hit(Keys.Char('x'));
+
+        await HoldEnded();
+        await Settled();
+        // Upstream passes the key through when the suggestion no longer matches the field.
+        Assert.Equal("Search\tx", Focus.Current!.Text);
+        Assert.Empty(Focus.Insertions);
     }
 
     [Fact]
@@ -128,12 +233,15 @@ public sealed class SuggestionCoordinatorOrderingTests : CoordinatorHarness
 
         Assert.True(Hook.Press(Keys.Tab()));
         Assert.True(Hook.Press(Keys.Tab()));
+        // The second press is held behind the first word until the hold gives up after a second.
         await Shown(" three");
         gate.SetResult();
 
         await Shown("");
         await Settled();
-        Assert.Equal("hello", Focus.Current!.Text);
+        // Neither word lands. Like upstream, the press whose word was dropped goes to the host;
+        // the failed one may have typed part of its word, so it keeps its key.
+        Assert.Equal("hello\t", Focus.Current!.Text);
     }
 
     [Fact]

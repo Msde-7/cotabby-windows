@@ -46,4 +46,15 @@ public static class KeyTranslation
     {
         if (virtualKey is 0x08 or 0x09 or 0x0D or 0x1B) afterDeadKey = false;
     }
+
+    /// <summary>
+    /// Records a key down once the handlers have had it. Only a key the host receives uses up its
+    /// dead key: a swallowed accept Tab or a captured Escape never reached it, so the host still
+    /// holds the dead key and the letter after it is still unknown. A key held behind an edit
+    /// comes here when it is sent again, which is when the host gets it.
+    /// </summary>
+    public static void Handled(int virtualKey, bool suppressed, ref bool afterDeadKey)
+    {
+        if (!suppressed) Untranslated(virtualKey, ref afterDeadKey);
+    }
 }

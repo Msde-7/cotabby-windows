@@ -129,7 +129,9 @@ public sealed class SuggestionCoordinatorTypoTests : CoordinatorHarness
         Assert.True(Hook.Press(Keys.Tab()));
 
         await Settled();
-        Assert.Equal("other teh ", Focus.Current!.Text);
+        await HoldEnded();
+        // Like upstream, the key passes through to the host when the word to correct is gone.
+        Assert.Equal("other teh \t", Focus.Current!.Text);
     }
 
     [Fact]

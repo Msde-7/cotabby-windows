@@ -8,12 +8,22 @@ namespace Cotabby.Core.Suggestions;
 
 public sealed partial class SuggestionCoordinator
 {
-    private void Accept(bool all, bool isRepeat)
+    /// <param name="hold">The hook's hold on keys typed after the accept key, which can give the key back.</param>
+    private void Accept(bool all, bool isRepeat, IKeyHold? hold = null)
     {
         if (_session is not { } session || _sessionField is not { } field)
         {
             // The press raced the accept that exhausted the suggestion, so it belongs to the continuation.
             _queuedAccept = !all && _ownership is not null;
+            // Like upstream, a key with no suggestion left to accept is the host's.
+            if (!_queuedAccept && hold is not null)
+            {
+                Chain(() =>
+                {
+                    GiveBackAcceptKey(hold, "no suggestion was left to accept");
+                    return Task.CompletedTask;
+                });
+            }
             return;
         }
 
@@ -26,7 +36,7 @@ public sealed partial class SuggestionCoordinator
             // instead of reaching the host as a Tab.
             OwnAcceptKeyBriefly(field);
             string offeredFor = _expectedPreceding;
-            Chain(() => ApplyCorrectionAsync(correction, requiresTrailingSpace: false, (field, offeredFor)));
+            Chain(() => ApplyCorrectionAsync(correction, requiresTrailingSpace: false, (field, offeredFor), hold: hold));
             return;
         }
 
@@ -58,7 +68,7 @@ public sealed partial class SuggestionCoordinator
         string insertion = AcceptanceChunker.InsertionChunk(chunk, expected);
         if (exhausted && settings.AddSpaceAfterAccept) insertion = AcceptanceChunker.AppendingTrailingSpace(insertion);
         var accepted = new AcceptedChunk(
-            session.RequestId, field, expected, chunk, insertion, exhausted, firstChunk, _pendingInsertChars, _keySequence);
+            session.RequestId, field, expected, chunk, insertion, exhausted, firstChunk, _pendingInsertChars, _keySequence, hold);
         _expectedPreceding = expected + insertion;
         _pendingInsertChars += insertion.Length;
         // The next key is counted against a read taken before this insertion.
@@ -98,7 +108,7 @@ public sealed partial class SuggestionCoordinator
     /// <summary>One accept, decided on the UI context and carried out on the thread pool.</summary>
     private sealed record AcceptedChunk(
         string RequestId, FocusedField OfferedIn, string ExpectedPreceding, string Chunk, string Insertion,
-        bool Exhausted, bool FirstChunk, int PendingBefore, long KeySequence);
+        bool Exhausted, bool FirstChunk, int PendingBefore, long KeySequence, IKeyHold? Hold);
 
     private async Task InsertAcceptedAsync(AcceptedChunk accepted)
     {
@@ -106,7 +116,11 @@ public sealed partial class SuggestionCoordinator
         {
             // Each word was checked against the ones before it landing, so once one fails the rest
             // of the same suggestion would land with a gap.
-            if (Volatile.Read(ref _abandonedAccept) == accepted.RequestId) return;
+            if (Volatile.Read(ref _abandonedAccept) == accepted.RequestId)
+            {
+                GiveBackAcceptKey(accepted.Hold, "an earlier word of the suggestion was not accepted");
+                return;
+            }
 
             // The text goes where the caret is, so it is only sent if the caret is still where the
             // suggestion was shown.
@@ -117,6 +131,7 @@ public sealed partial class SuggestionCoordinator
                     accepted.ExpectedPreceding, field.PrecedingText, PublishLagChars + accepted.PendingBefore))
             {
                 AbandonAccept(accepted, "the caret left the suggestion before the accept");
+                GiveBackAcceptKey(accepted.Hold, "the caret left the suggestion before the accept");
                 return;
             }
 
@@ -171,26 +186,51 @@ public sealed partial class SuggestionCoordinator
     }
 
     /// <summary>
+    /// Hands the accept key to the host after all, when the accept inserted nothing. Upstream
+    /// passes the key through then, so a Tab the suggestion did not use still moves focus or
+    /// indents. Keys typed after it are still held, so it reaches the host ahead of them.
+    /// </summary>
+    /// <remarks>
+    /// A failed insertion keeps the key: it may have typed part of the text before it failed.
+    /// </remarks>
+    private void GiveBackAcceptKey(IKeyHold? hold, string reason)
+    {
+        if (hold is null) return;
+        _logger.LogDebug("Accept key given back to the host: {Reason}.", reason);
+        hold.GiveBackKey();
+    }
+
+    /// <summary>
     /// Swaps the typo for its fix. The edit is planned against the live text, and once it starts
     /// it is not cancelled, because a cancelled edit would leave the word deleted. An offered fix is
     /// only applied in the field it was offered in, still holding the text it was offered for.
     /// </summary>
     /// <param name="keySequence">For an automatic fix, the key it was decided after. A later key skips it.</param>
+    /// <param name="hold">For an offered fix, the hook's hold behind its accept key, which gets the key back when nothing is fixed.</param>
     private async Task ApplyCorrectionAsync(
         TypoCorrection correction, bool requiresTrailingSpace, (FocusedField Field, string Preceding)? offered = null,
-        long? keySequence = null)
+        long? keySequence = null, IKeyHold? hold = null)
     {
         try
         {
-            if (_focus.Refresh() is not { } field || field.HasSelection) return;
+            if (_focus.Refresh() is not { } field || field.HasSelection)
+            {
+                GiveBackAcceptKey(hold, "the word to correct is no longer before the caret");
+                return;
+            }
             if (offered is { } at && (!field.IsSameField(at.Field)
                 || !SuggestionSessionReconciler.FollowsExpected(at.Preceding, field.PrecedingText, PublishLagChars)))
             {
+                GiveBackAcceptKey(hold, "the caret left the word to correct");
                 return;
             }
             var plan = TypoCorrectionReplacementPlanner.Plan(
                 field.PrecedingText, correction.Word, correction.CorrectedWord, requiresTrailingSpace);
-            if (plan is not { } fix) return;
+            if (plan is not { } fix)
+            {
+                GiveBackAcceptKey(hold, "the word to correct changed");
+                return;
+            }
             // The user kept typing after the word: deleting it now would take their new keys with it.
             if (keySequence is { } decidedAt && Interlocked.Read(ref _keySequence) != decidedAt) return;
             if (!await _inserter.ReplaceAsync(field, fix.DeletingUtf16Count, fix.ReplacementText, CancellationToken.None)

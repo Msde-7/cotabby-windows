@@ -16,6 +16,7 @@ internal static partial class NativeMethods
     public const int WM_SYSKEYDOWN = 0x0104;
     public const int WM_SYSKEYUP = 0x0105;
 
+    public const int LLKHF_EXTENDED = 0x01;
     public const int LLKHF_INJECTED = 0x10;
 
     /// <summary>
@@ -30,6 +31,12 @@ internal static partial class NativeMethods
     /// it. The hook drops that press when the user let go of the key before it arrived. "CTBZ".
     /// </summary>
     public static readonly IntPtr CotabbyRestoreMarker = new(0x4354425A);
+
+    /// <summary>
+    /// dwExtraInfo on a key the user typed while the hook held keys back, sent again once the hold
+    /// ended. The hook hands it to its handlers like a typed key, since they have not seen it. "CTB[".
+    /// </summary>
+    public static readonly IntPtr CotabbyReplayMarker = new(0x4354425B);
 
     public const int VK_SHIFT = 0x10;
     public const int VK_CONTROL = 0x11;

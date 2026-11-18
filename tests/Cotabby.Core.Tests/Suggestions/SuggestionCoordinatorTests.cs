@@ -206,6 +206,8 @@ public sealed class SuggestionCoordinatorTests : CoordinatorHarness
 
         Assert.True(Hook.Press(Keys.Special(KeyKind.Other, 0x75)));
         await Shown(" again");
+        // A key typed while the word is inserted waits for it, whatever the key.
+        await HoldEnded();
         Assert.False(Hook.Press(Keys.Tab()));
     }
 
@@ -269,8 +271,10 @@ public sealed class SuggestionCoordinatorTests : CoordinatorHarness
         Hook.Press(Keys.Tab());
 
         await Shown("");
+        await HoldEnded();
         Assert.Empty(Focus.Insertions);
-        Assert.Equal("Search", Focus.Current!.Text);
+        // Like upstream, the Tab the suggestion no longer had a use for reaches the host.
+        Assert.Equal("Search\t", Focus.Current!.Text);
     }
 
     [Fact]
@@ -519,6 +523,8 @@ public sealed class SuggestionCoordinatorTests : CoordinatorHarness
 
         Assert.True(Hook.Press(Backtick));
         await Eventually(() => Focus.Current!.Text == "hello world again", "everything is inserted");
+        // The hold ends just after the insertion, and a key pressed before then is held and replayed.
+        await HoldEnded();
 
         // The text ends inside a word and suggestions wait for it to finish, so Tab goes to the host.
         Assert.False(Hook.Press(Keys.Tab()));

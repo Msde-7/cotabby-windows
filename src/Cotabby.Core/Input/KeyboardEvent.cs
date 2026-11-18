@@ -26,6 +26,12 @@ public sealed record KeyboardEvent
 
     /// <summary>True when the system generated this key down because the key is held.</summary>
     public bool IsRepeat { get; init; }
+
+    /// <summary>
+    /// True when the key was held back behind an edit and sent again. Handlers treat it as typed,
+    /// since this is the first time they see it.
+    /// </summary>
+    public bool IsReplay { get; init; }
 }
 
 [Flags]

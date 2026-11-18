@@ -49,21 +49,153 @@ internal static class Keys
     };
 }
 
-internal sealed class FakeHook : IKeyboardHook
+/// <summary>
+/// A keyboard hook over a model of the system input queue. One thread takes the queued events in
+/// order, as the raw input thread hands them to the hook: typed keys, keys held behind an accept
+/// and sent again, and keys given back. It holds keys with the real <see cref="KeyHold"/>.
+/// </summary>
+internal sealed class FakeHook : IKeyboardHook, IKeyInjector
 {
+    private readonly BlockingCollection<Queued> _input = new();
+    private readonly ConcurrentDictionary<int, KeyboardEvent> _typed = new();
+    private readonly KeyHold _hold;
+    private readonly int _threadId;
+    private int _nextId;
+    private int _unhandled;
+
+    // The key handlers are looking at, so a hold begun in a handler knows which key it swallowed.
+    private RawKey? _raising;
+
+    private enum Source { Typed, Replay, Passed }
+
+    private sealed record Queued(RawKey Key, Source Source, bool Reported, TaskCompletionSource<bool>? Done);
+
+    public FakeHook()
+    {
+        _hold = new KeyHold(this, schedule: work => work());
+        var thread = new Thread(Run) { IsBackground = true, Name = "FakeHook input" };
+        thread.Start();
+        _threadId = thread.ManagedThreadId;
+    }
+
     public event EventHandler<KeyEventArgs>? KeyEvent;
 
-    /// <summary>Raises the event and reports whether a handler swallowed the key.</summary>
-    public bool Press(KeyboardEvent ev)
-    {
-        var args = new KeyEventArgs(ev);
-        KeyEvent?.Invoke(this, args);
-        return args.Suppress;
-    }
+    /// <summary>
+    /// Told about each key that reaches the host, on the input thread, except keys sent with
+    /// <see cref="Press"/> that pass straight through: the caller applies those itself.
+    /// </summary>
+    public Action<KeyboardEvent>? HostReceives { get; set; }
+
+    /// <summary>Every key the host received, in order.</summary>
+    public ConcurrentQueue<KeyboardEvent> HostKeys { get; } = new();
+
+    /// <summary>True while keys are held behind an edit, or any key has not reached the hook yet.</summary>
+    public bool IsHolding => _hold.IsHolding || Volatile.Read(ref _unhandled) > 0;
+
+    /// <summary>
+    /// Types a key and reports whether it was kept from the host: swallowed by a handler, or held
+    /// to be sent later. A key that passes straight through is left for the caller to apply.
+    /// </summary>
+    public bool Press(KeyboardEvent ev) => Send(ev, reported: false);
+
+    /// <summary>Types a key the host applies through <see cref="HostReceives"/> whenever it gets it.</summary>
+    public bool Hit(KeyboardEvent ev) => Send(ev, reported: true);
 
     public void Start() { }
     public void Stop() { }
-    public void Dispose() { }
+
+    public void Dispose()
+    {
+        _input.CompleteAdding();
+        _hold.Dispose();
+    }
+
+    public IKeyHold BeginHold() =>
+        _hold.Begin(Environment.CurrentManagedThreadId == _threadId ? _raising : null);
+
+    int IKeyInjector.Replay(ReadOnlySpan<RawKey> keys) => Inject(keys, Source.Replay);
+
+    int IKeyInjector.Pass(ReadOnlySpan<RawKey> keys) => Inject(keys, Source.Passed);
+
+    private bool Send(KeyboardEvent ev, bool reported)
+    {
+        int id = Interlocked.Increment(ref _nextId);
+        _typed[id] = ev;
+        var done = new TaskCompletionSource<bool>();
+        Interlocked.Increment(ref _unhandled);
+        _input.Add(new Queued(new RawKey(ev.VirtualKey, id, !ev.IsKeyDown), Source.Typed, reported, done));
+        // A blocking wait, so typing does not depend on a free thread-pool thread, as a direct call did not.
+        if (!done.Task.Wait(TimeSpan.FromSeconds(10))) throw new TimeoutException("The hook did not take the key.");
+        return done.Task.Result;
+    }
+
+    private int Inject(ReadOnlySpan<RawKey> keys, Source source)
+    {
+        foreach (var key in keys)
+        {
+            Interlocked.Increment(ref _unhandled);
+            if (!_input.TryAdd(new Queued(key, source, Reported: true, Done: null)))
+            {
+                Interlocked.Decrement(ref _unhandled);
+                return 0;
+            }
+        }
+        return keys.Length;
+    }
+
+    private void Run()
+    {
+        foreach (var item in _input.GetConsumingEnumerable())
+        {
+            bool kept;
+            try
+            {
+                kept = Handle(item);
+            }
+            catch (Exception ex)
+            {
+                Interlocked.Decrement(ref _unhandled);
+                item.Done?.SetException(ex);
+                continue;
+            }
+            Interlocked.Decrement(ref _unhandled);
+            item.Done?.SetResult(kept);
+        }
+    }
+
+    /// <summary>Returns true when the key was kept from the host.</summary>
+    private bool Handle(Queued item)
+    {
+        // The id travels in the scan code, as a real event's data travels in its fields.
+        var ev = _typed[item.Key.ScanCode] with { IsKeyDown = !item.Key.IsKeyUp };
+        if (item.Source == Source.Passed)
+        {
+            ToHost(ev, item.Reported);
+            return false;
+        }
+        if (_hold.Arrive(item.Key, item.Source == Source.Replay) != KeyRoute.Deliver) return true;
+
+        ev = ev with { IsReplay = item.Source == Source.Replay };
+        var args = new KeyEventArgs(ev);
+        _raising = item.Key;
+        try
+        {
+            KeyEvent?.Invoke(this, args);
+        }
+        finally
+        {
+            _raising = null;
+        }
+        if (args.Suppress) return true;
+        ToHost(ev, item.Reported);
+        return false;
+    }
+
+    private void ToHost(KeyboardEvent ev, bool reported)
+    {
+        HostKeys.Enqueue(ev);
+        if (reported) HostReceives?.Invoke(ev);
+    }
 }
 
 /// <summary>A text field that behaves like a host app: typed and inserted text lands in it.</summary>
@@ -123,6 +255,17 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
         }
     }
 
+    /// <summary>Deletes the character before the caret, as Backspace does.</summary>
+    public void DeleteBack()
+    {
+        lock (_gate)
+        {
+            if (_field!.Text.Length == 0) return;
+            var updated = _field.Text[..^1];
+            _field = _field with { Text = updated, CaretOffset = updated.Length };
+        }
+    }
+
     /// <summary>Changes the field without a focus event, as a mouse click inside the same app does.</summary>
     public void Replace(FocusedField field)
     {
@@ -136,6 +279,9 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
 
     /// <summary>When set, insertions wait here before they land, like a slow host.</summary>
     public TaskCompletionSource? InsertGate { get; set; }
+
+    /// <summary>How long each insertion takes, like a host that pastes slowly.</summary>
+    public TimeSpan InsertDelay { get; set; }
 
     /// <summary>When true, edits are accepted but never show in the field, like a host that drops them.</summary>
     public bool IgnoresEdits { get; set; }
@@ -152,6 +298,7 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
         try
         {
             if (InsertGate is { } gate) await gate.Task.WaitAsync(ct);
+            if (InsertDelay > TimeSpan.Zero) await Task.Delay(InsertDelay, ct);
             lock (_gate)
             {
                 if (FailingInserts > 0)

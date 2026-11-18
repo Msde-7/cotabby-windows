@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Cotabby.Core.Input;
+using Cotabby.Win32.Insertion;
 using Microsoft.Extensions.Logging;
 using static Cotabby.Win32.Interop.NativeMethods;
 
@@ -18,6 +19,10 @@ namespace Cotabby.Win32.Input;
 /// LowLevelHooksTimeout, which is 300 ms by default. Subscribers are called synchronously and
 /// must hand inference and UI Automation reads to another thread. A <see cref="HookWatchdog"/>
 /// notices a hook Windows dropped anyway and installs it again.
+/// </para>
+/// <para>
+/// While a handler's hold is on, every event the user types is kept back before any handler sees
+/// it, and sent again in order once the hold ends. See <see cref="KeyHold"/>.
 /// </para>
 /// </remarks>
 public sealed class KeyboardHook : IKeyboardHook
@@ -47,12 +52,17 @@ public sealed class KeyboardHook : IKeyboardHook
     private long _callbacks;
     private long _rawKeys;
 
+    private readonly KeyHold _hold;
+    private readonly HookRouter _router;
+
+    // The event the handlers are looking at, so a hold begun in a handler knows which key it swallowed.
+    private RawKey _raisingKey;
+    private bool _raising;
+    private volatile int _hookManagedThreadId;
+
     // Buffers reused across ToUnicodeEx calls. Only the hook thread touches them.
     private readonly byte[] _keyState = new byte[256];
     private readonly char[] _translated = new char[8];
-
-    // Keys currently down, used to tell auto-repeat from a second press.
-    private readonly HeldKeys _heldKeys = new();
 
     // A dead key was typed and the character it combines with has not come yet.
     private bool _afterDeadKey;
@@ -66,9 +76,14 @@ public sealed class KeyboardHook : IKeyboardHook
     {
         _logger = logger;
         _translatePending = () => Translate(_pendingVk, _pendingScanCode);
+        _hold = new KeyHold(new SendInputInjector(), logger: logger);
+        _router = new HookRouter(_hold);
     }
 
     public event EventHandler<KeyEventArgs>? KeyEvent;
+
+    public IKeyHold BeginHold() =>
+        _hold.Begin(_raising && Environment.CurrentManagedThreadId == _hookManagedThreadId ? _raisingKey : null);
 
     public void Start()
     {
@@ -120,6 +135,8 @@ public sealed class KeyboardHook : IKeyboardHook
             _wanted = false;
             _watchdogTimer?.Dispose();
             _watchdogTimer = null;
+            // With no hook to hold them, held keys go to the host now.
+            _hold.ReleaseAll();
             if (!_running) return;
             _running = false;
 
@@ -145,6 +162,7 @@ public sealed class KeyboardHook : IKeyboardHook
         if (_disposed) return;
         _disposed = true;
         Stop();
+        _hold.Dispose();
     }
 
     private void RunHookThread(ManualResetEventSlim started, Action<Exception> fail)
@@ -152,6 +170,7 @@ public sealed class KeyboardHook : IKeyboardHook
         try
         {
             _threadId = GetCurrentThreadId();
+            _hookManagedThreadId = Environment.CurrentManagedThreadId;
             _proc = HookCallback;
             _hookHandle = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(null), 0);
             if (_hookHandle == IntPtr.Zero)
@@ -270,7 +289,7 @@ public sealed class KeyboardHook : IKeyboardHook
         }
         if (_hookHandle != IntPtr.Zero) UnhookWindowsHookEx(_hookHandle);
         _hookHandle = fresh;
-        _heldKeys.Clear();
+        _router.HeldKeys.Clear();
         _logger.LogInformation("Keyboard hook reinstalled.");
     }
 
@@ -311,18 +330,7 @@ public sealed class KeyboardHook : IKeyboardHook
         try
         {
             var data = *(KBDLLHOOKSTRUCT*)lParam;
-
-            // Cotabby's own SendInput is marked. Reacting to it would loop. Input that other
-            // software injects is a person typing through it and is handled like a key press.
-            if ((data.flags & LLKHF_INJECTED) != 0
-                && (data.dwExtraInfo == CotabbyInputMarker || data.dwExtraInfo == CotabbyRestoreMarker))
-            {
-                // A modifier pressed again after a batch is dropped when the user let go of it
-                // before the press arrived, so it is not left down. Events reach the hook in order,
-                // so the release has been seen by now.
-                if (data.dwExtraInfo == CotabbyRestoreMarker && !_heldKeys.IsHeld(data.vkCode)) return new IntPtr(1);
-                return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
-            }
+            var mark = MarkOf(data);
 
             int msg = (int)wParam;
             bool isDown = msg is WM_KEYDOWN or WM_SYSKEYDOWN;
@@ -332,12 +340,18 @@ public sealed class KeyboardHook : IKeyboardHook
                 return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
             }
 
+            var raw = new RawKey((int)data.vkCode, (int)data.scanCode, isUp, (data.flags & LLKHF_EXTENDED) != 0);
+            switch (_router.Route(raw, mark, data.time, out bool isRepeat))
+            {
+                case HookStep.Pass:
+                    return CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+                case HookStep.Suppress:
+                    return new IntPtr(1);
+            }
+
             _pendingVk = data.vkCode;
             _pendingScanCode = data.scanCode;
             var key = KeyClassifier.Classify((int)data.vkCode, CurrentModifiers(), isDown, _translatePending);
-            if (isDown) KeyTranslation.Untranslated((int)data.vkCode, ref _afterDeadKey);
-            bool isRepeat = isDown && _heldKeys.Down(data.vkCode, data.time);
-            if (isUp) _heldKeys.Up(data.vkCode);
 
             var evt = new KeyboardEvent
             {
@@ -347,10 +361,21 @@ public sealed class KeyboardHook : IKeyboardHook
                 VirtualKey = (int)data.vkCode,
                 Modifiers = key.Modifiers,
                 IsRepeat = isRepeat,
+                IsReplay = mark == InputMark.Replay,
             };
 
             var args = new KeyEventArgs(evt);
-            Raise(args);
+            _raisingKey = raw;
+            _raising = true;
+            try
+            {
+                Raise(args);
+            }
+            finally
+            {
+                _raising = false;
+            }
+            if (isDown) KeyTranslation.Handled((int)data.vkCode, args.Suppress, ref _afterDeadKey);
 
             if (args.Suppress)
             {
@@ -385,6 +410,27 @@ public sealed class KeyboardHook : IKeyboardHook
                 _logger.LogError(ex, "A KeyEvent subscriber threw. The other subscribers still see the key.");
             }
         }
+    }
+
+    /// <summary>
+    /// Cotabby's own SendInput is marked. Input that other software injects is a person typing
+    /// through it and is handled like a key press.
+    /// </summary>
+    private static InputMark MarkOf(in KBDLLHOOKSTRUCT data)
+    {
+        if ((data.flags & LLKHF_INJECTED) == 0) return InputMark.None;
+        if (data.dwExtraInfo == CotabbyInputMarker) return InputMark.Input;
+        if (data.dwExtraInfo == CotabbyRestoreMarker) return InputMark.Restore;
+        if (data.dwExtraInfo == CotabbyReplayMarker) return InputMark.Replay;
+        return InputMark.None;
+    }
+
+    /// <summary>Sends held keys with SendInput.</summary>
+    private sealed class SendInputInjector : IKeyInjector
+    {
+        public int Replay(ReadOnlySpan<RawKey> keys) => KeySender.Replay(keys);
+
+        public int Pass(ReadOnlySpan<RawKey> keys) => KeySender.PassThrough(keys);
     }
 
     private static KeyModifiers CurrentModifiers()

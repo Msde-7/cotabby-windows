@@ -37,6 +37,27 @@ public class KeyTranslationTests
     }
 
     [Theory]
+    [InlineData(0x09)] // Tab swallowed as the accept key
+    [InlineData(0x1B)] // Escape captured by the emoji picker
+    [InlineData(0x0D)] // Enter captured by a macro
+    public void AControlKeyAHandlerSwallowed_KeepsTheDeadKeyPending(int virtualKey)
+    {
+        bool afterDeadKey = false;
+        KeyTranslation.FromLayout(-1, '\'', ref afterDeadKey);
+        KeyTranslation.Handled(virtualKey, suppressed: true, ref afterDeadKey);
+        Assert.Equal(KeyTranslation.Unknown, KeyTranslation.FromLayout(1, 'e', ref afterDeadKey));
+    }
+
+    [Fact]
+    public void AControlKeyThatReachedTheHost_UsesUpTheDeadKey()
+    {
+        bool afterDeadKey = false;
+        KeyTranslation.FromLayout(-1, '\'', ref afterDeadKey);
+        KeyTranslation.Handled(0x09, suppressed: false, ref afterDeadKey);
+        Assert.Equal('e', KeyTranslation.FromLayout(1, 'e', ref afterDeadKey));
+    }
+
+    [Theory]
     [InlineData(0x25)] // Left arrow
     [InlineData(0x2E)] // Delete
     [InlineData(0x10)] // Shift
