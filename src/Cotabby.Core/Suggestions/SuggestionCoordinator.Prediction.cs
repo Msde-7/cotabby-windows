@@ -134,6 +134,9 @@ public sealed partial class SuggestionCoordinator
             if (_keySequence == sequence) SetPublishBaseline(field);
             _ime.Observe(field.ImeLanguageId);
             AdoptIdentity(field, readAt);
+            _closedField = ReferenceEquals(settings, _settings) && IsClosedWhateverIsTyped(field, settings)
+                ? new ClosedField(FocusIdentity(field), readAt)
+                : null;
         });
         if (field.ImeLanguageId != 0 && _ime.IsComposing)
         {
@@ -178,6 +181,19 @@ public sealed partial class SuggestionCoordinator
         }
         return field;
     }
+
+    /// <summary>
+    /// True when the field is closed to suggestions for a reason no typing changes, such as its
+    /// app, a terminal or a password field: it would be closed with no text and nothing selected.
+    /// </summary>
+    private static bool IsClosedWhateverIsTyped(FocusedField field, SuggestionSettings settings) =>
+        SuggestionAvailability.DisabledReason(settings, field with { Text = "", CaretOffset = 0, HasSelection = false })
+            is not null;
+
+    /// <summary>True when the focused field was last read closed whatever is typed, recently enough to trust.</summary>
+    private bool FocusStaysClosed() =>
+        _closedField is { } closed && closed.Identity == _focusIdentity
+        && _clock.GetElapsedTime(closed.ReadAt) < ClosedFieldRecheck;
 
     /// <summary>
     /// Lets keys typed while this request generates keep it going instead of starting over. Null

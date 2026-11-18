@@ -244,11 +244,13 @@ public sealed class SuggestionCoordinatorContextTests : CoordinatorHarness
             Task.FromResult<ScreenCapture?>(new ScreenCapture([new OcrLine($"Please read {Topic} before Friday", 0.95f)], null, null));
     }
 
-    private ScreenReader WatchTheScreen()
+    /// <param name="settle">How long focus must stay before the first read, which is never at once in the app.</param>
+    private ScreenReader WatchTheScreen(TimeSpan? settle = null)
     {
         var reader = new ScreenReader();
         Coordinator.ScreenContext = new ScreenContextSource(
-            reader, () => Focus.Current, NullLogger.Instance, settle: TimeSpan.Zero, refreshInterval: TimeSpan.FromMilliseconds(20));
+            reader, () => Focus.Current, NullLogger.Instance, settle: settle ?? TimeSpan.Zero,
+            refreshInterval: TimeSpan.FromMilliseconds(20));
         Coordinator.Settings = SuggestionSettings.Default with { ScreenContext = true };
         return reader;
     }
@@ -305,6 +307,40 @@ public sealed class SuggestionCoordinatorContextTests : CoordinatorHarness
 
         await Shown("see you there");
         Assert.All(Engine.Requests.Where(r => r.ScreenContext.Contains("travel")), r => Assert.Equal("hello ", r.Prefix));
+    }
+
+    [Fact]
+    public async Task WithScreenText_TheFirstReadOfTheScreenWarmsTheFieldInsteadOfAPrewarm()
+    {
+        WatchTheScreen(settle: TimeSpan.FromMilliseconds(20));
+        var prewarmed = new System.Collections.Concurrent.ConcurrentQueue<SuggestionRequest>();
+        Coordinator.Prewarm = (request, _) =>
+        {
+            prewarmed.Enqueue(request);
+            return Task.CompletedTask;
+        };
+
+        Focus.Focus(Fields.Text("Dear team,") with { FieldId = "body" });
+
+        var asked = await RequestFor("Dear team,");
+        Assert.Contains("budget", asked.ScreenContext);
+        await Settled();
+        Assert.Empty(prewarmed);
+    }
+
+    [Fact]
+    public async Task WithoutScreenText_AFocusedFieldIsStillPrewarmed()
+    {
+        int prewarms = 0;
+        Coordinator.Prewarm = (_, _) =>
+        {
+            Interlocked.Increment(ref prewarms);
+            return Task.CompletedTask;
+        };
+
+        Focus.Focus(Fields.Text("Dear team,") with { FieldId = "body" });
+
+        await Eventually(() => Volatile.Read(ref prewarms) == 1, "the field is prewarmed");
     }
 
     [Fact]

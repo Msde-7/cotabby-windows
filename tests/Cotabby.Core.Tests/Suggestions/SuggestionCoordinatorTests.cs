@@ -354,12 +354,15 @@ public sealed class SuggestionCoordinatorTests : CoordinatorHarness
     [Fact]
     public async Task Metrics_CountAcceptedWords()
     {
+        // Nothing follows the suggestion, so the continuation asked for after it shows nothing.
+        Engine.Completion = r => r.Prefix == "hello" ? " world again" : "";
         Type("hello");
         await Shown(" world again");
 
         Hook.Press(Backtick);
 
         await Eventually(() => Coordinator.Metrics.WordsAccepted == 2, "both words are counted");
+        await Settled();
         Assert.Equal(1, Coordinator.Metrics.SuggestionsShown);
         Assert.Equal(1, Coordinator.Metrics.SuggestionsAccepted);
     }
@@ -416,6 +419,69 @@ public sealed class SuggestionCoordinatorTests : CoordinatorHarness
 
         await StaysHidden();
         Assert.Empty(Engine.Requests);
+    }
+
+    [Theory]
+    [InlineData("WindowsTerminal", false)]
+    [InlineData("notepad", true)]
+    public async Task AFieldClosedWhateverIsTyped_IsNotReadForEveryKey(string process, bool secure)
+    {
+        Focus.Focus(Fields.Text("", process) with { FieldId = "closed", IsSecure = secure });
+        Type("h");
+        await Eventually(() => Focus.Refreshes > 0, "the first key reads the field");
+        await Settled();
+        int reads = Focus.Refreshes;
+
+        Type("ello there");
+        await Settled();
+
+        Assert.Equal(reads, Focus.Refreshes);
+        Assert.Empty(Engine.Requests);
+    }
+
+    [Fact]
+    public async Task AClosedField_OpensAgainWhenFocusMoves()
+    {
+        Focus.Focus(Fields.Text("", "WindowsTerminal") with { FieldId = "shell" });
+        Type("ls");
+        await Settled();
+
+        Focus.Focus(Fields.Text("") with { FieldId = "notes" });
+        Type("hello");
+
+        await Shown(" world again");
+    }
+
+    [Fact]
+    public async Task AClosedField_OpensAgainWhenTheSettingsChange()
+    {
+        Coordinator.Settings = SuggestionSettings.Default with
+        {
+            BlockedApps = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "slack" },
+        };
+        Focus.Focus(Fields.Text("", "slack") with { FieldId = "composer" });
+        Type("he");
+        await Settled();
+
+        Coordinator.Settings = SuggestionSettings.Default;
+        Type("llo");
+
+        await Shown(" world again");
+    }
+
+    [Fact]
+    public async Task AFieldClosedOnlyByWhatIsInIt_IsReadAgainOnTheNextKey()
+    {
+        Focus.Focus(Fields.Text("hello") with { FieldId = "notes", HasSelection = true });
+        Type("x");
+        await Settled();
+
+        // The selection was typed over, which raises no focus event.
+        Focus.Replace(Fields.Text("hellox") with { FieldId = "notes" });
+        Engine.Completion = _ => " marks the spot";
+        Type(" ");
+
+        await Shown("marks the spot");
     }
 
     [Fact]

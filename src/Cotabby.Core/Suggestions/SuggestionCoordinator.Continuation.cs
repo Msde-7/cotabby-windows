@@ -28,6 +28,9 @@ public sealed partial class SuggestionCoordinator
         {
             return;
         }
+        // The first screen text read for this field asks for a suggestion with that text ahead of
+        // the field's, so the prompt is evaluated again from there. That request warms it instead.
+        if (settings.ScreenContext && _screen is { } screen && screen.For(field) is null) return;
         var cts = _prewarm = new CancellationTokenSource();
         _ = Task.Run(async () =>
         {

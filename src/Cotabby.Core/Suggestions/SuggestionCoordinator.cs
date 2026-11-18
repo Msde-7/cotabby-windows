@@ -110,6 +110,17 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
 
     /// <summary>When the read that set <see cref="_focusIdentity"/> was taken, as a timestamp of the clock.</summary>
     private long _identityReadAt;
+
+    /// <summary>
+    /// The focused field when its last read showed it closed to suggestions whatever is typed, so
+    /// keys there start no read. UI context only.
+    /// </summary>
+    private ClosedField? _closedField;
+
+    /// <summary>How long a closed field goes without a read while keys arrive, in case a focus event was missed.</summary>
+    private static readonly TimeSpan ClosedFieldRecheck = TimeSpan.FromSeconds(2);
+
+    private sealed record ClosedField(string Identity, long ReadAt);
     private AcceptedTail? _lastAcceptedTail;
     private bool _queuedAccept;
 
@@ -234,6 +245,7 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
             Post(() =>
             {
                 CancelSession("settings changed");
+                _closedField = null;
                 TrackScreen(_focus.Current, value);
             });
         }

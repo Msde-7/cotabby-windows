@@ -15,6 +15,7 @@ public sealed partial class SuggestionCoordinator
             string previousIdentity = _focusIdentity;
             _focusIdentity = field is null ? "" : FocusIdentity(field);
             _identityReadAt = _clock.GetTimestamp();
+            _closedField = null;
             if (previousIdentity != _focusIdentity)
             {
                 _ime.Reset();
@@ -243,7 +244,9 @@ public sealed partial class SuggestionCoordinator
 
         if (SuggestionAvailability.SchedulesPrediction(ev))
         {
-            SchedulePrediction(ev.Kind == KeyKind.Character ? ev.Character : null);
+            // Reading the field again could not change the answer until focus or settings change.
+            if (FocusStaysClosed()) _logger.LogDebug("Key asks for no suggestion: the field is closed whatever is typed.");
+            else SchedulePrediction(ev.Kind == KeyKind.Character ? ev.Character : null);
         }
         else
         {
