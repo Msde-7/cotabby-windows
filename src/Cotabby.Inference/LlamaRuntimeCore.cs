@@ -98,7 +98,11 @@ public sealed class LlamaRuntimeCore : IDisposable
     [return: MarshalAs(UnmanagedType.U1)]
     private delegate bool AbortCallback(IntPtr data);
 
-    public LlamaRuntimeCore(LLamaWeights weights, LLamaContext context, ILogger logger)
+    /// <param name="partialCheckpoints">
+    /// Whether a recurrent or hybrid model rewinds to a saved partial state. Off, such a model
+    /// evaluates its whole prompt on every request, as before checkpoints existed.
+    /// </param>
+    public LlamaRuntimeCore(LLamaWeights weights, LLamaContext context, ILogger logger, bool partialCheckpoints = true)
     {
         _weights = weights;
         _context = context;
@@ -107,7 +111,7 @@ public sealed class LlamaRuntimeCore : IDisposable
         // limited to models whose memory can shift.
         _canReusePrefix = !weights.NativeHandle.IsRecurrent && context.NativeHandle.MemoryCanShift;
         // Those models rewind to a saved partial state instead.
-        _checkpoint = PartialStateCheckpoint.For(weights);
+        _checkpoint = partialCheckpoints ? PartialStateCheckpoint.For(weights) : null;
         _slidingWindow = weights.NativeHandle.SWACount;
         // Read once, so callers never touch the native context outside the gate.
         ContextWindowTokens = (int)context.NativeHandle.ContextSize;

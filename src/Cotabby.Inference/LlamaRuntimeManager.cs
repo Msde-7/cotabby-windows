@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Cotabby.Core.Models;
 using LLama;
 using LLama.Common;
+using LLama.Native;
 using Microsoft.Extensions.Logging;
 
 namespace Cotabby.Inference;
@@ -95,7 +96,10 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
                     parameters = parameters with { GpuLayerCount = 0, NoKqvOffload = true };
                     (weights, context) = await LoadWeightsAndContextAsync(parameters, ct).ConfigureAwait(false);
                 }
-                core = new LlamaRuntimeCore(weights, context, _loggerFactory.CreateLogger<LlamaRuntimeCore>());
+                bool checkpoints = UsePartialCheckpoints(parameters);
+                core = new LlamaRuntimeCore(
+                    weights, context, _loggerFactory.CreateLogger<LlamaRuntimeCore>(), checkpoints);
+                _logger.LogInformation("Prompt checkpoints for hybrid models are {State}.", checkpoints ? "on" : "off");
 
                 // The first generation on a fresh Vulkan context compiles shaders and reserves buffers,
                 // which takes two to four seconds. Paying that here keeps the first real suggestion fast.
@@ -124,6 +128,21 @@ public sealed class LlamaRuntimeManager : IAsyncDisposable
             _gate.Release();
         }
     }
+
+    /// <summary>
+    /// Whether hybrid models rewind to a saved checkpoint. This llama.cpp can only keep the
+    /// checkpoint in host memory, and copying it out of the GPU measured about 150 ms more per
+    /// request than reading the whole prompt again there, while on the CPU it saves seconds. So
+    /// checkpoints run only when the model runs on the CPU. COTABBY_PROMPT_CHECKPOINTS set to 1 or
+    /// 0 overrides the choice, for measuring.
+    /// </summary>
+    private static bool UsePartialCheckpoints(ModelParams parameters) =>
+        Environment.GetEnvironmentVariable("COTABBY_PROMPT_CHECKPOINTS") switch
+        {
+            "1" => true,
+            "0" => false,
+            _ => parameters.GpuLayerCount == 0 || !NativeApi.llama_supports_gpu_offload(),
+        };
 
     /// <summary>Loads the weights and creates their context, freeing the weights if the context fails.</summary>
     private async Task<(LLamaWeights Weights, LLamaContext Context)> LoadWeightsAndContextAsync(
