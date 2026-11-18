@@ -273,8 +273,6 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
     private static ulong DismissalScope(FocusedField field) =>
         (uint)HashCode.Combine(field.ProcessId, field.FieldId, field.HelpText, ScreenContextSource.TitleKey(field.WindowTitle));
 
-    private static bool SameField(FocusedField a, FocusedField b) => a.ProcessId == b.ProcessId && a.FieldId == b.FieldId;
-
     /// <summary>Hands a fresh read of the field to the history recorder, which applies the same rules as suggestions.</summary>
     private void RecordHistory(FocusedField? field)
     {

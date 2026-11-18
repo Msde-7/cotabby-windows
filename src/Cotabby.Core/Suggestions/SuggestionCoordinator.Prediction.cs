@@ -21,101 +21,29 @@ public sealed partial class SuggestionCoordinator
     {
         CancelPrewarm();
         _prediction = null;
-        var requestId = NewRequestId("req_");
-        var settings = _settings;
-        var baseline = _publishBaseline;
-        int delta = _expectedDelta;
-        bool awaitsChange = _publishAwaitsChange;
-        long sequence = _keySequence;
-        long submittedAt = _clock.GetTimestamp();
+        var work = new PredictionWork(
+            NewRequestId("req_"), _settings,
+            new PublishWait(_publishBaseline, _expectedDelta, typed, requiresTextChange, _publishAwaitsChange),
+            _keySequence, _clock.GetTimestamp());
         // The debounce runs alongside the wait for the host to show the key, not after it.
-        _ = _work.Submit(
-            ct => PredictAsync(
-                requestId, settings, new PublishWait(baseline, delta, typed, requiresTextChange, awaitsChange),
-                sequence, submittedAt, ct),
-            TimeSpan.Zero);
+        _ = _work.Submit(ct => PredictAsync(work, ct), TimeSpan.Zero);
     }
 
-    private async Task PredictAsync(
-        string requestId, SuggestionSettings settings, PublishWait wait, long sequence, long submittedAt,
-        CancellationToken ct)
+    /// <summary>What one prediction was asked with, taken on the UI context when it was scheduled.</summary>
+    /// <param name="Sequence">The key count at that moment.</param>
+    /// <param name="SubmittedAt">When it was scheduled, as a timestamp of the coordinator's clock.</param>
+    private sealed record PredictionWork(
+        string RequestId, SuggestionSettings Settings, PublishWait Wait, long Sequence, long SubmittedAt);
+
+    private async Task PredictAsync(PredictionWork work, CancellationToken ct)
     {
+        var (requestId, settings, _, sequence, _) = work;
         TypingPrediction? prediction = null;
         PartialStream? stream = null;
         bool presented = false;
         try
         {
-            var (field, gaveUp) = await WaitForHostPublishAsync(wait, ct).ConfigureAwait(false);
-            if (gaveUp)
-            {
-                // A replacement the host never showed must not be corrected again from the old
-                // text. The next real key asks again, and a queued accept is released now.
-                _logger.LogDebug("Request {ReqId} abandoned: the edit never showed in the field.", requestId);
-                Post(() =>
-                {
-                    if (_keySequence != sequence) return;
-                    ResetAcceptKeyState();
-                    CancelPrefetch();
-                });
-                return;
-            }
-            // Whatever is left of the quiet time after a key, once the host has shown it. A key in
-            // the meantime cancels this work, so a fast typist still starts no generation per key.
-            var quiet = _work.Debounce - _clock.GetElapsedTime(submittedAt);
-            if (quiet > TimeSpan.Zero) await Task.Delay(quiet, _clock, ct).ConfigureAwait(false);
-            RecordHistory(field);
-            if (field is null)
-            {
-                _logger.LogDebug("Request {ReqId} skipped: no supported field has focus.", requestId);
-                return;
-            }
-            Post(() =>
-            {
-                if (_keySequence == sequence) SetPublishBaseline(field);
-                _ime.Observe(field.ImeLanguageId);
-                AdoptIdentity(field);
-            });
-            if (field.ImeLanguageId != 0 && _ime.IsComposing)
-            {
-                _logger.LogDebug("Request {ReqId} skipped: the input method is composing.", requestId);
-                return;
-            }
-
-            TrackScreen(field, settings);
-            if (SuggestionAvailability.DisabledReason(settings, field) is { } reason)
-            {
-                _logger.LogDebug("Request {ReqId} skipped: {Reason}", requestId, reason);
-                return;
-            }
-            if (field.HostIsPredicting)
-            {
-                _logger.LogDebug("Request {ReqId} skipped: the app shows its own suggestion.", requestId);
-                return;
-            }
-            if (!SuggestionAvailability.HasTextToContinue(field))
-            {
-                _logger.LogDebug("Request {ReqId} skipped: nothing to continue.", requestId);
-                return;
-            }
-
-            string preceding = field.PrecedingText;
-            if (await HandleTypoAsync(requestId, settings, field, sequence, ct).ConfigureAwait(false)) return;
-            // A completion inside a token would duplicate or splice what follows the caret.
-            if (!SuggestionRequestFactory.ShouldGenerate(preceding, field.TrailingText, settings.SuggestWithinWords))
-            {
-                _logger.LogDebug("Request {ReqId} skipped: the caret is inside a word or token.", requestId);
-                return;
-            }
-            if (await TryRestoreAnchorAsync(requestId, settings, field, sequence, ct).ConfigureAwait(false))
-            {
-                _logger.LogDebug("Request {ReqId} answered by a remembered suggestion.", requestId);
-                return;
-            }
-            if (!_engine.IsReady)
-            {
-                _logger.LogDebug("Request {ReqId} skipped: the engine is not ready.", requestId);
-                return;
-            }
+            if (await ReadyFieldAsync(work, ct).ConfigureAwait(false) is not { } field) return;
 
             var stopwatch = Stopwatch.StartNew();
             string text;
@@ -127,86 +55,15 @@ public sealed partial class SuggestionCoordinator
             else
             {
                 // An endpoint is billed per request, so it gets no lookahead.
-                if (settings.PredictAheadWhileTyping && !settings.UsesEndpoint)
-                {
-                    // Set from the pool. Each new request clears it on the UI context first, so a
-                    // request cancelled meanwhile must not put its own back over the newer one's.
-                    var created = new TypingPrediction(field, sequence, ct);
-                    if (Interlocked.CompareExchange(ref _prediction, created, null) is null)
-                    {
-                        if (ct.IsCancellationRequested) Interlocked.CompareExchange(ref _prediction, null, created);
-                        else prediction = created;
-                    }
-                }
+                if (settings.PredictAheadWhileTyping && !settings.UsesEndpoint) prediction = StartTypingPrediction(field, sequence, ct);
                 if (settings.StreamWhileGenerating) stream = new PartialStream(requestId, field, settings, sequence, stopwatch, ct);
-                var predicting = prediction;
-                var streaming = stream;
-                Action<string>? onPartial = predicting is null && streaming is null ? null : partial =>
-                {
-                    if (predicting is not null && !predicting.Receive(partial, final: false))
-                    {
-                        RestartPrediction(predicting, "the model left what was typed");
-                    }
-                    if (streaming is not null) QueuePartial(streaming, partial);
-                };
-                var request = BuildRequest(field, requestId, settings);
-                _logger.LogDebug(
-                    "Request {ReqId} context: screen={Screen} clipboard={Clipboard} history={History} surface={Surface}",
-                    requestId, request.ScreenContext.Length, request.ClipboardContext.Length,
-                    request.HistoryExamples.Count, request.SurfaceLines.Count);
-                text = await GenerateAsync(request, ct, onPartial).ConfigureAwait(false);
+                text = await GenerateForAsync(requestId, settings, field, prediction, stream, ct).ConfigureAwait(false);
                 // A cancelled request says nothing about how fast the engine is.
                 if (!ct.IsCancellationRequested) UpdateDebounce(settings, (int)stopwatch.ElapsedMilliseconds);
             }
             int latencyMs = (int)stopwatch.ElapsedMilliseconds;
             ct.ThrowIfCancellationRequested();
-            if (prediction is not null && !prediction.Receive(text, final: true))
-            {
-                RestartPrediction(prediction, "the prediction does not cover what was typed");
-                return;
-            }
-            if (text.Length == 0 && CaretWordContext.UnfinishedWord(preceding) is null) return;
-
-            if (await AwaitDeliveryAsync(requestId, field, prediction, sequence, ct).ConfigureAwait(false) is not { } delivery)
-            {
-                return;
-            }
-            var (live, typedAhead, shownAt) = delivery;
-            if (typedAhead.Length > 0)
-            {
-                text = text[typedAhead.Length..];
-                if (string.IsNullOrWhiteSpace(text))
-                {
-                    RestartPrediction(prediction!, "typing used up the prediction");
-                    return;
-                }
-                if (!SuggestionRequestFactory.ShouldGenerate(live.PrecedingText, live.TrailingText, settings.SuggestWithinWords)) return;
-                // The request checked its answer against the text after the caret, but not what is
-                // left of it once the typed keys are taken off.
-                if (TrailingDuplicationFilter.DuplicatesTrailingText(text, live.TrailingText)) return;
-                _logger.LogDebug("Request {ReqId} kept through {Count} typed characters.", requestId, typedAhead.Length);
-            }
-            // An unusable result mid-word may still offer a local word ending.
-            if (CompletionFinalizer.Finalize(text, live, settings, _engine.SpacingIsExact, _typos) is not { } visible)
-            {
-                _logger.LogInformation("Request {ReqId} dropped by the final presentation checks.", requestId);
-                return;
-            }
-
-            // Suggestions may have been paused, or battery saver turned on, while this generated.
-            if (PausedReason() is { } paused)
-            {
-                _logger.LogInformation("Request {ReqId} dropped: {Reason}", requestId, paused);
-                return;
-            }
-
-            presented = true;
-            Post(() =>
-            {
-                Present(requestId, visible, live, latencyMs, shownAt, ct);
-                // A key kept after the field was read changed the text this answer was checked against.
-                if (_keySequence != shownAt && _session is null && !ct.IsCancellationRequested) SchedulePrediction(typed: null);
-            });
+            presented = await DeliverAsync(work, field, text, prediction, latencyMs, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -237,6 +94,182 @@ public sealed partial class SuggestionCoordinator
                 });
             }
         }
+    }
+
+    /// <summary>
+    /// Reads the field once the host shows the keys, then runs the checks a request passes before
+    /// it generates, in order. Returns the field to generate for, or null when the request ends
+    /// here, after logging why or answering without the engine.
+    /// </summary>
+    private async Task<FocusedField?> ReadyFieldAsync(PredictionWork work, CancellationToken ct)
+    {
+        var (requestId, settings, wait, sequence, submittedAt) = work;
+        var (field, gaveUp) = await WaitForHostPublishAsync(wait, ct).ConfigureAwait(false);
+        if (gaveUp)
+        {
+            // A replacement the host never showed must not be corrected again from the old
+            // text. The next real key asks again, and a queued accept is released now.
+            _logger.LogDebug("Request {ReqId} abandoned: the edit never showed in the field.", requestId);
+            Post(() =>
+            {
+                if (_keySequence != sequence) return;
+                ResetAcceptKeyState();
+                CancelPrefetch();
+            });
+            return null;
+        }
+        // Whatever is left of the quiet time after a key, once the host has shown it. A key in
+        // the meantime cancels this work, so a fast typist still starts no generation per key.
+        var quiet = _work.Debounce - _clock.GetElapsedTime(submittedAt);
+        if (quiet > TimeSpan.Zero) await Task.Delay(quiet, _clock, ct).ConfigureAwait(false);
+        RecordHistory(field);
+        if (field is null)
+        {
+            _logger.LogDebug("Request {ReqId} skipped: no supported field has focus.", requestId);
+            return null;
+        }
+        Post(() =>
+        {
+            if (_keySequence == sequence) SetPublishBaseline(field);
+            _ime.Observe(field.ImeLanguageId);
+            AdoptIdentity(field);
+        });
+        if (field.ImeLanguageId != 0 && _ime.IsComposing)
+        {
+            _logger.LogDebug("Request {ReqId} skipped: the input method is composing.", requestId);
+            return null;
+        }
+
+        TrackScreen(field, settings);
+        if (SuggestionAvailability.DisabledReason(settings, field) is { } reason)
+        {
+            _logger.LogDebug("Request {ReqId} skipped: {Reason}", requestId, reason);
+            return null;
+        }
+        if (field.HostIsPredicting)
+        {
+            _logger.LogDebug("Request {ReqId} skipped: the app shows its own suggestion.", requestId);
+            return null;
+        }
+        if (!SuggestionAvailability.HasTextToContinue(field))
+        {
+            _logger.LogDebug("Request {ReqId} skipped: nothing to continue.", requestId);
+            return null;
+        }
+
+        string preceding = field.PrecedingText;
+        if (await HandleTypoAsync(requestId, settings, field, sequence, ct).ConfigureAwait(false)) return null;
+        // A completion inside a token would duplicate or splice what follows the caret.
+        if (!SuggestionRequestFactory.ShouldGenerate(preceding, field.TrailingText, settings.SuggestWithinWords))
+        {
+            _logger.LogDebug("Request {ReqId} skipped: the caret is inside a word or token.", requestId);
+            return null;
+        }
+        if (await TryRestoreAnchorAsync(requestId, settings, field, sequence, ct).ConfigureAwait(false))
+        {
+            _logger.LogDebug("Request {ReqId} answered by a remembered suggestion.", requestId);
+            return null;
+        }
+        if (!_engine.IsReady)
+        {
+            _logger.LogDebug("Request {ReqId} skipped: the engine is not ready.", requestId);
+            return null;
+        }
+        return field;
+    }
+
+    /// <summary>
+    /// Lets keys typed while this request generates keep it going instead of starting over. Null
+    /// when a newer request has already taken its place.
+    /// </summary>
+    private TypingPrediction? StartTypingPrediction(FocusedField field, long sequence, CancellationToken ct)
+    {
+        // Set from the pool. Each new request clears it on the UI context first, so a
+        // request cancelled meanwhile must not put its own back over the newer one's.
+        var created = new TypingPrediction(field, sequence, ct);
+        if (Interlocked.CompareExchange(ref _prediction, created, null) is not null) return null;
+        if (!ct.IsCancellationRequested) return created;
+        Interlocked.CompareExchange(ref _prediction, null, created);
+        return null;
+    }
+
+    /// <summary>Generates for the field, handing each partial to the lookahead and the stream when there are any.</summary>
+    private Task<string> GenerateForAsync(
+        string requestId, SuggestionSettings settings, FocusedField field, TypingPrediction? predicting,
+        PartialStream? streaming, CancellationToken ct)
+    {
+        Action<string>? onPartial = predicting is null && streaming is null ? null : partial =>
+        {
+            if (predicting is not null && !predicting.Receive(partial, final: false))
+            {
+                RestartPrediction(predicting, "the model left what was typed");
+            }
+            if (streaming is not null) QueuePartial(streaming, partial);
+        };
+        var request = BuildRequest(field, requestId, settings);
+        _logger.LogDebug(
+            "Request {ReqId} context: screen={Screen} clipboard={Clipboard} history={History} surface={Surface}",
+            requestId, request.ScreenContext.Length, request.ClipboardContext.Length,
+            request.HistoryExamples.Count, request.SurfaceLines.Count);
+        return GenerateAsync(request, ct, onPartial);
+    }
+
+    /// <summary>
+    /// Shows an answer once typing pauses and the field still holds the text it continues, less
+    /// the keys the lookahead kept. True when it went to the UI context to be shown.
+    /// </summary>
+    private async Task<bool> DeliverAsync(
+        PredictionWork work, FocusedField field, string text, TypingPrediction? prediction, int latencyMs,
+        CancellationToken ct)
+    {
+        var (requestId, settings, _, sequence, _) = work;
+        if (prediction is not null && !prediction.Receive(text, final: true))
+        {
+            RestartPrediction(prediction, "the prediction does not cover what was typed");
+            return false;
+        }
+        if (text.Length == 0 && CaretWordContext.UnfinishedWord(field.PrecedingText) is null) return false;
+
+        if (await AwaitDeliveryAsync(requestId, field, prediction, sequence, ct).ConfigureAwait(false) is not { } delivery)
+        {
+            return false;
+        }
+        var (live, typedAhead, shownAt) = delivery;
+        if (typedAhead.Length > 0)
+        {
+            text = text[typedAhead.Length..];
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                RestartPrediction(prediction!, "typing used up the prediction");
+                return false;
+            }
+            if (!SuggestionRequestFactory.ShouldGenerate(live.PrecedingText, live.TrailingText, settings.SuggestWithinWords)) return false;
+            // The request checked its answer against the text after the caret, but not what is
+            // left of it once the typed keys are taken off.
+            if (TrailingDuplicationFilter.DuplicatesTrailingText(text, live.TrailingText)) return false;
+            _logger.LogDebug("Request {ReqId} kept through {Count} typed characters.", requestId, typedAhead.Length);
+        }
+        // An unusable result mid-word may still offer a local word ending.
+        if (CompletionFinalizer.Finalize(text, live, settings, _engine.SpacingIsExact, _typos) is not { } visible)
+        {
+            _logger.LogInformation("Request {ReqId} dropped by the final presentation checks.", requestId);
+            return false;
+        }
+
+        // Suggestions may have been paused, or battery saver turned on, while this generated.
+        if (PausedReason() is { } paused)
+        {
+            _logger.LogInformation("Request {ReqId} dropped: {Reason}", requestId, paused);
+            return false;
+        }
+
+        Post(() =>
+        {
+            Present(requestId, visible, live, latencyMs, shownAt, ct);
+            // A key kept after the field was read changed the text this answer was checked against.
+            if (_keySequence != shownAt && _session is null && !ct.IsCancellationRequested) SchedulePrediction(typed: null);
+        });
+        return true;
     }
 
     /// <summary>
@@ -373,7 +406,7 @@ public sealed partial class SuggestionCoordinator
             if (HasPublished(field, wait, waited)) return (field, false);
             // Upstream abandons a replacement the host did not show rather than read the old text.
             if (waited >= HostPublishCeilingMs) return (field, wait.RequiresTextChange && wait.Baseline is not null);
-            await Task.Delay(interval, ct).ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromMilliseconds(interval), _clock, ct).ConfigureAwait(false);
             waited += interval;
             interval = HostPublishPollMs;
         }
@@ -392,7 +425,7 @@ public sealed partial class SuggestionCoordinator
             // Like upstream, the read is taken once the text, the field or the caret moved on from
             // the snapshot at the key. A key typed after that must also have arrived.
             // Forward Delete changes only the text after the caret.
-            bool moved = !SameField(field, baseline) || field.CaretOffset != baseline.CaretOffset
+            bool moved = !field.IsSameField(baseline) || field.CaretOffset != baseline.CaretOffset
                 || field.HasSelection != baseline.HasSelection
                 || SuggestionSessionReconciler.ComparisonNormalized(field.TrailingText)
                     != SuggestionSessionReconciler.ComparisonNormalized(baseline.TrailingText);
@@ -438,7 +471,7 @@ public sealed partial class SuggestionCoordinator
                 double pause = _cadence.RemainingDelay(FocusIdentity(field), expected, Now());
                 if (pause > 0)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(pause), ct).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromSeconds(pause), _clock, ct).ConfigureAwait(false);
                     continue;
                 }
             }
@@ -464,13 +497,13 @@ public sealed partial class SuggestionCoordinator
                 RestartPrediction(prediction, "the field did not show what was typed");
                 return null;
             }
-            await Task.Delay(TypedAheadPollMs, ct).ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromMilliseconds(TypedAheadPollMs), _clock, ct).ConfigureAwait(false);
         }
     }
 
     private async Task<string> GenerateAsync(SuggestionRequest request, CancellationToken ct, Action<string>? onPartial = null)
     {
-        using var watchdog = new CancellationTokenSource(GenerationWatchdog);
+        using var watchdog = new CancellationTokenSource(GenerationWatchdog, _clock);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, watchdog.Token);
         try
         {

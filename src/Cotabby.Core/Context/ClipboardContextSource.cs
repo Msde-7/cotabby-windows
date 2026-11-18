@@ -17,15 +17,14 @@ public sealed class ClipboardContextSource(IClipboardReader reader, TimeProvider
     private Verdict? _verdict;
 
     /// <summary>A verdict holds for the field it was judged in. Another field judges the clipboard against its own text.</summary>
-    private sealed record Verdict(int ProcessId, string FieldId, uint SequenceNumber, string Text);
+    private sealed record Verdict(FocusedField Field, uint SequenceNumber, string Text);
 
     public string? For(FocusedField field)
     {
         lock (_gate)
         {
             uint sequence = reader.SequenceNumber;
-            if (_verdict is { } verdict && verdict.ProcessId == field.ProcessId && verdict.FieldId == field.FieldId
-                && verdict.SequenceNumber == sequence)
+            if (_verdict is { } verdict && verdict.Field.IsSameField(field) && verdict.SequenceNumber == sequence)
             {
                 return verdict.Text;
             }
@@ -33,7 +32,7 @@ public sealed class ClipboardContextSource(IClipboardReader reader, TimeProvider
             string copied = ScalarSets.TrimWhitespaceAndNewlines(reader.ReadText() ?? "");
             string? relevant = _filter.Filter(
                 copied.Length == 0 ? null : copied, sequence, SuggestionRequestFactory.Prefix(field));
-            _verdict = relevant is null ? null : new Verdict(field.ProcessId, field.FieldId, sequence, relevant);
+            _verdict = relevant is null ? null : new Verdict(field, sequence, relevant);
             return relevant;
         }
     }

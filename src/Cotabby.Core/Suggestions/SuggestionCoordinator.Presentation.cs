@@ -81,7 +81,7 @@ public sealed partial class SuggestionCoordinator
     {
         while (!_disposed)
         {
-            await Task.Delay(SessionWatchMs).ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromMilliseconds(SessionWatchMs), _clock).ConfigureAwait(false);
             var live = _focus.Refresh();
             var watching = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             Post(() =>
@@ -104,7 +104,7 @@ public sealed partial class SuggestionCoordinator
     }
 
     private bool IsStillAtOffer(FocusedField? live) =>
-        live is not null && _sessionField is { } offeredIn && SameField(live, offeredIn)
+        live is not null && _sessionField is { } offeredIn && live.IsSameField(offeredIn)
         && FocusIdentity(live) == FocusIdentity(offeredIn)
         && !live.HasSelection
         && SuggestionSessionReconciler.ComparisonNormalized(live.TrailingText)

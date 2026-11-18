@@ -112,7 +112,7 @@ public sealed partial class SuggestionCoordinator
             // suggestion was shown.
             var field = _focus.Refresh();
             // Chunks accepted just before this one may not have reached the field yet.
-            if (field is null || !SameField(field, accepted.OfferedIn)
+            if (field is null || !field.IsSameField(accepted.OfferedIn)
                 || !SuggestionSessionReconciler.FollowsExpected(
                     accepted.ExpectedPreceding, field.PrecedingText, PublishLagChars + accepted.PendingBefore))
             {
@@ -183,7 +183,7 @@ public sealed partial class SuggestionCoordinator
         try
         {
             if (_focus.Refresh() is not { } field || field.HasSelection) return;
-            if (offered is { } at && (!SameField(field, at.Field)
+            if (offered is { } at && (!field.IsSameField(at.Field)
                 || !SuggestionSessionReconciler.FollowsExpected(at.Preceding, field.PrecedingText, PublishLagChars)))
             {
                 return;
@@ -215,7 +215,7 @@ public sealed partial class SuggestionCoordinator
     /// <summary>Moves the ghost to the caret once the host has published an insert or a typed key.</summary>
     private async Task ReanchorAsync(string requestId, int settleMs)
     {
-        await Task.Delay(settleMs).ConfigureAwait(false);
+        await Task.Delay(TimeSpan.FromMilliseconds(settleMs), _clock).ConfigureAwait(false);
         var after = _focus.Refresh(readHostText: true);
         RecordHistory(after);
         if (after is null || after.CaretRect.IsEmpty) return;

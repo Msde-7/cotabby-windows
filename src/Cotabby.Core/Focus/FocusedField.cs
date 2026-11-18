@@ -107,6 +107,9 @@ public sealed record FocusedField
 
     /// <summary>Width the host painted <see cref="SampleText"/> at, in physical pixels.</summary>
     public double? SampleWidthPx { get; init; }
+
+    /// <summary>True when <paramref name="other"/> is the same field of the same process, whatever its text, title or caret.</summary>
+    public bool IsSameField(FocusedField other) => ProcessId == other.ProcessId && FieldId == other.FieldId;
 }
 
 /// <summary>Screen rectangle in physical pixels.</summary>

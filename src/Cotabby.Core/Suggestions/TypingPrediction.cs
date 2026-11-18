@@ -135,7 +135,7 @@ public sealed class TypingPrediction(FocusedField field, long sequence, Cancella
     /// before the caret may differ, by what the user typed since.
     /// </summary>
     public static bool IsSameCaretPlace(FocusedField field, FocusedField live) =>
-        !live.IsSecure && !live.HasSelection && live.ProcessId == field.ProcessId && live.FieldId == field.FieldId
+        !live.IsSecure && !live.HasSelection && live.IsSameField(field)
         && Normalized(live.TrailingText) == Normalized(field.TrailingText);
 
     private static string Normalized(string text) => SuggestionSessionReconciler.ComparisonNormalized(text);
