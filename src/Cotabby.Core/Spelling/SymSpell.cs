@@ -37,7 +37,19 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
 
     // FNV-1a hash of a delete variant to the indices of the words that produce it. Collisions are
     // harmless because every candidate is verified with a real bounded edit-distance check.
+    //
+    // A loaded dictionary keeps them in three flat arrays: the hashes in ascending order, and for
+    // the hash at i the word indices at _frozenIndices[_frozenStarts[i].._frozenStarts[i + 1]]. A
+    // dictionary entry and an array per hash took about 50 MB for English, the flat arrays about
+    // 16 MB. Words added outside a load go to _deletes, and their indices follow the frozen ones.
+    private ulong[] _frozenHashes = [];
+    private int[] _frozenStarts = [0];
+    private int[] _frozenIndices = [];
     private readonly Dictionary<ulong, Bucket> _deletes = [];
+
+    /// <summary>Delete hashes and word indices gathered while <see cref="LoadDictionary"/> runs.</summary>
+    private List<ulong>? _loadingHashes;
+    private List<int>? _loadingIndices;
 
     /// <summary>
     /// The word indices behind one delete hash. The array grows by doubling, so adding a word is
@@ -74,18 +86,21 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
     /// </summary>
     public void LoadDictionary(string contents, CancellationToken cancellationToken = default)
     {
-        foreach (var (word, count) in FrequencyDictionaryFormat.Entries(contents))
+        _loadingHashes = [];
+        _loadingIndices = [];
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            CreateDictionaryEntry(word, count);
+            foreach (var (word, count) in FrequencyDictionaryFormat.Entries(contents))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                CreateDictionaryEntry(word, count);
+            }
         }
-        // Growth slack is dropped once the index stops changing.
-        foreach (ulong key in _deletes.Keys)
+        finally
         {
-            ref var bucket = ref CollectionsMarshal.GetValueRefOrNullRef(_deletes, key);
-            if (bucket.Count < bucket.Items.Length) Array.Resize(ref bucket.Items, bucket.Count);
+            // Also when cancelled, so every word already added stays findable.
+            Freeze();
         }
-        _deletes.TrimExcess();
     }
 
     public void CreateDictionaryEntry(string key, long count)
@@ -98,8 +113,75 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
         _maxDictionaryWordLength = Math.Max(_maxDictionaryWordLength, characters.Length);
         foreach (ulong delete in DeleteHashes(characters))
         {
-            CollectionsMarshal.GetValueRefOrAddDefault(_deletes, delete, out _).Add(index);
+            if (_loadingHashes is not null)
+            {
+                _loadingHashes.Add(delete);
+                _loadingIndices!.Add(index);
+            }
+            else
+            {
+                CollectionsMarshal.GetValueRefOrAddDefault(_deletes, delete, out _).Add(index);
+            }
         }
+    }
+
+    /// <summary>
+    /// Moves every delete into the flat arrays: the ones frozen before, the ones added since and
+    /// the ones gathered by this load. Each hash keeps its word indices in ascending order, the
+    /// order they were added in, so lookups visit candidates exactly as before.
+    /// </summary>
+    private void Freeze()
+    {
+        var hashes = _loadingHashes ?? [];
+        var indices = _loadingIndices ?? [];
+        _loadingHashes = null;
+        _loadingIndices = null;
+        for (int i = 0; i < _frozenHashes.Length; i++)
+        {
+            for (int j = _frozenStarts[i]; j < _frozenStarts[i + 1]; j++)
+            {
+                hashes.Add(_frozenHashes[i]);
+                indices.Add(_frozenIndices[j]);
+            }
+        }
+        foreach (var (hash, bucket) in _deletes)
+        {
+            foreach (int index in bucket.Indices)
+            {
+                hashes.Add(hash);
+                indices.Add(index);
+            }
+        }
+        _deletes.Clear();
+        _deletes.TrimExcess();
+
+        var hashSpan = CollectionsMarshal.AsSpan(hashes);
+        var indexSpan = CollectionsMarshal.AsSpan(indices);
+        hashSpan.Sort(indexSpan);
+        var frozenHashes = new List<ulong>();
+        var starts = new List<int>();
+        for (int run = 0; run < hashSpan.Length;)
+        {
+            int end = run + 1;
+            while (end < hashSpan.Length && hashSpan[end] == hashSpan[run]) end++;
+            // The sort is not stable, so a hash's indices are put back in order.
+            indexSpan[run..end].Sort();
+            frozenHashes.Add(hashSpan[run]);
+            starts.Add(run);
+            run = end;
+        }
+        starts.Add(hashSpan.Length);
+        _frozenHashes = [.. frozenHashes];
+        _frozenStarts = [.. starts];
+        _frozenIndices = indexSpan.ToArray();
+    }
+
+    /// <summary>The indices of the words with delete <paramref name="hash"/>, in the order they were added.</summary>
+    private void WordsWithDelete(ulong hash, out ReadOnlySpan<int> frozen, out ReadOnlySpan<int> added)
+    {
+        int at = Array.BinarySearch(_frozenHashes, hash);
+        frozen = at >= 0 ? _frozenIndices.AsSpan(_frozenStarts[at].._frozenStarts[at + 1]) : default;
+        added = _deletes.TryGetValue(hash, out var bucket) ? bucket.Indices : default;
     }
 
     /// <summary>
@@ -128,31 +210,9 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
         for (int pointer = 0; pointer < candidates.Count; pointer++)
         {
             var candidate = candidates[pointer];
-            if (_deletes.TryGetValue(Hash(candidate), out var bucket))
-            {
-                foreach (int wordIndex in bucket.Indices)
-                {
-                    var suggestion = _wordsList[wordIndex];
-                    int distance;
-                    // When both words are one UTF-16 unit per grapheme, compare units and skip
-                    // splitting the word into grapheme strings.
-                    if (inputIsOneUnitPerGrapheme && GraphemeString.IsOneUnitPerGrapheme(suggestion))
-                    {
-                        // Cheap length prune before the quadratic distance computation.
-                        if (Math.Abs(suggestion.Length - input.Length) > maxDistance) continue;
-                        if (!consideredSuggestions.Add(suggestion)) continue;
-                        distance = EditDistance.DamerauOsa(input.AsSpan(), suggestion.AsSpan(), maxDistance);
-                    }
-                    else
-                    {
-                        var suggestionCharacters = Characters(suggestion);
-                        if (Math.Abs(suggestionCharacters.Length - inputCharacters.Length) > maxDistance) continue;
-                        if (!consideredSuggestions.Add(suggestion)) continue;
-                        distance = DamerauOsa(inputCharacters, suggestionCharacters, maxDistance);
-                    }
-                    if (distance >= 0) suggestions.Add(new(suggestion, distance, _words[suggestion]));
-                }
-            }
+            WordsWithDelete(Hash(candidate), out var frozen, out var added);
+            foreach (int wordIndex in frozen) Consider(wordIndex);
+            foreach (int wordIndex in added) Consider(wordIndex);
 
             // Enqueue the candidate's own deletes, bounded by the prefix window and the distance.
             if (inputPrefixLength - candidate.Length < maxDistance && candidate.Length <= PrefixLength)
@@ -166,6 +226,29 @@ public sealed class SymSpell(int maxDictionaryEditDistance = 2, int prefixLength
         }
 
         return suggestions.OrderBy(s => s.Distance).ThenByDescending(s => s.Count).ToArray();
+
+        void Consider(int wordIndex)
+        {
+            var suggestion = _wordsList[wordIndex];
+            int distance;
+            // When both words are one UTF-16 unit per grapheme, compare units and skip
+            // splitting the word into grapheme strings.
+            if (inputIsOneUnitPerGrapheme && GraphemeString.IsOneUnitPerGrapheme(suggestion))
+            {
+                // Cheap length prune before the quadratic distance computation.
+                if (Math.Abs(suggestion.Length - input.Length) > maxDistance) return;
+                if (!consideredSuggestions.Add(suggestion)) return;
+                distance = EditDistance.DamerauOsa(input.AsSpan(), suggestion.AsSpan(), maxDistance);
+            }
+            else
+            {
+                var suggestionCharacters = Characters(suggestion);
+                if (Math.Abs(suggestionCharacters.Length - inputCharacters.Length) > maxDistance) return;
+                if (!consideredSuggestions.Add(suggestion)) return;
+                distance = DamerauOsa(inputCharacters, suggestionCharacters, maxDistance);
+            }
+            if (distance >= 0) suggestions.Add(new(suggestion, distance, _words[suggestion]));
+        }
     }
 
     /// <summary>The single best correction for <paramref name="input"/>, or null when nothing is within the edit distance.</summary>

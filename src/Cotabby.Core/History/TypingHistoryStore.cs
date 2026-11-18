@@ -29,8 +29,9 @@ public enum TypingHistoryStatus
 /// </para>
 /// <para>
 /// Callers arrive from the UI thread and the thread pool, so mutable state sits behind one lock.
-/// Decrypting, encrypting and building the index run on the thread pool against copies. Each
-/// rebuild carries a generation so a slow, older build never replaces a newer one.
+/// Decrypting, encrypting and building the index run on the thread pool against copies. Builds
+/// run one at a time, so a slow, older build never replaces a newer one, and one started before
+/// Delete All is discarded.
 /// </para>
 /// </summary>
 public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHistoryObserver
@@ -48,6 +49,12 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
     public const int CaptureWindowChars = 14_000;
 
     private const int MaximumRecentRecordings = 64;
+
+    /// <summary>
+    /// How soon a change that is not plain typing is saved: a finished field, an import or an
+    /// excluded app. Typing waits for the longer pause, since every save rewrites the whole archive.
+    /// </summary>
+    private static readonly TimeSpan PromptSaveDelay = TimeSpan.FromSeconds(2);
     private static readonly char[] LineBreaks = ['\n', '\r'];
 
     private readonly Lock _lock = new();
@@ -56,6 +63,7 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
     /// <summary>Every write and delete goes through this, so a deletion is never undone by a running save.</summary>
     private readonly TypingHistoryWriter _writer;
     private readonly TimeSpan _saveDelay;
+    private readonly TimeSpan _rebuildInterval;
     private readonly ILogger _logger;
 
     private TypingHistoryPreferences _preferences = TypingHistoryPreferences.Defaults;
@@ -82,8 +90,22 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
     private List<TypingHistoryRecord> _records = [];
     private TypingHistoryIndex? _index;
     private TypingHistoryPhrasePredictor? _phrases;
+
+    /// <summary>Bumped by Delete All, so a build started before it is thrown away.</summary>
     private int _rebuildGeneration;
+
+    /// <summary>One build runs at a time. Changes made meanwhile are picked up by one more build after it.</summary>
+    private bool _rebuildRunning;
+    private bool _rebuildPending;
+    private long _lastRebuildTicks = long.MinValue;
+
     private CancellationTokenSource? _saveCancellation;
+
+    /// <summary>When the scheduled save runs, in <see cref="Environment.TickCount64"/> milliseconds.</summary>
+    private long _saveDueTicks;
+
+    /// <summary>The scheduled save is a prompt one, which typing does not put off.</summary>
+    private bool _saveIsPrompt;
     private ActiveRecording? _active;
 
     /// <summary>
@@ -116,14 +138,22 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
 
     /// <param name="loadsArchive">False starts empty and ready without opening the archive.</param>
     /// <param name="saveDelay">How long typing must pause before a background save.</param>
+    /// <param name="rebuildInterval">The least time between two starts of a search rebuild.</param>
     public TypingHistoryStore(
         TypingHistoryVault vault, TypingHistoryPreferences? preferences = null, bool loadsArchive = true,
-        TimeSpan? saveDelay = null, ILogger? logger = null)
+        TimeSpan? saveDelay = null, ILogger? logger = null, TimeSpan? rebuildInterval = null)
     {
         _vault = vault;
         _writer = new TypingHistoryWriter(vault);
         _preferences = preferences ?? TypingHistoryPreferences.Defaults;
-        _saveDelay = saveDelay ?? TimeSpan.FromSeconds(5);
+        // Every save encrypts and rewrites the whole archive (tens of milliseconds and megabytes for
+        // a few thousand records), so typing saves after a long pause. Finishing a field saves
+        // sooner, and the app flushes at exit.
+        _saveDelay = saveDelay ?? TimeSpan.FromSeconds(30);
+        // A rebuild takes from a fraction of a second to seconds of CPU for a large history. Field
+        // switches in a chat come every few seconds, and the newest record need not be searchable
+        // at once, so they share one rebuild.
+        _rebuildInterval = rebuildInterval ?? TimeSpan.FromSeconds(10);
         _logger = logger ?? NullLogger.Instance;
         if (loadsArchive) _ = LoadArchiveAsync();
         else _status = TypingHistoryStatus.Ready;
@@ -221,7 +251,7 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
     private void RecordsChanged()
     {
         _changeCount++;
-        ScheduleSave();
+        ScheduleSave(PromptSaveDelay);
         RebuildSearchStructures();
     }
 
@@ -274,17 +304,26 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
         Write(save);
     }
 
-    private void ScheduleSave()
+    /// <summary>
+    /// Saves after <paramref name="delay"/>, by default once typing pauses. Each call restarts the
+    /// wait, except that a prompt save already due is never put off.
+    /// </summary>
+    private void ScheduleSave(TimeSpan? delay = null)
     {
         if (_status != TypingHistoryStatus.Ready) return;
+        bool prompt = delay is { } shorter && shorter < _saveDelay;
+        var wait = prompt ? delay!.Value : _saveDelay;
+        long due = Environment.TickCount64 + (long)wait.TotalMilliseconds;
+        if (_saveCancellation is { IsCancellationRequested: false } && _saveIsPrompt && _saveDueTicks <= due) return;
         _saveCancellation?.Cancel();
         var cancellation = _saveCancellation = new CancellationTokenSource();
-        var delay = _saveDelay;
+        _saveDueTicks = due;
+        _saveIsPrompt = prompt;
         _ = Task.Run(async () =>
         {
             try
             {
-                await Task.Delay(delay, cancellation.Token).ConfigureAwait(false);
+                await Task.Delay(wait, cancellation.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -294,6 +333,8 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
             lock (_lock)
             {
                 if (cancellation.IsCancellationRequested) return;
+                // Done waiting: the next change schedules a save of its own.
+                if (_saveCancellation == cancellation) _saveCancellation = null;
                 if (MaterializeActiveRecording()) RaiseChangedLater();
                 save = CaptureSave();
             }
@@ -329,24 +370,67 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
     /// <summary>
     /// Rebuilds the index and phrase table on the thread pool from a copy. The field being typed in
     /// is left out so an unfinished draft never becomes its own example.
+    /// <para>
+    /// Builds run one at a time and start at least <see cref="_rebuildInterval"/> apart. Changes
+    /// made while one waits or runs are all picked up by the next, which copies the records only
+    /// when it starts.
+    /// </para>
     /// </summary>
     private void RebuildSearchStructures()
     {
-        int generation = ++_rebuildGeneration;
-        var activeId = _active?.RecordId;
-        var snapshot = _records.Where(record => record.Id != activeId).ToList();
-        _ = Task.Run(() =>
+        _rebuildPending = true;
+        if (_rebuildRunning) return;
+        _rebuildRunning = true;
+        _ = Task.Run(RebuildWhilePendingAsync);
+    }
+
+    private async Task RebuildWhilePendingAsync()
+    {
+        while (true)
         {
-            var index = new TypingHistoryIndex(snapshot);
-            var phrases = new TypingHistoryPhrasePredictor(snapshot);
+            TimeSpan wait;
             lock (_lock)
             {
-                if (generation != _rebuildGeneration) return;
-                _index = index;
-                _phrases = phrases;
-                _exampleCache = null;
+                long next = _lastRebuildTicks == long.MinValue
+                    ? 0
+                    : _lastRebuildTicks + (long)_rebuildInterval.TotalMilliseconds - Environment.TickCount64;
+                wait = TimeSpan.FromMilliseconds(Math.Max(0, next));
             }
-        });
+            if (wait > TimeSpan.Zero) await Task.Delay(wait).ConfigureAwait(false);
+
+            int generation;
+            List<TypingHistoryRecord> snapshot;
+            lock (_lock)
+            {
+                if (!_rebuildPending)
+                {
+                    _rebuildRunning = false;
+                    return;
+                }
+                _rebuildPending = false;
+                _lastRebuildTicks = Environment.TickCount64;
+                generation = _rebuildGeneration;
+                var activeId = _active?.RecordId;
+                snapshot = _records.Where(record => record.Id != activeId).ToList();
+            }
+            try
+            {
+                var index = new TypingHistoryIndex(snapshot);
+                var phrases = new TypingHistoryPhrasePredictor(snapshot);
+                lock (_lock)
+                {
+                    if (generation != _rebuildGeneration) continue;
+                    _index = index;
+                    _phrases = phrases;
+                    _exampleCache = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                // The previous search structures stay in use. The next change tries again.
+                _logger.LogError(ex, "Typing history search could not be rebuilt.");
+            }
+        }
     }
 
     // Recording
@@ -482,7 +566,8 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
         _active = null;
         if (changed)
         {
-            ScheduleSave();
+            // Leaving a field is a natural point to save, without waiting for typing to pause.
+            ScheduleSave(PromptSaveDelay);
             RebuildSearchStructures();
         }
     }
@@ -724,5 +809,15 @@ public sealed class TypingHistoryStore : ISuggestionHistoryProvider, ITypingHist
     private void RaiseChanged() => Changed?.Invoke();
 
     /// <summary>Raises <see cref="Changed"/> once the caller has released the lock.</summary>
-    private void RaiseChangedLater() => _ = Task.Run(RaiseChanged);
+    private void RaiseChangedLater() => _ = Task.Run(() =>
+    {
+        try
+        {
+            RaiseChanged();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "A typing history change handler failed.");
+        }
+    });
 }

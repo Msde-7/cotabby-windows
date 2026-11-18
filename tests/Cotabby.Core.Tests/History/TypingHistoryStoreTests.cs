@@ -763,4 +763,100 @@ public sealed class TypingHistoryStoreTests : IDisposable
 
         Assert.Equal(1, gateCalls);
     }
+
+    // Saving and rebuilding
+
+    [Fact]
+    public async Task AFinishedFieldIsSavedWithoutWaitingForTypingToPause()
+    {
+        var vault = MakeVault();
+        var store = MakeStore(vault, saveDelay: TimeSpan.FromHours(1));
+        store.SetRecording(true);
+        store.Observe(Focus("Hi Arnaud, the Imperum POC is ready for review."), () => true);
+
+        store.Observe(Focus("Next", element: "other"), () => true);
+        // Typing on in the next field schedules its own, later save. It must not put this one off.
+        for (int i = 0; i < 5; i++)
+        {
+            store.Observe(Focus("Next field text " + new string('x', i), element: "other"), () => true);
+            await Task.Delay(50);
+        }
+
+        await WaitUntil(() => File.Exists(vault.FilePath));
+        Assert.Contains(vault.Load(), record => record.Text == "Hi Arnaud, the Imperum POC is ready for review.");
+    }
+
+    [Fact]
+    public async Task TypingStillSavesOnlyOnceItPauses()
+    {
+        var vault = MakeVault();
+        var store = MakeStore(vault, saveDelay: TimeSpan.FromHours(1));
+        store.SetRecording(true);
+        store.Observe(Focus("Hi Arnaud, the Imperum POC is ready for review."), () => true);
+        store.Observe(Focus("Hi Arnaud, the Imperum POC is ready for review today."), () => true);
+
+        await Task.Delay(300);
+
+        Assert.False(File.Exists(vault.FilePath));
+        store.Flush();
+        Assert.Single(vault.Load());
+    }
+
+    [Fact]
+    public async Task FieldsFinishedInQuickSuccessionShareARebuild()
+    {
+        var store = new TypingHistoryStore(MakeVault(), loadsArchive: false, rebuildInterval: TimeSpan.FromHours(1));
+        store.SetUsingHistory(true);
+        store.SetRecording(true);
+        await store.ImportCotypistExportAsync(WriteExport(SignOffRows(6)));
+        var request = Request("Thanks!\nBest regards, ");
+        // The first build after start runs at once.
+        await WaitUntil(() => store.PhraseContinuation(request, usesEndpoint: false) is not null);
+
+        store.Observe(Focus("Steering group notes: the Kestrel migration plan moves to the second quarter of next year."), () => true);
+        store.Observe(Focus("", element: "other"), () => true);
+        await Task.Delay(300);
+
+        // The next one waits for the interval, so the new record is not searchable yet.
+        var probe = Context("Kestrel migration plan update for the steering group and the second quarter ", element: "probe");
+        Assert.Empty(store.HistoryExamples(probe, usesEndpoint: false));
+        Assert.Equal(7, store.RecordCount);
+    }
+
+    [Fact]
+    public async Task ACoalescedRebuildMatchesAFullRebuildOfTheRecords()
+    {
+        var vault = MakeVault();
+        var store = new TypingHistoryStore(vault, loadsArchive: false, rebuildInterval: TimeSpan.FromMilliseconds(200));
+        store.SetUsingHistory(true);
+        store.SetRecording(true);
+        var random = new Random(9);
+        string[] topics = ["Kestrel migration", "Imperum connector", "Sentinel rollout", "budget review", "SOC handover"];
+        var written = new HashSet<string>();
+        for (int field = 0; field < 12; field++)
+        {
+            string topic = topics[random.Next(topics.Length)];
+            written.Add(topic);
+            string text = $"Notes {field}: the {topic} plan moves on, {topic} owners meet on Monday and report back by Friday.";
+            store.Observe(Focus(text[..(text.Length / 2)], element: $"field{field}"), () => true);
+            store.Observe(Focus(text, element: $"field{field}"), () => true);
+        }
+        store.Observe(Focus("", element: "done"), () => true);
+        store.Flush();
+        var records = vault.Load();
+        Assert.Equal(12, records.Count);
+        var index = new TypingHistoryIndex(records);
+
+        Assert.True(written.Count >= 3);
+        foreach (string topic in written)
+        {
+            var probe = Context($"Status: the {topic} plan moves on and the {topic} owners meet on Monday to report back soon ", element: "probe");
+            string query = $"{TypingHistoryQuery.StableText(probe.PrecedingText)} {probe.WindowTitle}";
+            var expected = TypingHistoryIndex.Examples(
+                index.Candidates(new TypingHistoryQuery(query, probe.ProcessName, null, probe.PrecedingText)),
+                probe.PrecedingText);
+            Assert.NotEmpty(expected);
+            await WaitUntil(() => store.HistoryExamples(probe, usesEndpoint: false).SequenceEqual(expected));
+        }
+    }
 }
