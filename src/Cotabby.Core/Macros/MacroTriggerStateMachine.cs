@@ -65,6 +65,9 @@ public sealed class MacroTriggerStateMachine
     /// <summary>Query captured when the most recent <see cref="Outcome.Commit"/> fired.</summary>
     public string LastCommittedQuery { get; private set; } = "";
 
+    /// <summary>The typed <c>/query</c> run to erase for the most recent commit.</summary>
+    public string RunAtCommit => Trigger + LastCommittedQuery;
+
     /// <summary>Length of the typed <c>/query</c> run to erase for the most recent commit.</summary>
     public int QueryAtCommitLength => LastCommittedQuery.Length + 1;
 

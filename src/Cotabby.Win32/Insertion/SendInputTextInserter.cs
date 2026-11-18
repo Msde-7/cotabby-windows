@@ -89,7 +89,11 @@ public sealed class SendInputTextInserter : ITextInserter
             }
             // The count is in UTF-16 units, and a host takes an emoji or a line break with one key.
             int backspaces = EditRepair.BackspacesFor(before ?? target.PrecedingText, deleteCount);
-            (bool inserted, restore) = await EditLockedAsync(target, backspaces, text, ct).ConfigureAwait(false);
+            // A paste saves the clipboard first, which can take a second. A key typed meanwhile
+            // would be deleted in place of the planned text, so the check runs again before the backspaces.
+            bool StillPlanned() => before is null || deleteCount <= 0 || ReadPreceding(target) is not { } now
+                || EditRepair.StillBeforeCaret(target.PrecedingText, deleteCount, now);
+            (bool inserted, restore) = await EditLockedAsync(target, backspaces, text, StillPlanned, ct).ConfigureAwait(false);
             if (inserted && restore is null) await RepairAsync(target, before, deleteCount, text, ct).ConfigureAwait(false);
             return inserted;
         }
@@ -178,8 +182,9 @@ public sealed class SendInputTextInserter : ITextInserter
     /// Deletes before the caret and inserts, with the gate held. A paste also returns its pending
     /// clipboard restore.
     /// </summary>
+    /// <param name="stillPlanned">False when the text the backspaces delete changed since the edit was planned.</param>
     private async Task<(bool Inserted, Task? Restore)> EditLockedAsync(
-        FocusedField target, int backspaces, string text, CancellationToken ct)
+        FocusedField target, int backspaces, string text, Func<bool> stillPlanned, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(text)) return (await SendBackspacesAsync(target, backspaces, ct).ConfigureAwait(false), null);
         ct.ThrowIfCancellationRequested();
@@ -196,7 +201,7 @@ public sealed class SendInputTextInserter : ITextInserter
             if (!await SendBackspacesAsync(target, backspaces, ct).ConfigureAwait(false)) return (false, null);
             return (Send(target, () => KeySender.SendText(text), "text"), null);
         }
-        return await PasteAsync(target, backspaces, text, ct).ConfigureAwait(false);
+        return await PasteAsync(target, backspaces, text, stillPlanned, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -204,7 +209,7 @@ public sealed class SendInputTextInserter : ITextInserter
     /// leaves the field as it was.
     /// </summary>
     private async Task<(bool Inserted, Task? Restore)> PasteAsync(
-        FocusedField target, int backspaces, string text, CancellationToken ct)
+        FocusedField target, int backspaces, string text, Func<bool> stillPlanned, CancellationToken ct)
     {
         if (!ForegroundTarget.Holds(target))
         {
@@ -225,6 +230,12 @@ public sealed class SendInputTextInserter : ITextInserter
             if (SyntheticKeys.HasLineBreak(text)) return (false, null);
             if (!await SendBackspacesAsync(target, backspaces, ct).ConfigureAwait(false)) return (false, null);
             return (await TypeInBurstsAsync(target, text, ct).ConfigureAwait(false), null);
+        }
+
+        if (backspaces > 0 && !stillPlanned())
+        {
+            _logger.LogInformation("Paste skipped: the text before the caret changed while the clipboard was saved.");
+            return (false, RestoreClipboardAsync(saved!, ownSequence, settle: false));
         }
 
         // From here the restore always runs, even when the paste is cancelled or fails, so the

@@ -63,8 +63,14 @@ public abstract class InlineCaptureController : IDisposable
     /// <summary>Deletes the typed run before the caret and inserts <paramref name="text"/> in its place.</summary>
     protected async Task ReplaceTypedAsync(FocusedField field, int deleteCount, string text, string feature)
     {
-        await Inserter.ReplaceAsync(field, deleteCount, text, CancellationToken.None).ConfigureAwait(false);
-        Logger.LogInformation("{Feature} committed (replaced {Count} chars).", feature, deleteCount);
+        if (await Inserter.ReplaceAsync(field, deleteCount, text, CancellationToken.None).ConfigureAwait(false))
+        {
+            Logger.LogInformation("{Feature} committed (replaced {Count} chars).", feature, deleteCount);
+        }
+        else
+        {
+            Logger.LogInformation("{Feature} was not committed: the edit could not be applied.", feature);
+        }
     }
 
     /// <summary>

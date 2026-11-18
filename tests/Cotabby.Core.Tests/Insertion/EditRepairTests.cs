@@ -1,4 +1,5 @@
 using Cotabby.Core.Insertion;
+using Cotabby.Core.Tests.Suggestions;
 
 namespace Cotabby.Core.Tests.Insertion;
 
@@ -95,5 +96,38 @@ public sealed class EditRepairTests
         Assert.False(EditRepair.StillBeforeCaret("I think teh", 3, "I think te"));
         // The run is still at the end, but so is a key typed after it.
         Assert.False(EditRepair.StillBeforeCaret("go :aa", 3, "go :aaa"));
+    }
+
+    [Fact]
+    public void AMacroReadBeforeTheHostShowedItsLastKey_IsPlannedAgainstTheWholeRun()
+    {
+        // Chromium shows the last key of "/date" a moment after it lands, so the commit's read
+        // ends "/dat" while the inserter's read a few milliseconds later ends "/date".
+        var planned = EditRepair.WithTypedRun(Fields.Text("Meet on /dat"), "/date");
+
+        Assert.Equal("Meet on /date", planned.PrecedingText);
+        Assert.True(EditRepair.StillBeforeCaret(planned.PrecedingText, 5, "Meet on /date"));
+        // A key typed after the commit still stops the delete.
+        Assert.False(EditRepair.StillBeforeCaret(planned.PrecedingText, 5, "Meet on /datex"));
+    }
+
+    [Fact]
+    public void AFieldThatShowsTheWholeRunOrNoneOfIt_IsPlannedAsRead()
+    {
+        var shown = Fields.Text("Meet on /date");
+        Assert.Same(shown, EditRepair.WithTypedRun(shown, "/date"));
+        var other = Fields.Text("Meet on ");
+        Assert.Same(other, EditRepair.WithTypedRun(other, "/date"));
+    }
+
+    [Fact]
+    public void TheMissingKeysGoAtTheCaret()
+    {
+        var read = Fields.Text("Meet on /da tomorrow") with { CaretOffset = 11 };
+
+        var planned = EditRepair.WithTypedRun(read, "/date");
+
+        Assert.Equal("Meet on /date", planned.PrecedingText);
+        Assert.Equal(" tomorrow", planned.TrailingText);
     }
 }

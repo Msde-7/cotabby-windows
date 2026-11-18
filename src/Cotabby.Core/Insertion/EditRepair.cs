@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using Cotabby.Core.Focus;
 using Cotabby.Core.Suggestions;
 using Cotabby.Core.Text;
 
@@ -88,6 +89,27 @@ public static class EditRepair
         int compared = Math.Min(planned.Length, deleteCount + CheckedContext);
         return SuggestionSessionReconciler.ComparisonNormalized(live)
             .EndsWith(SuggestionSessionReconciler.ComparisonNormalized(planned[^compared..]), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <paramref name="field"/> as it reads once the host shows all of <paramref name="run"/>, the
+    /// keys just typed before the caret. Chromium and Electron show a key a moment after it lands,
+    /// so a read right after the last key can end with only the start of the run, and an edit
+    /// planned against it would expect the wrong text before the caret.
+    /// </summary>
+    /// <returns>The field as read when it already ends with the run or shows none of it.</returns>
+    public static FocusedField WithTypedRun(FocusedField field, string run)
+    {
+        string preceding = SuggestionSessionReconciler.SpaceNormalized(field.PrecedingText);
+        for (int shown = run.Length; shown > 0; shown--)
+        {
+            if (!preceding.EndsWith(SuggestionSessionReconciler.SpaceNormalized(run[..shown]), StringComparison.Ordinal)) continue;
+            if (shown == run.Length) return field;
+            int caret = field.PrecedingLength;
+            string missing = run[shown..];
+            return field with { Text = field.Text.Insert(caret, missing), CaretOffset = caret + missing.Length };
+        }
+        return field;
     }
 
     /// <summary>The pieces of <paramref name="text"/> that one Backspace each removes, in order.</summary>

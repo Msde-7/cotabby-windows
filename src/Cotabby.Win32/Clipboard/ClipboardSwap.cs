@@ -63,7 +63,12 @@ public static class ClipboardSwap
     private static RestoredClipboard? _lastRestore;
 
     private static readonly Lazy<ClipboardRegisteredFormats> RegisteredFormats = new(() => new(
-        Ids(ClipboardFormatPolicy.RegisteredPictureNames), Ids(ClipboardFormatPolicy.ExcludedRegisteredNames)));
+        Ids(ClipboardFormatPolicy.RegisteredPictureNames), Ids(ClipboardFormatPolicy.ExcludedRegisteredNames))
+    {
+        RichApp = Ids(ClipboardFormatPolicy.RichAppNames),
+        Embedding = Ids(ClipboardFormatPolicy.EmbeddingNames),
+        Markers = Ids(ClipboardFormatPolicy.MarkerNames),
+    });
 
     private static readonly Lazy<uint> ExcludeFromMonitoringFormat =
         new(() => RegisterClipboardFormat("ExcludeClipboardContentFromMonitorProcessing"));
@@ -82,7 +87,8 @@ public static class ClipboardSwap
 
     /// <summary>
     /// Saves the clipboard and replaces it with <paramref name="text"/>. False when the clipboard
-    /// could not be read or written, in which case it is left as it was and nothing may be pasted.
+    /// could not be read, saved whole or written, in which case it is left as it was and nothing
+    /// may be pasted.
     /// </summary>
     /// <param name="sequence">The clipboard sequence number right after the write.</param>
     public static bool TryReplaceWithText(string text, out ClipboardSnapshot? saved, out uint sequence)
@@ -181,15 +187,17 @@ public static class ClipboardSwap
 
     /// <summary>
     /// Copies the formats <see cref="ClipboardFormatPolicy"/> keeps out of the open clipboard. Null
-    /// when one of them cannot be read, they add up past <see cref="MaxSnapshotBytes"/>, or making
-    /// them takes longer than <see cref="CaptureBudget"/>.
+    /// when one of them cannot be read, they add up past <see cref="MaxSnapshotBytes"/>, making
+    /// them takes longer than <see cref="CaptureBudget"/>, or what was saved could not stand in for
+    /// the content (<see cref="ClipboardFormatPolicy.CanSwap"/>).
     /// </summary>
     private static ClipboardSnapshot? Capture()
     {
         long started = Stopwatch.GetTimestamp();
         var available = new List<uint>();
         for (uint format = EnumClipboardFormats(0); format != 0; format = EnumClipboardFormats(format)) available.Add(format);
-        var plan = ClipboardFormatPolicy.Plan(available, RegisteredFormats.Value);
+        var registered = RegisteredFormats.Value;
+        var plan = ClipboardFormatPolicy.Plan(available, registered);
 
         var formats = new List<(ClipboardSaveStep, byte[])>();
         long total = 0;
@@ -205,6 +213,10 @@ public static class ClipboardSwap
             if (bytes is null) return null;
             total += bytes.Length;
             formats.Add((step, bytes));
+        }
+        if (!ClipboardFormatPolicy.CanSwap(available, plan, formats.Select(saved => saved.Item1.Format).ToList(), registered))
+        {
+            return null;
         }
 
         byte[]? canInclude = formats.FirstOrDefault(saved => saved.Item1.Format == CanIncludeInHistoryFormat.Value).Item2;

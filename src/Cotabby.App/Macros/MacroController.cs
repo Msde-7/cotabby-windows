@@ -100,10 +100,10 @@ public sealed class MacroController : InlineCaptureController
                     EvaluateLater(_machine.Query);
                     break;
                 case MacroTriggerStateMachine.Outcome.Commit when _result is { } result:
-                    int deleteCount = _machine.QueryAtCommitLength;
+                    string run = _machine.RunAtCommit;
                     _evaluation++;
                     Preview(null, null);
-                    _ = RunInBackground("Macro commit", () => CommitAsync(result, deleteCount));
+                    _ = RunInBackground("Macro commit", () => CommitAsync(result, run));
                     break;
                 case MacroTriggerStateMachine.Outcome.Cancel:
                     _evaluation++;
@@ -165,10 +165,11 @@ public sealed class MacroController : InlineCaptureController
         });
     }
 
-    private async Task CommitAsync(MacroResult result, int deleteCount)
+    private async Task CommitAsync(MacroResult result, string run)
     {
         if (Focus.Refresh() is not { } field) return;
-        await ReplaceTypedAsync(field, deleteCount, result.InsertionText, "Macro");
+        // The edit deletes the run as typed, so it is planned against the field showing all of it.
+        await ReplaceTypedAsync(EditRepair.WithTypedRun(field, run), run.Length, result.InsertionText, "Macro");
     }
 
     protected override void OnFocusChanged(object? sender, FocusedField? field)

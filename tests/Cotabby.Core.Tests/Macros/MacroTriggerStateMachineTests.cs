@@ -105,6 +105,7 @@ public class MacroTriggerStateMachineTests
         Assert.Equal("", sm.Query);
         Assert.Equal("5+5", sm.LastCommittedQuery);
         Assert.Equal("/5+5".Length, sm.QueryAtCommitLength);
+        Assert.Equal("/5+5", sm.RunAtCommit);
     }
 
     [Fact]

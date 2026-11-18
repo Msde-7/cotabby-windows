@@ -14,16 +14,25 @@ public class ClipboardFormatPolicyTests
     private const uint DataObject = 0xC009;
     private const uint OlePrivateData = 0xC013;
     private const uint EmbedSource = 0xC00B;
+    private const uint ObjectDescriptor = 0xC00E;
+    private const uint CanIncludeInHistory = 0xC2A0;
+    private const uint MozUrl = 0xC2B0;
+    private const uint Sylk = 4;
 
     private static readonly ClipboardRegisteredFormats Registered = new(
-        new HashSet<uint> { Png }, new HashSet<uint> { DataObject, OlePrivateData });
+        new HashSet<uint> { Png }, new HashSet<uint> { DataObject, OlePrivateData })
+    {
+        RichApp = new HashSet<uint> { Rtf, Biff12, EmbedSource, ObjectDescriptor },
+        Embedding = new HashSet<uint> { EmbedSource, ObjectDescriptor },
+        Markers = new HashSet<uint> { CanIncludeInHistory },
+    };
 
     private static ClipboardSaveStep Bytes(uint format) => new(format, ClipboardSaveKind.Bytes);
 
     [Fact]
     public void RichTextCopy_KeepsEveryTextFormatInOrder()
     {
-        Assert.Equal([Bytes(Rtf), Bytes(Html), Bytes(CF_UNICODETEXT)], Plan([Rtf, Html, CF_UNICODETEXT]));
+        Assert.Equal([Bytes(Rtf), Bytes(Html), Bytes(CF_UNICODETEXT)], Plan([Rtf, Html, CF_UNICODETEXT], Registered));
     }
 
     [Fact]
@@ -37,20 +46,43 @@ public class ClipboardFormatPolicyTests
     public void SpreadsheetRange_KeepsItsOwnFormatsBesideTheText()
     {
         // A range copied with its formulas must paste back as cells, not as plain text. Its
-        // pictures are renderings of the range that can take seconds to make, so they are left out.
+        // pictures and its OLE embedding are renderings of the range that can take seconds to
+        // make, so they are left out.
         Assert.Equal(
-            [Bytes(Biff12), Bytes(Html), Bytes(CF_UNICODETEXT), Bytes(EmbedSource)],
-            Plan([Biff12, Html, CF_UNICODETEXT, CF_ENHMETAFILE, CF_METAFILEPICT, CF_BITMAP, Png, EmbedSource, CF_TEXT, CF_DIB],
-                Registered));
+            [Bytes(Biff12), Bytes(Html), Bytes(CF_UNICODETEXT)],
+            Plan([Biff12, Html, CF_UNICODETEXT, CF_ENHMETAFILE, CF_METAFILEPICT, CF_BITMAP, Png, EmbedSource, ObjectDescriptor,
+                CF_TEXT, CF_DIB], Registered));
+        Assert.Equal([Bytes(Sylk), Bytes(CF_UNICODETEXT)], Plan([Sylk, CF_UNICODETEXT, CF_DIB], Registered));
     }
 
     [Fact]
-    public void PictureCopiedWithText_LeavesThePicturesOut()
+    public void DocumentSelection_LeavesItsPicturesOut()
     {
         Assert.Equal(
-            [Bytes(Html), Bytes(CF_UNICODETEXT)],
-            Plan([Html, CF_DIBV5, Png, CF_UNICODETEXT, CF_BITMAP, CF_DIB], Registered));
-        Assert.Equal([Bytes(CF_TEXT)], Plan([CF_TEXT, CF_DIB, CF_ENHMETAFILE], Registered));
+            [Bytes(Rtf), Bytes(Html), Bytes(CF_UNICODETEXT)],
+            Plan([Rtf, Html, CF_UNICODETEXT, CF_ENHMETAFILE, CF_DIB, Png, EmbedSource], Registered));
+    }
+
+    [Fact]
+    public void Picture_KeepsTheBitmapItWasCopiedAsBesideText()
+    {
+        // A browser's Copy Image puts the image's address beside the picture. The picture is what
+        // was copied, so it is kept.
+        Assert.Equal(
+            [Bytes(MozUrl), Bytes(Html), Bytes(CF_DIBV5), Bytes(Png), Bytes(CF_UNICODETEXT)],
+            Plan([MozUrl, Html, CF_DIBV5, Png, CF_UNICODETEXT, CF_BITMAP, CF_DIB], Registered));
+        Assert.Equal(
+            [Bytes(CF_TEXT), Bytes(CF_DIB), new(CF_ENHMETAFILE, ClipboardSaveKind.EnhancedMetafile)],
+            Plan([CF_TEXT, CF_DIB, CF_ENHMETAFILE], Registered));
+    }
+
+    [Fact]
+    public void PictureFromAnOleServer_KeepsThePictureAndTheEmbedding()
+    {
+        // Paint offers its picture as an embedded object too. Without text the picture is the content.
+        Assert.Equal(
+            [Bytes(EmbedSource), Bytes(ObjectDescriptor), Bytes(CF_DIB)],
+            Plan([EmbedSource, ObjectDescriptor, CF_METAFILEPICT, CF_DIB, CF_BITMAP], Registered));
     }
 
     [Fact]
@@ -94,6 +126,49 @@ public class ClipboardFormatPolicyTests
     public void EmptyClipboard_KeepsNothing()
     {
         Assert.Equal([], Plan([]));
+    }
+
+    [Fact]
+    public void EmptyClipboard_CanBeSwapped()
+    {
+        Assert.True(CanSwap([], [], [], Registered));
+    }
+
+    [Fact]
+    public void SavedText_CanBeSwapped()
+    {
+        uint[] available = [Html, CF_UNICODETEXT, Locale];
+        Assert.True(CanSwap(available, Plan(available, Registered), [Html, CF_UNICODETEXT, Locale], Registered));
+    }
+
+    [Fact]
+    public void TextTheAppCouldNotMake_StopsTheSwap()
+    {
+        // A failed delayed render, such as from a remote clipboard, leaves no text to put back.
+        uint[] available = [Html, CF_UNICODETEXT, Locale];
+        Assert.False(CanSwap(available, Plan(available, Registered), [Html, Locale], Registered));
+    }
+
+    [Fact]
+    public void OnlySideFormatsSaved_StopsTheSwap()
+    {
+        // The picture's app exited, so only the locale and the history marker came back.
+        uint[] available = [CF_DIB, Png, Locale, CanIncludeInHistory];
+        Assert.False(CanSwap(available, Plan(available, Registered), [Locale, CanIncludeInHistory], Registered));
+    }
+
+    [Fact]
+    public void OnlyAPrivateFormat_StopsTheSwap()
+    {
+        uint[] available = [0x0200];
+        Assert.False(CanSwap(available, Plan(available, Registered), [], Registered));
+    }
+
+    [Fact]
+    public void APictureThatCouldNotBeMade_DoesNotStopTheSwapWhenTheRestIsSaved()
+    {
+        uint[] available = [MozUrl, CF_DIB, Png];
+        Assert.True(CanSwap(available, Plan(available, Registered), [MozUrl, Png], Registered));
     }
 
     [Fact]
