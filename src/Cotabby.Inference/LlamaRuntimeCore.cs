@@ -37,10 +37,12 @@ public sealed record LlamaGenerationOptions
 /// <remarks>
 /// The context is built once at model load. Each generation keeps the longest shared prompt prefix
 /// in memory and evaluates only the rest, so time to first suggestion is prompt evaluation plus
-/// decode. All calls are serialized by an internal gate because llama.cpp contexts are not
-/// thread-safe. A cancelled call, or disposal, aborts the native decode in flight through
-/// llama.cpp's abort callback where the backend honours it (the CPU backend does), and otherwise
-/// between prompt chunks and sampled tokens.
+/// decode. A recurrent or hybrid model cannot drop a suffix of its state, so it keeps a
+/// <see cref="PartialStateCheckpoint"/> near the prompt's end instead and rewinds to it. All calls
+/// are serialized by an internal gate because llama.cpp contexts are not thread-safe. A cancelled
+/// call, or disposal, aborts the native decode in flight through llama.cpp's abort callback where
+/// the backend honours it (the CPU backend does), and otherwise between prompt chunks and sampled
+/// tokens.
 /// </remarks>
 public sealed class LlamaRuntimeCore : IDisposable
 {
@@ -69,6 +71,9 @@ public sealed class LlamaRuntimeCore : IDisposable
     private readonly int _slidingWindow;
     private readonly TokenHealingVocabulary _healingVocabulary;
 
+    /// <summary>Null unless the model is recurrent or hybrid.</summary>
+    private readonly PartialStateCheckpoint? _checkpoint;
+
     /// <summary>Cancelled by <see cref="Dispose"/>. Every call links to it.</summary>
     private readonly CancellationTokenSource _lifetime = new();
 
@@ -79,6 +84,14 @@ public sealed class LlamaRuntimeCore : IDisposable
     private CancellationToken _abortToken;
 
     private LLamaToken[] _lastPromptTokens = [];
+
+    /// <summary>
+    /// With a checkpoint, true while the recurrent state is exactly the state after
+    /// <see cref="_lastPromptTokens"/>. Generated or half-evaluated tokens advance it past them,
+    /// and only a restore brings it back.
+    /// </summary>
+    private bool _memoryExact = true;
+
     private volatile bool _disposed;
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -93,6 +106,8 @@ public sealed class LlamaRuntimeCore : IDisposable
         // Recurrent and hybrid models cannot drop a suffix of their state, so prefix reuse is
         // limited to models whose memory can shift.
         _canReusePrefix = !weights.NativeHandle.IsRecurrent && context.NativeHandle.MemoryCanShift;
+        // Those models rewind to a saved partial state instead.
+        _checkpoint = PartialStateCheckpoint.For(weights);
         _slidingWindow = weights.NativeHandle.SWACount;
         // Read once, so callers never touch the native context outside the gate.
         ContextWindowTokens = (int)context.NativeHandle.ContextSize;
@@ -139,7 +154,7 @@ public sealed class LlamaRuntimeCore : IDisposable
     public async Task PrewarmAsync(string prompt, LlamaGenerationOptions options, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (!_canReusePrefix || ct.IsCancellationRequested) return;
+        if (!(_canReusePrefix || _checkpoint is not null) || ct.IsCancellationRequested) return;
         try
         {
             await RunExclusiveAsync(
@@ -165,7 +180,8 @@ public sealed class LlamaRuntimeCore : IDisposable
     /// <remarks>
     /// <paramref name="work"/> receives <paramref name="ct"/> linked to disposal, and the native
     /// abort callback watches that token while it runs, so an unload ends the call quickly. A
-    /// call that only disposal cancelled returns <paramref name="whenDisposed"/>.
+    /// call that only disposal cancelled returns <paramref name="whenDisposed"/>, and so does a
+    /// call disposal interrupted while it ran, whatever its work produced.
     /// </remarks>
     private async Task<T> RunExclusiveAsync<T>(Func<CancellationToken, T> work, T whenDisposed, CancellationToken ct)
     {
@@ -182,7 +198,7 @@ public sealed class LlamaRuntimeCore : IDisposable
         {
             // The model can be unloaded while this request waited for its turn.
             if (_disposed) return whenDisposed;
-            return await Task.Run(
+            var result = await Task.Run(
                 () =>
                 {
                     _abortToken = linked.Token;
@@ -196,6 +212,8 @@ public sealed class LlamaRuntimeCore : IDisposable
                     }
                 },
                 CancellationToken.None).ConfigureAwait(false);
+            // Disposal stops a decode early, and what it produced is a cut-off fragment.
+            return _lifetime.IsCancellationRequested ? whenDisposed : result;
         }
         finally
         {
@@ -251,6 +269,8 @@ public sealed class LlamaRuntimeCore : IDisposable
     /// Brings memory to hold exactly <paramref name="promptTokens"/>. The longest common token
     /// prefix with the remembered prompt stays in memory and only the divergent tail is evaluated.
     /// A model that cannot shift, or a memory that refuses the cut, is cleared and evaluated fully.
+    /// A recurrent or hybrid model instead rewinds to its checkpoint when the shared prefix reaches
+    /// it, and saves a new one near the end of this prompt.
     /// </summary>
     /// <remarks>
     /// <see cref="_lastPromptTokens"/> follows memory after every chunk, so a cancelled evaluation
@@ -266,29 +286,44 @@ public sealed class LlamaRuntimeCore : IDisposable
     {
         var handle = _context.NativeHandle;
         int evalFrom = 0;
-        if (_canReusePrefix)
+        if (_canReusePrefix || _checkpoint is not null)
         {
             int limit = Math.Min(_lastPromptTokens.Length, promptTokens.Length);
             while (evalFrom < limit && _lastPromptTokens[evalFrom] == promptTokens[evalFrom]) evalFrom++;
             if (refreshLastToken) evalFrom = Math.Min(evalFrom, promptTokens.Length - 1);
         }
-        if (evalFrom > 0 && !TryTrimMemory(evalFrom))
+        if (_checkpoint is not null)
+        {
+            evalFrom = RewindTo(evalFrom);
+        }
+        else if (evalFrom > 0 && !TryTrimMemory(evalFrom))
         {
             // Decoding the tail onto state that still holds the old tokens would corrupt it.
             _logger.LogDebug("Memory refused to drop the tail after token {From}. Evaluating the prompt fully.", evalFrom);
             evalFrom = 0;
         }
-        if (evalFrom == 0) handle.MemoryClear(true);
+        if (evalFrom == 0)
+        {
+            handle.MemoryClear(true);
+            _checkpoint?.Invalidate();
+        }
         _lastPromptTokens = promptTokens[..evalFrom];
+        _memoryExact = true;
+
+        // The checkpoint lands on a chunk boundary near the end of the prompt. A prompt that adds
+        // only a few tokens saves it where evaluation starts, unless it is already there.
+        int checkpointAt = _checkpoint is null ? -1 : PartialStateReuse.CheckpointPosition(evalFrom, promptTokens.Length);
+        if (checkpointAt > 0 && checkpointAt == evalFrom && _checkpoint!.Position != evalFrom) SaveCheckpoint(evalFrom);
 
         reused = evalFrom;
         lastLogitsIndex = 0;
         var batch = new LLamaBatch();
-        for (int i = evalFrom; i < promptTokens.Length; i += chunkSize)
+        for (int i = evalFrom; i < promptTokens.Length;)
         {
             if (ct.IsCancellationRequested) return PromptEvaluation.Cancelled;
             batch.Clear();
             int end = Math.Min(promptTokens.Length, i + chunkSize);
+            if (checkpointAt > i && checkpointAt < end) end = checkpointAt;
             for (int j = i; j < end; j++)
             {
                 batch.Add(promptTokens[j], j, Sequence, logits: j == promptTokens.Length - 1);
@@ -296,7 +331,7 @@ public sealed class LlamaRuntimeCore : IDisposable
             var result = handle.Decode(batch);
             if (result == DecodeResult.ComputeAborted && ct.IsCancellationRequested)
             {
-                KeepPrefixAfterAbort(promptTokens, end);
+                KeepPrefixAfterAbort(promptTokens, i, end);
                 return PromptEvaluation.Cancelled;
             }
             if (result != DecodeResult.Ok)
@@ -307,8 +342,67 @@ public sealed class LlamaRuntimeCore : IDisposable
             }
             _lastPromptTokens = promptTokens[..end];
             lastLogitsIndex = end - i - 1;
+            if (end == checkpointAt) SaveCheckpoint(end);
+            i = end;
         }
         return PromptEvaluation.Ready;
+    }
+
+    /// <summary>
+    /// Brings a recurrent or hybrid model's memory to hold the first tokens of the remembered
+    /// prompt, at most <paramref name="keep"/>, and returns how many it holds. Memory that already
+    /// holds exactly <paramref name="keep"/> is left alone. Otherwise the checkpoint is restored and
+    /// the attention memory after it dropped, so the tokens between the checkpoint and
+    /// <paramref name="keep"/> are evaluated again. A shared prefix that ends before the checkpoint
+    /// returns 0, and the caller evaluates the prompt fully.
+    /// </summary>
+    private int RewindTo(int keep)
+    {
+        var checkpoint = _checkpoint!;
+        var (from, restore) = PartialStateReuse.Plan(keep, _lastPromptTokens.Length, _memoryExact, checkpoint.Position);
+        if (!restore) return from;
+
+        var sw = Stopwatch.StartNew();
+        // The restore comes first: a hybrid memory asks its recurrent part before dropping any
+        // attention memory, and that part refuses a cut inside the state it holds.
+        if (!checkpoint.TryRestore(_context, (int)Sequence) || !TryTrimToCheckpoint(from))
+        {
+            _logger.LogDebug("Restoring the prompt checkpoint at token {Position} failed. Evaluating the prompt fully.", from);
+            checkpoint.Invalidate();
+            return 0;
+        }
+        _logger.LogDebug(
+            "Prompt checkpoint restored at token {Position} ({Bytes} bytes) in {Ms} ms, replaying {Replay} tokens.",
+            from, checkpoint.Bytes, sw.ElapsedMilliseconds, keep - from);
+        return from;
+    }
+
+    /// <summary>
+    /// Drops the attention memory from <paramref name="position"/> on after a restore and reports
+    /// whether memory now ends right before it. A hybrid memory reports its smaller part's maximum,
+    /// so both the attention cut and the restored recurrent state must end there.
+    /// </summary>
+    private bool TryTrimToCheckpoint(int position)
+    {
+        var handle = _context.NativeHandle;
+        handle.MemorySequenceRemove(Sequence, position, -1);
+        return handle.MemorySequenceMaxPosition(Sequence).Value == position - 1;
+    }
+
+    /// <summary>Saves the state after the first <paramref name="position"/> prompt tokens.</summary>
+    private void SaveCheckpoint(int position)
+    {
+        var sw = Stopwatch.StartNew();
+        if (_checkpoint!.TrySave(_context, (int)Sequence, position))
+        {
+            _logger.LogDebug(
+                "Prompt checkpoint saved at token {Position} ({Bytes} bytes) in {Ms} ms.",
+                position, _checkpoint.Bytes, sw.ElapsedMilliseconds);
+        }
+        else
+        {
+            _logger.LogDebug("Saving the prompt checkpoint at token {Position} failed or exceeded the cap.", position);
+        }
     }
 
     /// <summary>
@@ -335,13 +429,31 @@ public sealed class LlamaRuntimeCore : IDisposable
 
     /// <summary>
     /// Brings the remembered prompt back in line with memory after the abort callback stopped the
-    /// prompt chunk ending at <paramref name="end"/>. llama.cpp keeps the ubatches it finished and
-    /// removes the one it was computing. A memory that cannot remove it, such as a hybrid model's,
-    /// still reports the whole chunk although its state is half computed, so anything other than a
-    /// clean prefix that stops before <paramref name="end"/> is forgotten.
+    /// prompt chunk from <paramref name="start"/> to <paramref name="end"/>. llama.cpp keeps the
+    /// ubatches it finished and removes the one it was computing. A memory that cannot remove it,
+    /// such as a hybrid model's, still reports the whole chunk although its state is half
+    /// computed, so anything other than a clean prefix that stops before <paramref name="end"/> is
+    /// forgotten.
     /// </summary>
-    private void KeepPrefixAfterAbort(LLamaToken[] promptTokens, int end)
+    /// <remarks>
+    /// With a checkpoint, the attention memory before the chunk is intact and the checkpoint lies
+    /// at or before it, so the next request rewinds to the checkpoint instead of starting over.
+    /// </remarks>
+    private void KeepPrefixAfterAbort(LLamaToken[] promptTokens, int start, int end)
     {
+        if (_checkpoint is not null)
+        {
+            if (_checkpoint.Position > 0 && _checkpoint.Position <= start)
+            {
+                _lastPromptTokens = promptTokens[..start];
+                _memoryExact = false;
+            }
+            else
+            {
+                ForgetPrompt();
+            }
+            return;
+        }
         int kept = _context.NativeHandle.MemorySequenceMaxPosition(Sequence).Value + 1;
         if (_canReusePrefix && kept < end && HoldsPrefix(kept))
         {
@@ -389,6 +501,7 @@ public sealed class LlamaRuntimeCore : IDisposable
         string generatedText = string.Empty;
         int tokensGenerated = 0;
         int replayTokens = 0;
+        bool advancedPastPrompt = false;
         string stopReason = "budget_exhausted";
 
         for (int step = 0; step < options.MaxTokens + healingPrefix.Length; step++)
@@ -400,6 +513,7 @@ public sealed class LlamaRuntimeCore : IDisposable
             {
                 batch.Clear();
                 batch.Add((LLamaToken)sampledIds[^1], promptTokens.Length + sampledIds.Count - 1, Sequence, logits: true);
+                advancedPastPrompt = true;
                 var accepted = handle.Decode(batch);
                 if (accepted != DecodeResult.Ok)
                 {
@@ -472,7 +586,24 @@ public sealed class LlamaRuntimeCore : IDisposable
 
         // Only the prompt stays in memory so the next request can reuse it. A memory that refuses
         // to drop the sampled tokens is forgotten, so the next request clears it.
-        _lastPromptTokens = _canReusePrefix && TryTrimMemory(promptTokens.Length) ? promptTokens : [];
+        if (_checkpoint is not null)
+        {
+            // The recurrent state cannot drop the sampled tokens, so the next request rewinds to
+            // the checkpoint. A failed decode is not trusted at all.
+            if (stopReason == "accept_failed")
+            {
+                ForgetPrompt();
+            }
+            else
+            {
+                _lastPromptTokens = promptTokens;
+                _memoryExact = !advancedPastPrompt;
+            }
+        }
+        else
+        {
+            _lastPromptTokens = _canReusePrefix && TryTrimMemory(promptTokens.Length) ? promptTokens : [];
+        }
 
         _logger.LogInformation(
             "Constrained decode: {Tokens} tokens (+{Replay} replayed) in {Ms} ms (prefill {Prefill} ms, reuse {Reuse}/{Total}), stop={Stop}.",
@@ -603,6 +734,8 @@ public sealed class LlamaRuntimeCore : IDisposable
     private void ForgetPrompt()
     {
         _lastPromptTokens = [];
+        _memoryExact = true;
+        _checkpoint?.Invalidate();
         _context.NativeHandle.MemoryClear(true);
     }
 
