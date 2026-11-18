@@ -265,7 +265,7 @@ public sealed class UiaFocusTracker : IFocusTracker
         if (info.ControlType != ControlType.Pane || info.ClassName != ChromiumRendererClass) return;
         var hwnd = new IntPtr(info.NativeWindowHandle);
         if (hwnd == IntPtr.Zero) return;
-        if (!BrowserAppDetector.NeedsWebAccessibilityPriming(TryGetProcessName(info.ProcessId))) return;
+        if (!BrowserAppDetector.NeedsWebAccessibilityPriming(ProcessNames.For(info.ProcessId).Process)) return;
 
         lock (_primedWindows)
         {
@@ -319,7 +319,7 @@ public sealed class UiaFocusTracker : IFocusTracker
         bool readHostText)
     {
         int pid = info.ProcessId;
-        string procName = TryGetProcessName(pid);
+        var names = ProcessNames.For(pid);
         string label = info.Name ?? string.Empty;
         string helpText = info.HelpText ?? string.Empty;
         bool isSecure = info.IsPassword
@@ -347,7 +347,7 @@ public sealed class UiaFocusTracker : IFocusTracker
         return SmartComposePolicy.Apply(new FocusedField
         {
             ProcessId = pid,
-            ProcessName = procName,
+            ProcessName = names.Process,
             Text = text,
             CaretOffset = caretOffset,
             CaretRect = caretRect.IsEmpty ? fieldRect : caretRect,
@@ -363,7 +363,7 @@ public sealed class UiaFocusTracker : IFocusTracker
             AutomationId = info.AutomationId ?? string.Empty,
             ClassName = info.ClassName ?? string.Empty,
             WindowTitle = NativeMethods.WindowTitle(NativeMethods.GetForegroundWindow()),
-            AppDisplayName = AppDisplayNames.For(pid),
+            AppDisplayName = names.Display,
             ImeLanguageId = ImeState.ConvertingLanguage(),
             HostFontName = font.Name,
             HostFontSizePt = font.SizePt,
@@ -469,8 +469,7 @@ public sealed class UiaFocusTracker : IFocusTracker
 
         var fromCaret = document.Clone();
         fromCaret.MoveEndpointByRange(TextPatternRangeEndpoint.Start, selection, TextPatternRangeEndpoint.End);
-        string after = fromCaret.GetText(MaxCharsAfterCaret);
-        if (after.Length > 0 && char.IsHighSurrogate(after[^1])) after = after[..^1];
+        string after = FieldReads.WithoutBrokenEnd(fromCaret.GetText(MaxCharsAfterCaret));
 
         return (before, after);
     }
@@ -516,7 +515,7 @@ public sealed class UiaFocusTracker : IFocusTracker
             var line = caret.Clone();
             line.ExpandToEnclosingUnit(TextUnit.Line);
             var lineRect = Union(line.GetBoundingRectangles());
-            if (!fieldRect.IsEmpty && !Overlaps(lineRect, fieldRect)) lineRect = ScreenRect.Empty;
+            if (!fieldRect.IsEmpty && !FieldReads.Overlaps(lineRect, fieldRect)) lineRect = ScreenRect.Empty;
 
             var toCaret = line.Clone();
             toCaret.MoveEndpointByRange(TextPatternRangeEndpoint.End, caret, TextPatternRangeEndpoint.Start);
@@ -529,15 +528,11 @@ public sealed class UiaFocusTracker : IFocusTracker
 
             var rects = toCaret.GetBoundingRectangles();
             var union = Union(rects);
-            bool oneLine = !union.IsEmpty
-                && (caretRect.IsEmpty || Math.Abs(union.Y - caretRect.Y) < Math.Max(caretRect.Height, 1) * 0.5);
+            bool oneLine = FieldReads.IsOnCaretLine(union, caretRect);
             return new LineSample(toCaret, lineRect, text, oneLine ? union.Width : null);
         }
         catch (Exception) { return default; }
     }
-
-    private static bool Overlaps(ScreenRect a, ScreenRect b) =>
-        a.X < b.Right && b.X < a.Right && a.Y < b.Bottom && b.Y < a.Bottom;
 
     private readonly record struct HostFont(string? Name, double? SizePt, int? Weight, bool? Italic);
 
@@ -596,19 +591,17 @@ public sealed class UiaFocusTracker : IFocusTracker
         catch (Exception) { return null; }
     }
 
+    /// <summary>The union of the rects a host reported. Only Rect.Empty, which has no position, is left out.</summary>
     private static ScreenRect Union(System.Windows.Rect[] rects)
     {
         if (rects is not { Length: > 0 }) return ScreenRect.Empty;
-        double left = double.MaxValue, top = double.MaxValue, right = double.MinValue, bottom = double.MinValue;
+        Span<ScreenRect> converted = rects.Length <= 64 ? stackalloc ScreenRect[rects.Length] : new ScreenRect[rects.Length];
+        int count = 0;
         foreach (var r in rects)
         {
-            if (r.IsEmpty) continue;
-            left = Math.Min(left, r.Left);
-            top = Math.Min(top, r.Top);
-            right = Math.Max(right, r.Right);
-            bottom = Math.Max(bottom, r.Bottom);
+            if (!r.IsEmpty) converted[count++] = ToScreenRect(r);
         }
-        return right > left ? new ScreenRect(left, top, right - left, bottom - top) : ScreenRect.Empty;
+        return FieldReads.Union(converted[..count]);
     }
 
     private static string ReadFieldId(AutomationElement element, AutomationElement.AutomationElementInformation info)
@@ -635,13 +628,4 @@ public sealed class UiaFocusTracker : IFocusTracker
     private static ScreenRect ToScreenRect(System.Windows.Rect r) =>
         new(r.X, r.Y, r.Width, r.Height);
 
-    private static string TryGetProcessName(int pid)
-    {
-        try
-        {
-            using var p = Process.GetProcessById(pid);
-            return p.ProcessName;
-        }
-        catch (Exception) { return string.Empty; }
-    }
 }

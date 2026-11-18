@@ -7,7 +7,7 @@ public static class KeyTranslation
     /// Reported for a typed character Cotabby cannot know. It matches no suggestion and no text, so
     /// the coordinator reads the field instead of trusting the key.
     /// </summary>
-    public const char Unknown = '�';
+    public const char Unknown = '\uFFFD';
 
     /// <summary>
     /// The character of a key typed through VK_PACKET, which carries one UTF-16 unit. A surrogate

@@ -56,10 +56,10 @@ public sealed class EditRepairTests
     [InlineData("teh", 3)]
     [InlineData("\U0001F44D", 1)]
     [InlineData("\U0001F44D\U0001F3FD", 1)] // a skin tone joins the emoji
-    [InlineData("\U0001F469‍\U0001F4BB", 1)] // a joined sequence
+    [InlineData("\U0001F469\u200D\U0001F4BB", 1)] // a joined sequence
     [InlineData("\U0001F1FA\U0001F1F8", 1)] // a flag
     [InlineData("\r\n", 1)]
-    [InlineData("é", 2)] // a combining accent is its own key
+    [InlineData("e\u0301", 2)] // a combining accent is its own key
     [InlineData("कि", 2)] // and so is a Devanagari vowel sign
     [InlineData("a\U0001D400b", 3)] // a letter outside the basic plane is one key
     public void BackspacesFollowWhatHostsDelete(string text, int expected) =>
@@ -75,5 +75,25 @@ public sealed class EditRepairTests
 
     [Fact]
     public void ANoBreakSpaceCountsAsASpace() =>
-        Assert.Null(EditRepair.Plan("I think teh ", 4, "the ", "I think the "));
+        Assert.Null(EditRepair.Plan("I think teh\u00A0", 4, "the ", "I think the\u00A0"));
+
+    [Fact]
+    public void TheTextToDeleteIsStillBeforeTheCaret()
+    {
+        Assert.True(EditRepair.StillBeforeCaret("I think teh", 3, "I think teh"));
+        // Chromium can turn a trailing space into U+00A0 between the two reads.
+        Assert.True(EditRepair.StillBeforeCaret("I think teh ", 4, "I think teh\u00A0"));
+        // Nothing to delete, or nothing read, has nothing to check.
+        Assert.True(EditRepair.StillBeforeCaret("abc", 0, "abcd"));
+        Assert.True(EditRepair.StillBeforeCaret("", 4, "abcd"));
+    }
+
+    [Fact]
+    public void AKeyTypedSinceThePlanStopsTheDelete()
+    {
+        Assert.False(EditRepair.StillBeforeCaret("I think teh", 3, "I think teh "));
+        Assert.False(EditRepair.StillBeforeCaret("I think teh", 3, "I think te"));
+        // The run is still at the end, but so is a key typed after it.
+        Assert.False(EditRepair.StillBeforeCaret("go :aa", 3, "go :aaa"));
+    }
 }

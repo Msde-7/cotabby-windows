@@ -1,3 +1,5 @@
+using Cotabby.Core.Focus;
+
 namespace Cotabby.Win32.Focus;
 
 /// <summary>
@@ -61,8 +63,7 @@ public sealed class PrecedingTextReads
     public static string KeepEnd(string before)
     {
         if (before.Length <= Kept) return before;
-        before = before[^Kept..];
-        return char.IsLowSurrogate(before[0]) ? before[1..] : before;
+        return FieldReads.WithoutBrokenStart(before[^Kept..]);
     }
 
     /// <summary>

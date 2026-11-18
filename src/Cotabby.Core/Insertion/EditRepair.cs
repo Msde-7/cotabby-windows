@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using Cotabby.Core.Suggestions;
 using Cotabby.Core.Text;
 
 namespace Cotabby.Core.Insertion;
@@ -70,6 +71,25 @@ public static class EditRepair
         return BackspaceCount(preceding[^known..]) + Math.Max(0, deleteCount - known);
     }
 
+    /// <summary>Text before the deleted run that must not have moved either.</summary>
+    private const int CheckedContext = 16;
+
+    /// <summary>
+    /// True when the text an edit was planned against still ends the field, so its backspaces
+    /// delete what the plan meant them to. A key typed since would otherwise be deleted in its place.
+    /// </summary>
+    /// <param name="planned">The text before the caret the edit was planned against.</param>
+    /// <param name="deleteCount">UTF-16 units the edit deletes before the caret.</param>
+    /// <param name="live">The text before the caret now.</param>
+    public static bool StillBeforeCaret(string planned, int deleteCount, string live)
+    {
+        if (deleteCount <= 0) return true;
+        // The run and a little of the text before it: a key typed after a run like "aa" can end in it again.
+        int compared = Math.Min(planned.Length, deleteCount + CheckedContext);
+        return SuggestionSessionReconciler.ComparisonNormalized(live)
+            .EndsWith(SuggestionSessionReconciler.ComparisonNormalized(planned[^compared..]), StringComparison.Ordinal);
+    }
+
     /// <summary>The pieces of <paramref name="text"/> that one Backspace each removes, in order.</summary>
     private static List<string> Keys(string text)
     {
@@ -104,5 +124,5 @@ public static class EditRepair
     }
 
     /// <summary>Chromium shows a typed space at the end of a line as U+00A0 for a while.</summary>
-    private static string Normalized(string text) => text.Replace(' ', ' ').Replace("\r", "");
+    private static string Normalized(string text) => SuggestionSessionReconciler.SpaceNormalized(text).Replace("\r", "");
 }

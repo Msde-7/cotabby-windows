@@ -1,5 +1,6 @@
 using Cotabby.Core.Focus;
 using Cotabby.Core.Insertion;
+using Cotabby.Core.Suggestions;
 using Cotabby.Core.Support;
 using Cotabby.Win32.Clipboard;
 using Microsoft.Extensions.Logging;
@@ -79,19 +80,14 @@ public sealed class SendInputTextInserter : ITextInserter
         try
         {
             string? before = ReadPreceding(target);
+            if (before is not null && !EditRepair.StillBeforeCaret(target.PrecedingText, deleteCount, before))
+            {
+                _logger.LogInformation("Edit skipped: the text before the caret changed since it was planned.");
+                return false;
+            }
             // The count is in UTF-16 units, and a host takes an emoji or a line break with one key.
             int backspaces = EditRepair.BackspacesFor(before ?? target.PrecedingText, deleteCount);
-            if (backspaces > 0)
-            {
-                // One backspace per call, a moment apart. A burst of them sent in one call was seen to
-                // lose a key in Windows 11 Notepad, which left a character the edit meant to remove.
-                for (int i = 0; i < backspaces; i++)
-                {
-                    if (!Send(target, () => KeySender.SendBackspaces(1), "backspaces")) return false;
-                    if (i < backspaces - 1) await Task.Delay(BackspaceSpacingMs, ct).ConfigureAwait(false);
-                }
-                await Task.Delay(DeleteSettleMs, ct).ConfigureAwait(false);
-            }
+            if (!await SendBackspacesAsync(target, backspaces, ct).ConfigureAwait(false)) return false;
             (bool inserted, restore) = await InsertLockedAsync(target, text, ct).ConfigureAwait(false);
             if (inserted && restore is null) await RepairAsync(target, before, deleteCount, text, ct).ConfigureAwait(false);
             return inserted;
@@ -102,23 +98,24 @@ public sealed class SendInputTextInserter : ITextInserter
         }
     }
 
-    public async Task<bool> InsertAsync(FocusedField target, string text, CancellationToken ct)
-    {
-        if (string.IsNullOrEmpty(text)) return true;
+    public Task<bool> InsertAsync(FocusedField target, string text, CancellationToken ct) =>
+        string.IsNullOrEmpty(text) ? Task.FromResult(true) : ReplaceAsync(target, 0, text, ct);
 
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
-        Task? restore = null;
-        try
+    /// <summary>
+    /// Sends backspaces one per call, a moment apart, then lets the host apply them. A burst of
+    /// them sent in one call was seen to lose a key in Windows 11 Notepad, which left a character
+    /// the edit meant to remove. False when the target lost the keyboard on the way.
+    /// </summary>
+    private async Task<bool> SendBackspacesAsync(FocusedField target, int count, CancellationToken ct)
+    {
+        if (count <= 0) return true;
+        for (int i = 0; i < count; i++)
         {
-            string? before = ReadPreceding(target);
-            (bool inserted, restore) = await InsertLockedAsync(target, text, ct).ConfigureAwait(false);
-            if (inserted && restore is null) await RepairAsync(target, before, 0, text, ct).ConfigureAwait(false);
-            return inserted;
+            if (!Send(target, () => KeySender.SendBackspaces(1), "backspaces")) return false;
+            if (i < count - 1) await Task.Delay(BackspaceSpacingMs, ct).ConfigureAwait(false);
         }
-        finally
-        {
-            ReleaseAfter(restore);
-        }
+        await Task.Delay(DeleteSettleMs, ct).ConfigureAwait(false);
+        return true;
     }
 
     /// <summary>The text before the caret of the target field now, or null when it cannot be read.</summary>
@@ -151,18 +148,18 @@ public sealed class SendInputTextInserter : ITextInserter
             live = ReadPreceding(target);
             if (live is null) return;
             // The edit is there, possibly followed by what the user typed since.
-            if (live.Replace('\u00A0', ' ').StartsWith(expected.Replace('\u00A0', ' '), StringComparison.Ordinal)) return;
+            if (SuggestionSessionReconciler.SpaceNormalized(live)
+                .StartsWith(SuggestionSessionReconciler.SpaceNormalized(expected), StringComparison.Ordinal))
+            {
+                return;
+            }
         }
         if (live is null || EditRepair.Plan(before, deleteCount, text, live) is not { } plan) return;
 
         _logger.LogWarning(
             "The host dropped keys from an edit. Sending {Backspaces} backspaces and {Chars} chars again.",
             plan.Backspaces, plan.Text.Length);
-        for (int i = 0; i < plan.Backspaces; i++)
-        {
-            if (!Send(target, () => KeySender.SendBackspaces(1), "backspaces")) return;
-            await Task.Delay(BackspaceSpacingMs, ct).ConfigureAwait(false);
-        }
+        if (!await SendBackspacesAsync(target, plan.Backspaces, ct).ConfigureAwait(false)) return;
         if (plan.Text.Length > 0 && SyntheticKeys.CanType(plan.Text)) Send(target, () => KeySender.SendText(plan.Text), "text");
     }
 
