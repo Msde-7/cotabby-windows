@@ -172,6 +172,24 @@ public sealed class SuggestionCoordinatorOrderingTests : CoordinatorHarness
     }
 
     [Fact]
+    public async Task ABroughtBackSuggestion_IsDrawnInTheHostsFont()
+    {
+        Focus.HostFontName = "Segoe UI";
+        Engine.Completion = r => r.Prefix == "hello" ? " world again" : "";
+        Type("hello");
+        await Shown(" world again");
+        Type("x");
+        await Eventually(() => Engine.Requests.Any(r => r.Prefix == "hellox"), "the typo is asked about");
+        await Settled();
+
+        Hook.Press(Keys.Special(KeyKind.Backspace, 0x08));
+        Focus.Replace(Fields.Text("hello"));
+
+        await Shown(" world again");
+        Assert.Equal("Segoe UI", Overlay.Field?.HostFontName);
+    }
+
+    [Fact]
     public async Task RetypingTheSuggestionAfterItWasCleared_ResumesIt()
     {
         Engine.Completion = r => r.Prefix == "hello" ? " world again" : "";

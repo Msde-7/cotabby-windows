@@ -316,7 +316,15 @@ public sealed partial class SuggestionCoordinator
         var dismissed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         Post(() => dismissed.SetResult(IsDismissed(field, completion.Visible)));
         if (await dismissed.Task.WaitAsync(ct).ConfigureAwait(false)) return false;
-        Post(() => Present(requestId, completion, field, latencyMs: 0, sequence, ct));
+        // The read the checks used skipped the host's font and caret line, which drawing needs.
+        var live = _focus.Refresh(readHostText: true);
+        if (live is null || !TypingPrediction.IsSameCaretPlace(field, live)
+            || SuggestionSessionReconciler.ComparisonNormalized(live.PrecedingText)
+                != SuggestionSessionReconciler.ComparisonNormalized(field.PrecedingText))
+        {
+            return false;
+        }
+        Post(() => Present(requestId, completion, live, latencyMs: 0, sequence, ct));
         return true;
     }
 

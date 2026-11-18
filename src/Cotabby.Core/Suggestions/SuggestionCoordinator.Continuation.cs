@@ -64,8 +64,6 @@ public sealed partial class SuggestionCoordinator
     {
         if (_sessionPrefetched || _sessionField is not { } offeredIn || session.IsExhausted || !_engine.IsReady) return;
         var settings = _settings;
-        // An endpoint is billed per request, so like upstream it gets no speculative continuation.
-        if (settings.UsesEndpoint) return;
         if (ContinuationTarget(session, settings, atOffer) is not { } preceding) return;
         if (!SuggestionRequestFactory.ShouldGenerate(preceding, offeredIn.TrailingText, settings.SuggestWithinWords)) return;
         _sessionPrefetched = true;
@@ -80,7 +78,7 @@ public sealed partial class SuggestionCoordinator
     private void PrefetchAfterAccept(FocusedField offeredIn, string preceding, string requestId)
     {
         var settings = _settings;
-        if (settings.UsesEndpoint || !_engine.IsReady) return;
+        if (!_engine.IsReady) return;
         if (Volatile.Read(ref _prefetched) is { } running && running.FocusIdentity == FocusIdentity(offeredIn))
         {
             string target = SuggestionSessionReconciler.ComparisonNormalized(running.PrecedingText);
@@ -123,8 +121,12 @@ public sealed partial class SuggestionCoordinator
     /// </summary>
     private string? ContinuationTarget(SuggestionSession session, SuggestionSettings settings, bool atOffer)
     {
+        // Like upstream, the words after a fix or a lone word ending are new work the user has not
+        // seen, which an endpoint, billed per request, is not asked for. What follows a suggestion
+        // nearly typed through is.
         if (session.Correction is { } correction)
         {
+            if (settings.UsesEndpoint) return null;
             return TypoCorrectionReplacementPlanner.Plan(
                     _expectedPreceding, correction.Word, correction.CorrectedWord, requiresTrailingSpace: false) is { } fix
                 ? _expectedPreceding[..^fix.DeletingUtf16Count] + fix.ReplacementText
@@ -132,7 +134,7 @@ public sealed partial class SuggestionCoordinator
         }
         if (session.PredictedText.Length <= ContinuationPrefetchChars) return _expectedPreceding + session.PredictedText;
         // A lone word ending: the words after it are a guess the model has not made yet.
-        bool wordEnding = atOffer
+        bool wordEnding = atOffer && !settings.UsesEndpoint
             && !session.PredictedText.Any(char.IsWhiteSpace)
             && CaretWordContext.UnfinishedWord(_expectedPreceding) is not null;
         return wordEnding ? _expectedPreceding + session.PredictedText : null;

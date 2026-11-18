@@ -92,11 +92,15 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
     /// <summary>Insertions that have started and not returned yet.</summary>
     public int EditsInFlight => Volatile.Read(ref _editsInFlight);
 
+    /// <summary>The font the host reports, which only a read for its text layout carries.</summary>
+    public string? HostFontName { get; set; }
+
     public FocusedField? Refresh(bool readHostText = false)
     {
         Interlocked.Increment(ref _refreshes);
-        if (readHostText) Interlocked.Increment(ref _hostTextReads);
-        return Current;
+        if (!readHostText) return Current;
+        Interlocked.Increment(ref _hostTextReads);
+        return HostFontName is { } font ? Current! with { HostFontName = font } : Current;
     }
 
     public void Focus(FocusedField? field)
@@ -301,10 +305,14 @@ internal sealed class RecordingOverlay : IOverlayPresenter
 
     public ScreenRect Anchor { get; private set; }
 
+    /// <summary>The field the last suggestion was drawn for.</summary>
+    public FocusedField? Field { get; private set; }
+
     public void Show(string text, ScreenRect anchor, OverlayStyle style = OverlayStyle.Inline, FocusedField? field = null)
     {
         Style = style;
         Anchor = anchor;
+        Field = field;
         Update(text);
     }
 

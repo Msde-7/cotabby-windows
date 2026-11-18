@@ -112,20 +112,35 @@ public sealed class SuggestionCoordinatorContinuationTests : CoordinatorHarness
     }
 
     [Fact]
-    public async Task AnEndpoint_GetsNoSpeculativeContinuation()
+    public async Task AnEndpoint_StillGetsTheWordsAfterASuggestionNearlyUsedUp()
     {
         Coordinator.Settings = SuggestionSettings.Default with { UsesEndpoint = true };
         Engine.Completion = request => request.Prefix.EndsWith("world") ? " again" : " world";
         Type("hello");
         await Shown(" world");
 
-        await Settled();
-        Assert.DoesNotContain(Engine.Requests, r => r.Prefix == "hello world");
+        await Eventually(() => Engine.Requests.Any(r => r.Prefix == "hello world"), "the continuation is prefetched");
     }
 
     [Fact]
-    public async Task AcceptingTheLastChunk_StartsTheContinuationBeforeTheHostShowsIt()
+    public async Task AnEndpoint_IsNotAskedForTheWordsAfterAWordEnding()
     {
+        const string word = "Supercalifragilisticexpialidocious";
+        Coordinator.Settings = SuggestionSettings.Default with { UsesEndpoint = true };
+        Engine.Completion = request => request.Prefix.EndsWith("Supercalifr", StringComparison.Ordinal) ? "agilisticexpialidocious" : "";
+        Type("ask Supercalifr");
+        await Shown("agilisticexpialidocious");
+
+        await Settled();
+        Assert.DoesNotContain(Engine.Requests, r => r.Prefix == "ask " + word);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AcceptingTheLastChunk_StartsTheContinuationBeforeTheHostShowsIt(bool endpoint)
+    {
+        Coordinator.Settings = SuggestionSettings.Default with { UsesEndpoint = endpoint };
         Engine.Completion = request => request.Prefix == "hello" ? " world again today" : " and more";
         Type("hello");
         await Shown(" world again today");
