@@ -10,6 +10,11 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Console" />
   </ItemGroup>
 
+  <!-- The hook, overlay and dispatcher fakes the coordinator tests use, linked rather than copied. -->
+  <ItemGroup>
+    <Compile Include="..\..\tests\Cotabby.Core.Tests\Suggestions\Fakes.cs" Link="Fakes.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\Cotabby.Core\Cotabby.Core.csproj" />
     <ProjectReference Include="..\..\src\Cotabby.Inference\Cotabby.Inference.csproj" />

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Security.Cryptography;
 using System.Windows;
@@ -17,6 +18,8 @@ internal sealed class EndpointSection
     private readonly SettingsContext _context;
     private readonly OpenAICompatibleConnectionModel _connection;
     private readonly CancellationTokenSource _closed = new();
+    // Counts Test Connection clicks, so only the latest one acts on what its refresh found.
+    private int _testAttempt;
 
     private readonly StatusLine _status = new();
     private readonly Button _test;
@@ -81,7 +84,7 @@ internal sealed class EndpointSection
         {
             var settings = _context.Settings;
             useDefault.IsEnabled = settings.EndpointBaseUrl != OpenAICompatibleEndpointConfiguration.DefaultBaseUrl;
-            warning.Text = Validate(out var configuration) ?? configuration?.PrivacyWarning ?? "";
+            warning.Text = TryValidate(out var configuration, out var problem) ? configuration.PrivacyWarning ?? "" : problem;
             warning.Visibility = Ui.Shown(warning.Text.Length > 0);
         });
 
@@ -124,34 +127,53 @@ internal sealed class EndpointSection
             .Tagged("endpoint identifier ollama lm studio vllm");
     }
 
-    /// <summary>Returns the user-facing problem with the endpoint settings, or null when they are valid.</summary>
-    private string? Validate(out OpenAICompatibleEndpointConfiguration? configuration)
+    /// <summary>Builds the endpoint configuration, or gives the user-facing problem with the settings.</summary>
+    private bool TryValidate(
+        [NotNullWhen(true)] out OpenAICompatibleEndpointConfiguration? configuration,
+        [NotNullWhen(false)] out string? problem)
     {
         var settings = _context.Settings;
         try
         {
             configuration = new OpenAICompatibleEndpointConfiguration(settings.EndpointSettings);
-            return null;
+            problem = null;
+            return true;
         }
         catch (OpenAICompatibleEndpointException ex)
         {
             configuration = null;
-            return ex.Message;
+            problem = ex.Message;
+            return false;
         }
     }
 
     private async void TestConnection()
     {
-        if (Validate(out var configuration) is { } problem)
+        int attempt = ++_testAttempt;
+        if (!TryValidate(out var configuration, out var problem))
         {
             _connection.SetFailure(problem);
             return;
         }
-        await _connection.RefreshAsync(configuration!, ReadKey(), _closed.Token);
+        try
+        {
+            await _connection.RefreshAsync(configuration, ReadKey(), _closed.Token);
 
-        var current = _context.Settings.EndpointModel;
-        var preferred = OpenAICompatibleModelSelectionResolver.PreferredSelection(current, _connection.Models);
-        if (preferred is not null && preferred != current) _context.Change(s => s.EndpointModel = preferred);
+            // A refresh cancelled by closing the window, overtaken by a later test or made stale by
+            // a new server address returns quietly, and its models must not pick the endpoint model.
+            if (_closed.IsCancellationRequested || attempt != _testAttempt
+                || _connection.State is not OpenAICompatibleConnectionState.Ready)
+            {
+                return;
+            }
+            var current = _context.Settings.EndpointModel;
+            var preferred = OpenAICompatibleModelSelectionResolver.PreferredSelection(current, _connection.Models);
+            if (preferred is not null && preferred != current) _context.Change(s => s.EndpointModel = preferred);
+        }
+        catch (Exception ex)
+        {
+            _context.Host.LogError(ex, "Testing the endpoint connection failed.");
+        }
     }
 
     private void ShowConnection()

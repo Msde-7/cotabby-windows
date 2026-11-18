@@ -1,3 +1,4 @@
+using Cotabby.App.Inline;
 using Cotabby.Core.Focus;
 using Cotabby.Core.Input;
 using Cotabby.Core.Insertion;
@@ -17,13 +18,9 @@ namespace Cotabby.App.Macros;
 /// callback returns, to decide whether to swallow it. When the evaluation of the latest query
 /// has not finished by then, that one query is evaluated in the callback.
 /// </remarks>
-public sealed class MacroController : IDisposable
+public sealed class MacroController : InlineCaptureController
 {
-    private readonly IKeyboardHook _hook;
-    private readonly IFocusTracker _focus;
-    private readonly ITextInserter _inserter;
     private readonly IOverlayPresenter _preview;
-    private readonly ILogger<MacroController> _logger;
     private readonly MacroEngine _engine = MacroEngine.Standard();
     private readonly MacroTriggerStateMachine _machine = new();
     private readonly object _gate = new();
@@ -35,21 +32,15 @@ public sealed class MacroController : IDisposable
     private bool _enabled = true;
     private int _capturePid;
 
-    private const int CaretSettleMs = 30;
-
     public MacroController(
         IKeyboardHook hook, IFocusTracker focus, ITextInserter inserter, IOverlayPresenter preview,
         ILogger<MacroController> logger)
+        : base(hook, focus, inserter, logger)
     {
-        _hook = hook;
-        _focus = focus;
-        _inserter = inserter;
         _preview = preview;
-        _logger = logger;
-        _hook.KeyEvent += OnKeyEvent;
-        _focus.FocusChanged += OnFocusChanged;
+        Subscribe();
         // The first evaluation of each family builds its tables, which must not happen inside the hook.
-        Task.Run(() =>
+        _ = RunInBackground("Macro warm-up", () =>
         {
             foreach (var query in WarmUpQueries) _engine.Evaluate(query);
         });
@@ -67,9 +58,6 @@ public sealed class MacroController : IDisposable
         }
     }
 
-    /// <summary>The key that inserts the result in an app. It follows the accept-word shortcut.</summary>
-    public Func<string?, KeyBinding> CommitKeyFor { get; set; } = _ => KeyBinding.Tab;
-
     /// <summary>Whether a macro may open in a field. The host supplies the app-wide rules.</summary>
     public Func<FocusedField, bool> CanCapture { get; set; } = _ => true;
 
@@ -79,14 +67,9 @@ public sealed class MacroController : IDisposable
         get { lock (_gate) return _machine.IsActive; }
     }
 
-    public void Dispose()
-    {
-        _hook.KeyEvent -= OnKeyEvent;
-        _focus.FocusChanged -= OnFocusChanged;
-        Cancel();
-    }
+    protected override void OnDispose() => Cancel();
 
-    private void OnKeyEvent(object? sender, KeyEventArgs args)
+    protected override void OnKeyEvent(object? sender, KeyEventArgs args)
     {
         if (!_enabled) return;
         lock (_gate)
@@ -97,7 +80,7 @@ public sealed class MacroController : IDisposable
                 return;
             }
 
-            var ev = InlineCommitKey.Normalize(args.Event, CommitKeyFor(_focus.Current?.ProcessName));
+            var ev = WithCommitKey(args.Event);
             if (ev is { IsKeyDown: true, Kind: KeyKind.Tab } && _machine.IsActive && _resultQuery != _machine.Query)
             {
                 // Whether to swallow the key cannot wait for the pending evaluation.
@@ -110,8 +93,8 @@ public sealed class MacroController : IDisposable
             switch (outcome)
             {
                 case MacroTriggerStateMachine.Outcome.Opened:
-                    _capturePid = _focus.Current?.ProcessId ?? 0;
-                    if (_focus.Current is not { IsSecure: false } field || !CanCapture(field)) End();
+                    _capturePid = Focus.Current?.ProcessId ?? 0;
+                    if (Focus.Current is not { IsSecure: false } field || !CanCapture(field)) End();
                     break;
                 case MacroTriggerStateMachine.Outcome.QueryChanged:
                     EvaluateLater(_machine.Query);
@@ -120,7 +103,7 @@ public sealed class MacroController : IDisposable
                     int deleteCount = _machine.QueryAtCommitLength;
                     _evaluation++;
                     Preview(null, null);
-                    _ = Task.Run(() => CommitAsync(result, deleteCount));
+                    _ = RunInBackground("Macro commit", () => CommitAsync(result, deleteCount));
                     break;
                 case MacroTriggerStateMachine.Outcome.Cancel:
                     _evaluation++;
@@ -136,7 +119,7 @@ public sealed class MacroController : IDisposable
         int evaluation = ++_evaluation;
         _result = null;
         _resultQuery = null;
-        _ = Task.Run(() =>
+        _ = RunInBackground("Macro evaluation", () =>
         {
             var result = EvaluateSafely(query);
             lock (_gate)
@@ -154,7 +137,7 @@ public sealed class MacroController : IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Macro evaluation failed.");
+            Logger.LogWarning(ex, "Macro evaluation failed.");
             return null;
         }
     }
@@ -169,10 +152,9 @@ public sealed class MacroController : IDisposable
             return;
         }
         // The caret is read off the hook thread, after the host has applied the key.
-        _ = Task.Run(async () =>
+        _ = RunInBackground("Macro preview", async () =>
         {
-            await Task.Delay(CaretSettleMs);
-            var field = _focus.Refresh();
+            var field = await ReadSettledFieldAsync();
             lock (_gate)
             {
                 if (ReferenceEquals(_result, result) && field is not null)
@@ -185,19 +167,11 @@ public sealed class MacroController : IDisposable
 
     private async Task CommitAsync(MacroResult result, int deleteCount)
     {
-        try
-        {
-            if (_focus.Refresh() is not { } field) return;
-            await _inserter.ReplaceAsync(field, deleteCount, result.InsertionText, CancellationToken.None);
-            _logger.LogInformation("Macro committed (replaced {Count} chars).", deleteCount);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Macro commit failed.");
-        }
+        if (Focus.Refresh() is not { } field) return;
+        await ReplaceTypedAsync(field, deleteCount, result.InsertionText, "Macro");
     }
 
-    private void OnFocusChanged(object? sender, FocusedField? field)
+    protected override void OnFocusChanged(object? sender, FocusedField? field)
     {
         if (field?.ProcessId != _capturePid) Cancel();
     }

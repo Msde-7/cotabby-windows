@@ -1,5 +1,6 @@
 using System.IO;
 using System.Windows.Threading;
+using Cotabby.App.Inline;
 using Cotabby.Core.Emoji;
 using Cotabby.Core.Focus;
 using Cotabby.Core.Input;
@@ -18,22 +19,15 @@ namespace Cotabby.App.Emoji;
 /// timer on the thread pool, so every session call is serialized by one lock. The hook can only
 /// swallow a key synchronously, which is why the session runs inside the hook callback.
 /// </remarks>
-public sealed class EmojiPickerController : IDisposable
+public sealed class EmojiPickerController : InlineCaptureController
 {
     // How long a capture may sit untouched before it cancels itself.
     private static readonly TimeSpan LongPause = TimeSpan.FromSeconds(8);
 
-    private readonly IKeyboardHook _hook;
-    private readonly IFocusTracker _focus;
-    private readonly ITextInserter _inserter;
-    private readonly ILogger<EmojiPickerController> _logger;
     private readonly EmojiUsageStore _usage;
     private readonly EmojiPickerSession _session;
     private readonly Timer _longPauseTimer;
     private readonly object _gate = new();
-
-    /// <summary>Time for the host to apply a key before the caret is read.</summary>
-    private const int CaretSettleMs = 30;
 
     public EmojiPickerController(
         IKeyboardHook hook,
@@ -42,26 +36,22 @@ public sealed class EmojiPickerController : IDisposable
         EmojiPopupWindow popup,
         Dispatcher dispatcher,
         ILogger<EmojiPickerController> logger)
+        : base(hook, focus, inserter, logger)
     {
-        _hook = hook;
-        _focus = focus;
-        _inserter = inserter;
-        _logger = logger;
         // Commits are recorded inside the keyboard hook, which must never wait on the disk.
-        _usage = new EmojiUsageStore(UsageFilePath, write => Task.Run(write));
+        _usage = new EmojiUsageStore(UsageFilePath, write => RunInBackground("Saving emoji usage", write));
         _session = new EmojiPickerSession(
             () => new EmojiMatcher(EmojiCatalog.Bundled),
             new DispatchedPanel(popup, dispatcher),
             focus,
             _usage,
             (field, glyph, fallbackDeleteCount) =>
-                Task.Run(() => ReplaceQueryAsync(field, glyph, fallbackDeleteCount)));
+                RunInBackground("Emoji commit", () => ReplaceQueryAsync(field, glyph, fallbackDeleteCount)));
         _longPauseTimer = new Timer(_ => CancelCapture());
         // The hook callback has a hard time budget and a cold decode of the catalog takes about
         // 100 ms, so it happens here instead of on the first colon.
         Task.Run(WarmUp);
-        _hook.KeyEvent += OnKeyEvent;
-        _focus.FocusChanged += OnFocusChanged;
+        Subscribe();
     }
 
     /// <summary>
@@ -80,7 +70,7 @@ public sealed class EmojiPickerController : IDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Emoji picker warm-up failed.");
+            Logger.LogDebug(ex, "Emoji picker warm-up failed.");
         }
     }
 
@@ -92,9 +82,6 @@ public sealed class EmojiPickerController : IDisposable
         get => _session.Enabled;
         set => _session.Enabled = value;
     }
-
-    /// <summary>The key that commits the selected emoji in an app. It follows the accept-word shortcut.</summary>
-    public Func<string?, KeyBinding> CommitKeyFor { get; set; } = _ => KeyBinding.Tab;
 
     public Func<FocusedField, bool> CanCapture
     {
@@ -126,15 +113,13 @@ public sealed class EmojiPickerController : IDisposable
         lock (_gate) _usage.Clear();
     }
 
-    public void Dispose()
+    protected override void OnDispose()
     {
-        _hook.KeyEvent -= OnKeyEvent;
-        _focus.FocusChanged -= OnFocusChanged;
         _longPauseTimer.Dispose();
         CancelCapture();
     }
 
-    private void OnKeyEvent(object? sender, KeyEventArgs args)
+    protected override void OnKeyEvent(object? sender, KeyEventArgs args)
     {
         lock (_gate)
         {
@@ -145,21 +130,20 @@ public sealed class EmojiPickerController : IDisposable
             }
             else
             {
-                args.Suppress = _session.HandleKey(InlineCommitKey.Normalize(args.Event, CommitKeyFor(_focus.Current?.ProcessName)));
+                args.Suppress = _session.HandleKey(WithCommitKey(args.Event));
             }
             _longPauseTimer.Change(_session.IsCapturing ? LongPause : Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
-            if (_session.IsCapturing) _ = Task.Run(FollowCaretAsync);
+            if (_session.IsCapturing) _ = RunInBackground("Following the caret", FollowCaretAsync);
         }
     }
 
     private async Task FollowCaretAsync()
     {
-        await Task.Delay(CaretSettleMs);
-        if (_focus.Refresh() is not { } field) return;
+        if (await ReadSettledFieldAsync() is not { } field) return;
         lock (_gate) _session.UpdateCaret(field);
     }
 
-    private void OnFocusChanged(object? sender, FocusedField? field)
+    protected override void OnFocusChanged(object? sender, FocusedField? field)
     {
         lock (_gate) _session.HandleFocusChanged(field);
     }
@@ -173,19 +157,11 @@ public sealed class EmojiPickerController : IDisposable
     /// Deletes the typed <c>:query</c> run and inserts the glyph. Runs on the thread pool so the
     /// synthetic keys are never posted from inside the keystroke's own hook callback.
     /// </summary>
-    private async Task ReplaceQueryAsync(FocusedField captureField, string glyph, int fallbackDeleteCount)
+    private Task ReplaceQueryAsync(FocusedField captureField, string glyph, int fallbackDeleteCount)
     {
-        try
-        {
-            var field = _focus.Refresh() ?? captureField;
-            int deleteCount = EmojiQueryRun.DeleteCount(field, fallbackDeleteCount);
-            await _inserter.ReplaceAsync(field, deleteCount, glyph, CancellationToken.None);
-            _logger.LogInformation("Emoji committed {Glyph} (deleted {Count} chars)", glyph, deleteCount);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Emoji commit failed.");
-        }
+        var field = Focus.Refresh() ?? captureField;
+        int deleteCount = EmojiQueryRun.DeleteCount(field, fallbackDeleteCount);
+        return ReplaceTypedAsync(field, deleteCount, glyph, "Emoji");
     }
 
     /// <summary>Marshals the session's panel calls onto the popup's UI thread.</summary>

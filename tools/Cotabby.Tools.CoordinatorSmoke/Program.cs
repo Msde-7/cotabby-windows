@@ -10,6 +10,7 @@ using Cotabby.Core.Insertion;
 using Cotabby.Core.Models;
 using Cotabby.Core.Overlay;
 using Cotabby.Core.Suggestions;
+using Cotabby.Core.Tests.Suggestions;
 using Cotabby.Inference;
 using Microsoft.Extensions.Logging;
 
@@ -146,22 +147,6 @@ sealed class WatchedEngine(ISuggestionEngine inner) : ISuggestionEngine
     }
 }
 
-sealed class FakeHook : IKeyboardHook
-{
-    public event EventHandler<KeyEventArgs>? KeyEvent;
-
-    public bool Press(KeyboardEvent ev)
-    {
-        var args = new KeyEventArgs(ev);
-        KeyEvent?.Invoke(this, args);
-        return args.Suppress;
-    }
-
-    public void Start() { }
-    public void Stop() { }
-    public void Dispose() { }
-}
-
 /// <summary>A text field that behaves like a host app. Typed and inserted text lands in it.</summary>
 sealed class FakeField : IFocusTracker, ITextInserter
 {
@@ -231,36 +216,4 @@ sealed class FakeField : IFocusTracker, ITextInserter
     public void Start() { }
     public void Stop() { }
     public void Dispose() { }
-}
-
-sealed class RecordingOverlay : IOverlayPresenter
-{
-    private volatile string _text = "";
-
-    public string Text => _text;
-
-    public void Show(string text, ScreenRect anchor, OverlayStyle style = OverlayStyle.Inline, FocusedField? field = null) =>
-        _text = text;
-    public void Update(string text) => _text = text;
-    public void Hide() => _text = "";
-}
-
-/// <summary>Runs posted work in order on one thread, like a UI dispatcher.</summary>
-sealed class PumpContext : SynchronizationContext, IDisposable
-{
-    private readonly BlockingCollection<(SendOrPostCallback Callback, object? State)> _queue = new();
-
-    public PumpContext()
-    {
-        new Thread(() =>
-        {
-            SetSynchronizationContext(this);
-            foreach (var (callback, state) in _queue.GetConsumingEnumerable()) callback(state);
-        })
-        { IsBackground = true }.Start();
-    }
-
-    public override void Post(SendOrPostCallback d, object? state) => _queue.Add((d, state));
-
-    public void Dispose() => _queue.CompleteAdding();
 }
