@@ -132,4 +132,39 @@ public sealed class SuggestionCoordinatorOrderingTests : CoordinatorHarness
         Assert.True(Hook.Press(Keys.Tab()), "the next accept still belongs to the suggestion");
         await Eventually(() => Focus.Current!.Text == "hello\r\nworld again", "the next word is inserted");
     }
+
+    [Fact]
+    public async Task BackspacingATypo_BringsTheSuggestionBackWithoutGenerating()
+    {
+        Engine.Completion = r => r.Prefix == "hello" ? " world again" : "";
+        Type("hello");
+        await Shown(" world again");
+        Type("x");
+        await Eventually(() => Engine.Requests.Any(r => r.Prefix == "hellox"), "the typo is asked about");
+        await Task.Delay(50);
+        Engine.Requests.Clear();
+
+        Hook.Press(Keys.Special(KeyKind.Backspace, 0x08));
+        Focus.Replace(Fields.Text("hello"));
+
+        await Shown(" world again");
+        Assert.Empty(Engine.Requests);
+    }
+
+    [Fact]
+    public async Task RetypingTheSuggestionAfterItWasCleared_ResumesIt()
+    {
+        Engine.Completion = r => r.Prefix == "hello" ? " world again" : "";
+        Type("hello");
+        await Shown(" world again");
+        Hook.Press(Keys.Special(KeyKind.Arrow, 0x25));
+        await Shown("");
+        Engine.Requests.Clear();
+
+        Type(" ");
+
+        await Shown("world again");
+        Assert.Empty(Engine.Requests);
+    }
 }
+

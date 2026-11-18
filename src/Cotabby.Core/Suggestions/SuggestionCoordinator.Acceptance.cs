@@ -73,6 +73,7 @@ public sealed partial class SuggestionCoordinator
             {
                 OwnAcceptKeyBriefly(field);
             }
+            PrefetchAfterAccept(field, _expectedPreceding, session.RequestId);
         }
         else
         {

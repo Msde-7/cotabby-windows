@@ -105,6 +105,11 @@ public sealed partial class SuggestionCoordinator
                 _logger.LogDebug("Request {ReqId} skipped: the caret is inside a word or token.", requestId);
                 return;
             }
+            if (await TryRestoreAnchorAsync(requestId, settings, field, sequence, ct).ConfigureAwait(false))
+            {
+                _logger.LogDebug("Request {ReqId} answered by a remembered suggestion.", requestId);
+                return;
+            }
             if (!_engine.IsReady)
             {
                 _logger.LogDebug("Request {ReqId} skipped: the engine is not ready.", requestId);
@@ -231,6 +236,32 @@ public sealed partial class SuggestionCoordinator
                 });
             }
         }
+    }
+
+    /// <summary>
+    /// Shows again a recent suggestion the text before the caret is on the way to, with no
+    /// generation, after the same checks a fresh answer passes against the field as it is now.
+    /// False leaves the request to generate as usual.
+    /// </summary>
+    private async Task<bool> TryRestoreAnchorAsync(
+        string requestId, SuggestionSettings settings, FocusedField field, long sequence, CancellationToken ct)
+    {
+        string identity = FocusIdentity(field);
+        if (_anchors.Remainder(identity, field.PrecedingText) is not { Length: > 0 } remainder) return false;
+        if (TrailingDuplicationFilter.DuplicatesTrailingText(remainder, field.TrailingText)) return false;
+        // Mid-word, a restore waits for a pause like a fresh answer, so it goes the usual way.
+        if (_cadence.RemainingDelay(identity, field.PrecedingText, Now()) > 0) return false;
+        if (CompletionFinalizer.Finalize(remainder, field, settings, _engine.SpacingIsExact, _typos) is not { } completion)
+        {
+            return false;
+        }
+        if (PausedReason() is not null) return false;
+        // Like upstream, a dismissed restore is generated afresh. The dismissals live on the UI context.
+        var dismissed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Post(() => dismissed.SetResult(IsDismissed(field, completion.Visible)));
+        if (await dismissed.Task.WaitAsync(ct).ConfigureAwait(false)) return false;
+        Post(() => Present(requestId, completion, field, latencyMs: 0, sequence, ct));
+        return true;
     }
 
     /// <param name="awaitsChange">

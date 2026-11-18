@@ -61,6 +61,7 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
     private readonly TypoCorrectionAdvisor? _typos;
     private readonly ClipboardContextSource? _clipboard;
     private readonly SuggestionDismissalMemory _dismissals = new();
+    private readonly SuggestionAnchorCache _anchors;
     private readonly ImeCompositionTracker _ime = new();
     private readonly SendOrPostCallback _handleEvent;
 
@@ -147,6 +148,7 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
         _clock = clock ?? TimeProvider.System;
         _typos = typos;
         _clipboard = clipboard is null ? null : new ClipboardContextSource(clipboard, _clock);
+        _anchors = new SuggestionAnchorCache(_clock);
         _handleEvent = state => HandleEvent((KeyboardEvent)state!);
     }
 

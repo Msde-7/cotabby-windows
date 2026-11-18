@@ -31,6 +31,7 @@ public sealed partial class SuggestionCoordinator
             SetPublishBaseline(null);
             CancelSession("focus moved");
             CancelPrefetch();
+            _anchors.Clear();
         });
     }
 
@@ -200,7 +201,8 @@ public sealed partial class SuggestionCoordinator
                     _work.Cancel();
                     break;
                 default:
-                    CancelSession("typing invalidated the suggestion");
+                    // A turned-down suggestion is not worth bringing back.
+                    CancelSession("typing invalidated the suggestion", remember: !SuggestionAvailability.Dismisses(ev));
                     CancelPrefetch();
                     break;
             }

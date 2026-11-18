@@ -50,6 +50,8 @@ public sealed partial class SuggestionCoordinator
 
         _session = session;
         _sessionField = field;
+        // A partial is remembered once it stops growing, when it is cleared.
+        if (correction is null && !streamed) _anchors.Record(FocusIdentity(field), preceding, completion.Predicted);
         _sessionAcceptedAny = false;
         _sessionPrefetched = false;
         _expectedPreceding = preceding;
@@ -133,9 +135,17 @@ public sealed partial class SuggestionCoordinator
         _overlay.Hide();
     }
 
-    private void CancelSession(string reason)
+    /// <param name="remember">
+    /// Keep the suggestion so Backspace or retyping can bring it back, as upstream does with every
+    /// suggestion it invalidates. A dismissed one is not kept.
+    /// </param>
+    private void CancelSession(string reason, bool remember = true)
     {
         if (_session is not null) _logger.LogInformation("Suggestion cleared ({Reason}).", reason);
+        if (remember && _session is { Correction: null } dying && _sessionField is { } offeredIn)
+        {
+            _anchors.Record(FocusIdentity(offeredIn), _expectedPreceding, dying.PredictedText);
+        }
         ResetAcceptKeyState();
         ClearSession();
         _prediction = null;

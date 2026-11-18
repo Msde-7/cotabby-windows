@@ -122,4 +122,23 @@ public sealed class SuggestionCoordinatorContinuationTests : CoordinatorHarness
         await Task.Delay(200);
         Assert.DoesNotContain(Engine.Requests, r => r.Prefix == "hello world");
     }
+
+    [Fact]
+    public async Task AcceptingTheLastChunk_StartsTheContinuationBeforeTheHostShowsIt()
+    {
+        Engine.Completion = request => request.Prefix == "hello" ? " world again today" : " and more";
+        Type("hello");
+        await Shown(" world again today");
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Focus.InsertGate = gate;
+
+        Assert.True(Hook.Press(Backtick));
+
+        await Eventually(() => Engine.Requests.Any(r => r.Prefix == "hello world again today"),
+            "the continuation generates while the insertion is still on its way");
+        gate.SetResult();
+        await Shown(" and more");
+        Assert.Single(Engine.Requests, r => r.Prefix == "hello world again today");
+    }
 }
+

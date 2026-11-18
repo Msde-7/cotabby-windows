@@ -69,7 +69,32 @@ public sealed partial class SuggestionCoordinator
         if (ContinuationTarget(session, settings, atOffer) is not { } preceding) return;
         if (!SuggestionRequestFactory.ShouldGenerate(preceding, offeredIn.TrailingText, settings.SuggestWithinWords)) return;
         _sessionPrefetched = true;
+        StartPrefetch(offeredIn, preceding, settings, session.RequestId);
+    }
 
+    /// <summary>
+    /// Starts generating what follows the last chunk as soon as it is accepted, against the text
+    /// the host is expected to show, as upstream does. The read after the insertion only confirms
+    /// that text before the answer is used. A continuation already running for it is kept.
+    /// </summary>
+    private void PrefetchAfterAccept(FocusedField offeredIn, string preceding, string requestId)
+    {
+        var settings = _settings;
+        if (settings.UsesEndpoint || !_engine.IsReady) return;
+        if (Volatile.Read(ref _prefetched) is { } running && running.FocusIdentity == FocusIdentity(offeredIn))
+        {
+            string target = SuggestionSessionReconciler.ComparisonNormalized(running.PrecedingText);
+            string wanted = SuggestionSessionReconciler.ComparisonNormalized(preceding);
+            // The space added after the last word is allowed for when the continuation is taken.
+            if (wanted == target || wanted == target + " ") return;
+        }
+        if (!SuggestionRequestFactory.ShouldGenerate(preceding, offeredIn.TrailingText, settings.SuggestWithinWords)) return;
+        StartPrefetch(offeredIn, preceding, settings, requestId);
+    }
+
+    /// <summary>Generates for <paramref name="preceding"/> before the caret of <paramref name="offeredIn"/>, replacing any earlier prefetch.</summary>
+    private void StartPrefetch(FocusedField offeredIn, string preceding, SuggestionSettings settings, string forRequest)
+    {
         var field = offeredIn with { Text = preceding + offeredIn.TrailingText, CaretOffset = preceding.Length };
         string identity = FocusIdentity(field);
         CancelPrefetch();
@@ -80,12 +105,12 @@ public sealed partial class SuggestionCoordinator
             {
                 var request = BuildRequest(field, NewRequestId("pre_"), settings);
                 string generated = await GenerateAsync(request, cts.Token).ConfigureAwait(false);
-                if (generated.Length > 0) _logger.LogDebug("Prefetched the continuation of {ReqId}.", session.RequestId);
+                if (generated.Length > 0) _logger.LogDebug("Prefetched the continuation of {ReqId}.", forRequest);
                 return cts.IsCancellationRequested ? "" : generated;
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Prefetching the continuation of {ReqId} failed.", session.RequestId);
+                _logger.LogWarning(ex, "Prefetching the continuation of {ReqId} failed.", forRequest);
                 return "";
             }
         });
