@@ -35,7 +35,7 @@ public sealed class EmojiPickerSessionTests : IDisposable
             _panel,
             _focus,
             _usage,
-            (field, glyph, fallbackDeleteCount) => _replacements.Add((field, glyph, fallbackDeleteCount)));
+            (field, glyph, typedRun) => _replacements.Add((field, glyph, typedRun.Length)));
     }
 
     public void Dispose() => File.Delete(_usagePath);

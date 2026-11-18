@@ -51,6 +51,16 @@ public class EmojiQueryRunTests
     public void DeleteCount_FallsBackToTypedLengthWhenFieldHasNoQueryRun() =>
         Assert.Equal(6, EmojiQueryRun.DeleteCount(Field("done.", 5), fallback: 6));
 
+    [Theory]
+    [InlineData("hi :smile", 9, ":smile", true)]
+    // A browser that has not shown the last letters yet.
+    [InlineData("hi :smi", 7, ":smile", false)]
+    // Text after the caret does not count.
+    [InlineData("hi :smile and more", 9, ":smile", true)]
+    [InlineData("hi :smi and more", 7, ":smile", false)]
+    public void ShowsTypedRun_OnlyWhenTheWholeRunIsBeforeTheCaret(string text, int caret, string typedRun, bool expected) =>
+        Assert.Equal(expected, EmojiQueryRun.ShowsTypedRun(Field(text, caret), typedRun));
+
     [Fact]
     public void DeleteCount_OnlyMeasuresTextBeforeTheCaret()
     {

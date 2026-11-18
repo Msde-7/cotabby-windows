@@ -45,8 +45,8 @@ public sealed class EmojiPickerController : InlineCaptureController
             new DispatchedPanel(popup, dispatcher),
             focus,
             _usage,
-            (field, glyph, fallbackDeleteCount) =>
-                RunInBackground("Emoji commit", () => ReplaceQueryAsync(field, glyph, fallbackDeleteCount)));
+            (field, glyph, typedRun) =>
+                RunInBackground("Emoji commit", () => ReplaceQueryAsync(field, glyph, typedRun)));
         _longPauseTimer = new Timer(_ => CancelCapture());
         // The hook callback has a hard time budget and a cold decode of the catalog takes about
         // 100 ms, so it happens here instead of on the first colon.
@@ -157,12 +157,24 @@ public sealed class EmojiPickerController : InlineCaptureController
     /// Deletes the typed <c>:query</c> run and inserts the glyph. Runs on the thread pool so the
     /// synthetic keys are never posted from inside the keystroke's own hook callback.
     /// </summary>
-    private Task ReplaceQueryAsync(FocusedField captureField, string glyph, int fallbackDeleteCount)
+    private async Task ReplaceQueryAsync(FocusedField captureField, string glyph, string typedRun)
     {
+        // A browser can show the last letters of the query a moment after the commit key arrives.
+        // Measured from a read that is still catching up, the run would be too short and the edit
+        // would be refused, so the read waits briefly for the whole run. A run that never appears
+        // in full lost a key or was changed by the host, and then the measured run is the right one.
         var field = Focus.Refresh() ?? captureField;
-        int deleteCount = EmojiQueryRun.DeleteCount(field, fallbackDeleteCount);
-        return ReplaceTypedAsync(field, deleteCount, glyph, "Emoji");
+        for (int poll = 0; poll < RunPublishPolls && !EmojiQueryRun.ShowsTypedRun(field, typedRun); poll++)
+        {
+            await Task.Delay(RunPublishPollMs).ConfigureAwait(false);
+            field = Focus.Refresh() ?? field;
+        }
+        int deleteCount = EmojiQueryRun.DeleteCount(field, typedRun.Length);
+        await ReplaceTypedAsync(field, deleteCount, glyph, "Emoji").ConfigureAwait(false);
     }
+
+    private const int RunPublishPolls = 8;
+    private const int RunPublishPollMs = 20;
 
     /// <summary>Marshals the session's panel calls onto the popup's UI thread.</summary>
     private sealed class DispatchedPanel(EmojiPopupWindow popup, Dispatcher dispatcher) : IEmojiPickerPanel

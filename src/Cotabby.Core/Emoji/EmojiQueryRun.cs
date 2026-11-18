@@ -24,6 +24,10 @@ public static partial class EmojiQueryRun
     public static int DeleteCount(FocusedField field, int fallback) =>
         TrailingRunLength(field.PrecedingText) ?? fallback;
 
+    /// <summary>True when the text before the caret already ends with the run as it was typed.</summary>
+    public static bool ShowsTypedRun(FocusedField field, string typedRun) =>
+        field.PrecedingText.EndsWith(typedRun, StringComparison.Ordinal);
+
     [GeneratedRegex(@":[A-Za-z0-9_+\-]*:?\z")]
     private static partial Regex TrailingRun();
 }

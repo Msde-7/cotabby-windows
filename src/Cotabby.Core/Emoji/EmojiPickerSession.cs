@@ -15,9 +15,10 @@ public interface IEmojiPickerPanel
 
 /// <summary>
 /// Replaces the typed query run in <paramref name="field"/> with <paramref name="glyph"/>.
-/// <paramref name="fallbackDeleteCount"/> is the typed run length, for hosts whose text cannot be measured.
+/// <paramref name="typedRun"/> is the run as it was typed, a colon and the query, for hosts whose
+/// text cannot be measured or has not shown all of it yet.
 /// </summary>
-public delegate void EmojiQueryReplacer(FocusedField field, string glyph, int fallbackDeleteCount);
+public delegate void EmojiQueryReplacer(FocusedField field, string glyph, string typedRun);
 
 /// <summary>
 /// Orchestrates one inline <c>:emoji:</c> picker. Feeds keystrokes to the trigger state machine,
@@ -175,11 +176,11 @@ public sealed class EmojiPickerSession(
     private void Commit(EmojiMatch match)
     {
         var field = _captureField!;
-        int typedLength = _query.Length + 1;
+        string typedRun = ":" + _query;
         // Usage is keyed by the base primary alias, which is stable across variants.
         if (match.Entry.Aliases.Count > 0) usage.Record(match.Entry.Aliases[0]);
         TeardownCapture();
-        replaceQuery(field, match.Glyph, typedLength);
+        replaceQuery(field, match.Glyph, typedRun);
     }
 
     private void TeardownCapture()
