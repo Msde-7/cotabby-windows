@@ -166,9 +166,9 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
         get => _screen;
         set
         {
-            if (_screen is not null) _screen.FirstExcerptReady -= OnFirstScreenExcerpt;
+            if (_screen is not null) _screen.ExcerptChanged -= OnScreenExcerptChanged;
             _screen = value;
-            if (value is not null) value.FirstExcerptReady += OnFirstScreenExcerpt;
+            if (value is not null) value.ExcerptChanged += OnScreenExcerptChanged;
         }
     }
 
@@ -261,11 +261,17 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
         await _work.DisposeAsync().ConfigureAwait(false);
     }
 
-    private static string FocusIdentity(FocusedField field) => $"{field.ProcessId}:{field.FieldId}";
+    /// <summary>
+    /// The place a suggestion belongs to. Like upstream, the window title and the placeholder are
+    /// part of it, so a chat app that keeps one composer while the conversation changes does not
+    /// carry a suggestion, a late answer, a prefetch or a dismissal into the next conversation.
+    /// The unsaved-changes mark of an editor's title does not count.
+    /// </summary>
+    private static string FocusIdentity(FocusedField field) => $"{ScreenContextSource.IdentityOf(field)}:{field.HelpText}";
 
     /// <summary>Dismissals hold within one field, so the same words stay offered in another. The memory lives in this process only.</summary>
     private static ulong DismissalScope(FocusedField field) =>
-        (uint)HashCode.Combine(field.ProcessId, field.FieldId, field.HelpText);
+        (uint)HashCode.Combine(field.ProcessId, field.FieldId, field.HelpText, ScreenContextSource.TitleKey(field.WindowTitle));
 
     private static bool SameField(FocusedField a, FocusedField b) => a.ProcessId == b.ProcessId && a.FieldId == b.FieldId;
 

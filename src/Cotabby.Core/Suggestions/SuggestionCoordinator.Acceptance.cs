@@ -222,6 +222,8 @@ public sealed partial class SuggestionCoordinator
         Post(() =>
         {
             if (_session is not { } live || live.RequestId != requestId) return;
+            // A changed title is left for the watch to see, which drops the suggestion.
+            if (_sessionField is { } offeredIn && FocusIdentity(after) != FocusIdentity(offeredIn)) return;
             _sessionField = after;
             _overlay.Show(live.VisibleText, after.CaretRect, StyleFor(after, live.Correction), after);
         });

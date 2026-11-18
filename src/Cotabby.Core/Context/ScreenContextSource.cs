@@ -41,6 +41,9 @@ public sealed class ScreenContextSource : IDisposable
         public CancellationTokenSource Cts { get; } = new();
         public string? Excerpt;
         public long CapturedAt;
+
+        /// <summary>The last text read, kept through a failed capture so reading it again is no change.</summary>
+        public string? LastText;
     }
 
     public ScreenContextSource(
@@ -60,6 +63,12 @@ public sealed class ScreenContextSource : IDisposable
     public event Action<FocusedField>? FirstExcerptReady;
 
     /// <summary>
+    /// Raised on the thread pool when a field's excerpt reads differently from the last one,
+    /// including the first. A refresh that reads the same text raises nothing.
+    /// </summary>
+    public event Action<FocusedField>? ExcerptChanged;
+
+    /// <summary>
     /// Which field a session belongs to. The window title is part of it: a chat app can keep its
     /// composer while the conversation changes, and the old conversation must not leak into the new one.
     /// </summary>
@@ -70,7 +79,7 @@ public sealed class ScreenContextSource : IDisposable
     /// The title without the unsaved-changes mark editors add, so the first edit in Notepad
     /// ("*notes - Notepad") or VS Code ("● notes") does not count as another document.
     /// </summary>
-    private static string TitleKey(string title) => title.TrimStart('*', '●', ' ');
+    public static string TitleKey(string title) => title.TrimStart('*', '●', ' ');
 
     /// <summary>Starts capturing for this field unless it already is.</summary>
     public void Track(FocusedField field, bool usesEndpoint)
@@ -144,14 +153,18 @@ public sealed class ScreenContextSource : IDisposable
                 long capturedAt = _clock.GetTimestamp();
                 string? excerpt = await ExcerptAsync(field, session.Configuration, ct).ConfigureAwait(false);
                 bool first = false;
+                bool changed = false;
                 lock (_gate)
                 {
                     if (_session != session) return;
-                    first = session.Excerpt is null && excerpt is not null;
+                    first = session.Excerpt is null && excerpt is not null && session.LastText is null;
+                    changed = excerpt is not null && excerpt != session.LastText;
                     session.Excerpt = excerpt;
                     session.CapturedAt = capturedAt;
+                    if (excerpt is not null) session.LastText = excerpt;
                 }
                 if (first) FirstExcerptReady?.Invoke(field);
+                if (changed) ExcerptChanged?.Invoke(field);
                 await Task.Delay(_refreshInterval, _clock, ct).ConfigureAwait(false);
             }
         }

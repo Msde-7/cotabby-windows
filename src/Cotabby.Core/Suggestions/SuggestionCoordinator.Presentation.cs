@@ -105,6 +105,7 @@ public sealed partial class SuggestionCoordinator
 
     private bool IsStillAtOffer(FocusedField? live) =>
         live is not null && _sessionField is { } offeredIn && SameField(live, offeredIn)
+        && FocusIdentity(live) == FocusIdentity(offeredIn)
         && !live.HasSelection
         && SuggestionSessionReconciler.ComparisonNormalized(live.TrailingText)
             == SuggestionSessionReconciler.ComparisonNormalized(offeredIn.TrailingText)

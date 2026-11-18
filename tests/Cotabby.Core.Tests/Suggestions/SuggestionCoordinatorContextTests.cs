@@ -1,4 +1,7 @@
+using Cotabby.Core.Context;
+using Cotabby.Core.Focus;
 using Cotabby.Core.Suggestions;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Cotabby.Core.Tests.Suggestions;
 
@@ -117,4 +120,94 @@ public sealed class SuggestionCoordinatorContextTests : CoordinatorHarness
 
         Assert.Empty((await RequestFor("returns the")).SurfaceLines);
     }
+
+    [Fact]
+    public async Task AnotherConversationInTheSameComposer_DropsTheSuggestion()
+    {
+        Focus.Focus(Fields.Text("") with { FieldId = "composer", WindowTitle = "Chat with Ann" });
+        Engine.Completion = _ => " world again";
+        Type("hello");
+        await Shown(" world again");
+
+        // The app switches conversations without moving focus.
+        Focus.Replace(Focus.Current! with { WindowTitle = "Chat with Bob" });
+
+        await Shown("");
+    }
+
+    [Fact]
+    public async Task AnEditorsUnsavedMark_KeepsTheSuggestion()
+    {
+        Focus.Focus(Fields.Text("") with { FieldId = "doc", WindowTitle = "notes - Notepad" });
+        Engine.Completion = _ => " world again";
+        Type("hello");
+        await Shown(" world again");
+
+        Focus.Replace(Focus.Current! with { WindowTitle = "*notes - Notepad" });
+
+        await Task.Delay(400);
+        Assert.Equal(" world again", Overlay.Text);
+    }
+
+    [Fact]
+    public async Task AnAnswerForTheOldConversation_IsNotShownInTheNewOne()
+    {
+        Focus.Focus(Fields.Text("") with { FieldId = "composer", WindowTitle = "Chat with Ann" });
+        var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Engine.Hold = hold;
+        Type("hello");
+        await Eventually(() => !Engine.Requests.IsEmpty, "the request is generating");
+
+        Focus.Replace(Focus.Current! with { WindowTitle = "Chat with Bob" });
+        hold.SetResult();
+
+        await StaysHidden();
+    }
+
+    private sealed class ScreenReader : IScreenTextReader
+    {
+        public volatile string Topic = "the budget spreadsheet for the quarterly review";
+
+        public Task<ScreenCapture?> ReadAsync(FocusedField field, VisualContextConfiguration configuration, CancellationToken ct) =>
+            Task.FromResult<ScreenCapture?>(new ScreenCapture([new OcrLine($"Please read {Topic} before Friday", 0.95f)], null, null));
+    }
+
+    private ScreenReader WatchTheScreen()
+    {
+        var reader = new ScreenReader();
+        Coordinator.ScreenContext = new ScreenContextSource(
+            reader, () => Focus.Current, NullLogger.Instance, settle: TimeSpan.Zero, refreshInterval: TimeSpan.FromMilliseconds(20));
+        Coordinator.Settings = SuggestionSettings.Default with { ScreenContext = true };
+        return reader;
+    }
+
+    [Fact]
+    public async Task ChangedScreenText_ReplacesTheVisibleSuggestion()
+    {
+        var reader = WatchTheScreen();
+        Engine.Completion = r => r.ScreenContext.Contains("travel") ? " see you there" : " world again";
+        Type("hello");
+        await Shown(" world again");
+
+        reader.Topic = "the travel plans for the conference in Lisbon";
+
+        await Shown(" see you there");
+    }
+
+    [Fact]
+    public async Task UnchangedScreenText_LeavesTheSuggestionAlone()
+    {
+        WatchTheScreen();
+        Engine.Completion = _ => " world again";
+        Type("hello");
+        await Shown(" world again");
+        await Task.Delay(100);
+        int requests = Engine.Requests.Count;
+
+        await Task.Delay(200);
+
+        Assert.Equal(" world again", Overlay.Text);
+        Assert.Equal(requests, Engine.Requests.Count);
+    }
 }
+

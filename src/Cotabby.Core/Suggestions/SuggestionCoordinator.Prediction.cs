@@ -73,6 +73,7 @@ public sealed partial class SuggestionCoordinator
             {
                 if (_keySequence == sequence) SetPublishBaseline(field);
                 _ime.Observe(field.ImeLanguageId);
+                AdoptIdentity(field);
             });
             if (field.ImeLanguageId != 0 && _ime.IsComposing)
             {
@@ -236,6 +237,28 @@ public sealed partial class SuggestionCoordinator
                 });
             }
         }
+    }
+
+    /// <summary>
+    /// Takes on a new window title or placeholder of the focused field, which can change with no
+    /// focus event, as when a chat app switches conversations in the same composer. What was
+    /// offered or remembered for the old conversation is dropped, as upstream does.
+    /// </summary>
+    private void AdoptIdentity(FocusedField field)
+    {
+        string identity = FocusIdentity(field);
+        if (_focusIdentity.Length == 0 || identity == _focusIdentity) return;
+        // Only the same field in the same app. Another field changes through a focus event.
+        if (!_focusIdentity.StartsWith($"{field.ProcessId}:{field.FieldId}:", StringComparison.Ordinal)) return;
+        _logger.LogInformation("The focused field's title or placeholder changed.");
+        _focusIdentity = identity;
+        if (_session is not null)
+        {
+            ResetAcceptKeyState();
+            ClearSession();
+        }
+        CancelPrefetch();
+        _anchors.Clear();
     }
 
     /// <summary>

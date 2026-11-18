@@ -18,6 +18,7 @@ public sealed class ScreenContextSourceTests : IDisposable
     private readonly ManualClock _clock = new();
     private readonly FakeReader _reader = new();
     private readonly ConcurrentQueue<FocusedField> _firstExcerpts = new();
+    private readonly ConcurrentQueue<FocusedField> _changes = new();
     private readonly List<ScreenContextSource> _sources = [];
     private FocusedField? _current;
 
@@ -25,10 +26,13 @@ public sealed class ScreenContextSourceTests : IDisposable
     {
         public ConcurrentQueue<FocusedField> Reads { get; } = new();
 
+        /// <summary>What the screen says, ahead of the window title.</summary>
+        public volatile string Topic = "budget spreadsheet";
+
         public Task<ScreenCapture?> ReadAsync(FocusedField field, VisualContextConfiguration configuration, CancellationToken ct)
         {
             Reads.Enqueue(field);
-            OcrLine[] lines = [new($"Please review the budget spreadsheet in {field.WindowTitle}", 0.95f)];
+            OcrLine[] lines = [new($"Please review the {Topic} in {field.WindowTitle}", 0.95f)];
             return Task.FromResult<ScreenCapture?>(new ScreenCapture(lines, null, field.WindowTitle));
         }
     }
@@ -53,6 +57,7 @@ public sealed class ScreenContextSourceTests : IDisposable
             _reader, () => _current, NullLogger.Instance, _clock,
             settle: TimeSpan.Zero, refreshInterval: refreshInterval ?? TimeSpan.FromHours(1), lifetime: Lifetime);
         source.FirstExcerptReady += _firstExcerpts.Enqueue;
+        source.ExcerptChanged += _changes.Enqueue;
         _sources.Add(source);
         return source;
     }
@@ -187,4 +192,23 @@ public sealed class ScreenContextSourceTests : IDisposable
         Assert.Equal(["Inbox", "Archive"], _reader.Reads.Select(f => f.WindowTitle));
         Assert.Equal([inbox, archive], _firstExcerpts);
     }
+
+    [Fact]
+    public async Task ExcerptChangedFiresOnlyWhenTheTextChanges()
+    {
+        var source = Source(refreshInterval: TimeSpan.FromMilliseconds(5));
+        var field = Field();
+
+        await TrackUntilReady(source, field);
+        await WaitUntil(() => _reader.Reads.Count >= 4);
+        Assert.Single(_changes);
+
+        _reader.Topic = "quarterly travel plans";
+        await WaitUntil(() => _changes.Count == 2);
+        int reads = _reader.Reads.Count;
+        await WaitUntil(() => _reader.Reads.Count >= reads + 3);
+        Assert.Equal(2, _changes.Count);
+        Assert.Contains("quarterly travel plans", source.For(field));
+    }
 }
+

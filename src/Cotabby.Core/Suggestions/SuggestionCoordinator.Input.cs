@@ -314,12 +314,16 @@ public sealed partial class SuggestionCoordinator
 
     /// <summary>
     /// A field focused with text already in it gets its first suggestion once the screen has been
-    /// read, so that suggestion can use it. Typing in the meantime already asked for one.
+    /// read, so that suggestion can use it. Like upstream, a later change of the screen text asks
+    /// again too: a chat app can show another conversation with the same title and field, and a
+    /// suggestion or an answer built on the old screen must not outlive it.
     /// </summary>
-    private void OnFirstScreenExcerpt(FocusedField field) => Post(() =>
+    private void OnScreenExcerptChanged(FocusedField field) => Post(() =>
     {
-        if (_disposed || _session is not null || _prediction is not null || !_work.IsIdle) return;
-        if (FocusIdentity(field) != _focusIdentity) return;
+        if (_disposed || FocusIdentity(field) != _focusIdentity) return;
+        CancelSession("the screen text changed", remember: false);
+        CancelPrefetch();
+        _anchors.Clear();
         PredictFromFreshRead();
     });
 }
