@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Cotabby.Core.Focus;
 using Cotabby.Core.Text;
 using Microsoft.Extensions.Logging;
@@ -21,7 +22,7 @@ public interface IScreenTextReader
 /// stands in for the current one. Capture and recognition never hold up a suggestion: a request
 /// takes whatever excerpt is ready.
 /// </summary>
-public sealed class ScreenContextSource : IDisposable
+public sealed partial class ScreenContextSource : IDisposable
 {
     private readonly IScreenTextReader _reader;
     private readonly Func<FocusedField?> _currentField;
@@ -76,10 +77,16 @@ public sealed class ScreenContextSource : IDisposable
         $"{field.ProcessId}:{field.FieldId}:{TitleKey(field.WindowTitle)}";
 
     /// <summary>
-    /// The title without the unsaved-changes mark editors add, so the first edit in Notepad
-    /// ("*notes - Notepad") or VS Code ("● notes") does not count as another document.
+    /// The title without what changes while the same document or conversation stays open: the
+    /// unsaved-changes mark editors add ("*notes - Notepad", "● notes", "notes • - Sublime
+    /// Text") and an unread count ("(3) Discord", "Inbox (3) - Gmail", "WhatsApp (2)"). They count
+    /// at the start, at the end, or just before the " - " that ends a page or document name, so
+    /// "Report (2).docx" stays apart from "Report (3).docx".
     /// </summary>
-    public static string TitleKey(string title) => title.TrimStart('*', '●', ' ');
+    public static string TitleKey(string title) => TitleNoise().Replace(title, "").Trim();
+
+    [GeneratedRegex(@"^\s*(?:(?:[(\[]\d+\+?[)\]]|[*●•])\s*)+|\s*(?:[(\[]\d+\+?[)\]]|[*●•])(?=\s*$|\s+[-–—|]\s)")]
+    private static partial Regex TitleNoise();
 
     /// <summary>Starts capturing for this field unless it already is.</summary>
     public void Track(FocusedField field, bool usesEndpoint)

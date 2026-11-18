@@ -92,6 +92,9 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
     private readonly DoubleTapAcceptanceState _doubleTap = new();
     private readonly TypingCadence _cadence = new();
     private volatile string _focusIdentity = "";
+
+    /// <summary>When the read that set <see cref="_focusIdentity"/> was taken, as a timestamp of the clock.</summary>
+    private long _identityReadAt;
     private AcceptedTail? _lastAcceptedTail;
     private bool _queuedAccept;
 

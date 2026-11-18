@@ -1,5 +1,6 @@
 using Cotabby.Core.Context;
 using Cotabby.Core.Focus;
+using Cotabby.Core.History;
 using Cotabby.Core.Suggestions;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -164,6 +165,77 @@ public sealed class SuggestionCoordinatorContextTests : CoordinatorHarness
         await StaysHidden();
     }
 
+    [Theory]
+    [InlineData("(3) Discord", "Discord")]
+    [InlineData("[12] general - Slack", "general - Slack")]
+    [InlineData("Inbox (3) - Gmail", "Inbox - Gmail")]
+    [InlineData("WhatsApp (2)", "WhatsApp")]
+    [InlineData("*notes - Notepad", "notes - Notepad")]
+    [InlineData("● notes.md - Visual Studio Code", "notes.md - Visual Studio Code")]
+    [InlineData("notes.txt • - Sublime Text", "notes.txt - Sublime Text")]
+    [InlineData("notes.txt *", "notes.txt")]
+    [InlineData("design - Slack", "design - Slack")]
+    public void TheTitleKey_LeavesOutUnreadCountsAndUnsavedMarks(string title, string key) =>
+        Assert.Equal(key, ScreenContextSource.TitleKey(title));
+
+    [Fact]
+    public void TheTitleKey_KeepsNumberedDocumentsApart() =>
+        Assert.NotEqual(ScreenContextSource.TitleKey("Report (2).docx - Word"), ScreenContextSource.TitleKey("Report (3).docx - Word"));
+
+    [Fact]
+    public async Task AnUnreadCountInTheTitle_KeepsTheSuggestion()
+    {
+        Focus.Focus(Fields.Text("") with { FieldId = "composer", WindowTitle = "general - Slack" });
+        Engine.Completion = _ => " world again";
+        Type("hello");
+        await Shown(" world again");
+
+        Focus.Replace(Focus.Current! with { WindowTitle = "(1) general - Slack" });
+        int reads = Focus.Refreshes;
+
+        await Eventually(
+            () => Focus.Refreshes >= reads + 2 || Overlay.Text != " world again", "the suggestion is checked against the field twice");
+        await KeysHandled();
+        Assert.Equal(" world again", Overlay.Text);
+    }
+
+    /// <summary>Holds the first matching read on its way to the UI context, as a slow thread would.</summary>
+    private sealed class HoldingRecorder(Func<FocusedField, bool> holds) : ITypingHistoryObserver
+    {
+        private int _held;
+
+        public ManualResetEventSlim Holding { get; } = new();
+
+        public ManualResetEventSlim Release { get; } = new();
+
+        public void Observe(FocusedField? field, Func<bool> isAllowed)
+        {
+            if (field is null || !holds(field) || Interlocked.Exchange(ref _held, 1) == 1) return;
+            Holding.Set();
+            Release.Wait(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
+    public async Task ALateReadWithTheOldTitle_DoesNotTakeTheConversationBack()
+    {
+        var recorder = new HoldingRecorder(field => field.WindowTitle == "Chat with Ann" && field.Text == "hello");
+        Coordinator.HistoryRecorder = recorder;
+        Focus.Focus(Fields.Text("") with { FieldId = "composer", WindowTitle = "Chat with Ann" });
+        Engine.Completion = r => r.Prefix == "hello there" ? " friend" : "";
+        Type("hello");
+        Assert.True(recorder.Holding.Wait(TimeSpan.FromSeconds(5)), "a request read the field");
+
+        // The app switches conversations, and typing goes on in the new one.
+        Focus.Replace(Focus.Current! with { WindowTitle = "Chat with Bob" });
+        Type(" there");
+        await Shown(" friend");
+
+        recorder.Release.Set();
+        await Settled();
+        Assert.Equal(" friend", Overlay.Text);
+    }
+
     private sealed class ScreenReader : IScreenTextReader
     {
         public volatile string Topic = "the budget spreadsheet for the quarterly review";
@@ -192,6 +264,47 @@ public sealed class SuggestionCoordinatorContextTests : CoordinatorHarness
         reader.Topic = "the travel plans for the conference in Lisbon";
 
         await Shown(" see you there");
+    }
+
+    [Fact]
+    public async Task ChangedScreenText_LeavesAQuickSecondAcceptToTheContinuation()
+    {
+        var reader = WatchTheScreen();
+        Engine.Completion = r => r.Prefix == "hello" ? " world" : " again";
+        Engine.Hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Engine.Holds = r => r.Prefix == "hello world";
+        Type("hello");
+        await Shown(" world");
+        Assert.True(Hook.Press(Backtick));
+        await Eventually(() => Focus.Current!.Text == "hello world", "the suggestion is inserted");
+
+        reader.Topic = "the travel plans for the conference in Lisbon";
+        await Eventually(() => Engine.Cancelled.Contains("hello world"), "the continuation for the old screen is dropped");
+
+        Assert.True(Hook.Press(Keys.Tab()), "the second press still belongs to the continuation");
+    }
+
+    [Fact]
+    public async Task ChangedScreenText_WaitsForAKeyTheAppHasNotShownYet()
+    {
+        var reader = WatchTheScreen();
+        Engine.Completion = r => r.ScreenContext.Contains("travel") ? " see you there" : " world again";
+        Type("hello");
+        await Shown(" world again");
+
+        // The space types through the suggestion, and the app is slow to show it.
+        Hook.Press(Keys.Char(' '));
+        await Shown("world again");
+        reader.Topic = "the travel plans for the conference in Lisbon";
+        await Shown("");
+        for (int waited = 0; waited < 100 && !Engine.Requests.Any(r => r.ScreenContext.Contains("travel")); waited += 5)
+        {
+            await Task.Delay(5);
+        }
+        Focus.Append(" ");
+
+        await Shown("see you there");
+        Assert.All(Engine.Requests.Where(r => r.ScreenContext.Contains("travel")), r => Assert.Equal("hello ", r.Prefix));
     }
 
     [Fact]

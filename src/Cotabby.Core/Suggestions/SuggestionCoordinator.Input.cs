@@ -14,6 +14,7 @@ public sealed partial class SuggestionCoordinator
             int pid = field?.ProcessId ?? 0;
             string previousIdentity = _focusIdentity;
             _focusIdentity = field is null ? "" : FocusIdentity(field);
+            _identityReadAt = _clock.GetTimestamp();
             if (previousIdentity != _focusIdentity)
             {
                 _ime.Reset();
@@ -342,9 +343,19 @@ public sealed partial class SuggestionCoordinator
     private void OnScreenExcerptChanged(FocusedField field) => Post(() =>
     {
         if (_disposed || FocusIdentity(field) != _focusIdentity) return;
+        // A quick second press after the last chunk still goes to the continuation asked for below.
+        var ownership = _ownership;
+        bool queuedAccept = _queuedAccept;
         CancelSession("the screen text changed", remember: false);
+        if (ownership is { } owned && _clock.GetTimestamp() < owned.ExpiresAt)
+        {
+            _ownership = owned;
+            _queuedAccept = queuedAccept;
+        }
         CancelPrefetch();
         _anchors.Clear();
-        PredictFromFreshRead();
+        // The read waits for keys the app has not shown yet, as the request they started would
+        // have, so it does not continue text the user has already typed past.
+        SchedulePrediction(typed: null);
     });
 }

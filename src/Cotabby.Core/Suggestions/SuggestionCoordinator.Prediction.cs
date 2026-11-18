@@ -105,6 +105,7 @@ public sealed partial class SuggestionCoordinator
     {
         var (requestId, settings, wait, sequence, submittedAt) = work;
         var (field, gaveUp) = await WaitForHostPublishAsync(wait, ct).ConfigureAwait(false);
+        long readAt = _clock.GetTimestamp();
         if (gaveUp)
         {
             // A replacement the host never showed must not be corrected again from the old
@@ -132,7 +133,7 @@ public sealed partial class SuggestionCoordinator
         {
             if (_keySequence == sequence) SetPublishBaseline(field);
             _ime.Observe(field.ImeLanguageId);
-            AdoptIdentity(field);
+            AdoptIdentity(field, readAt);
         });
         if (field.ImeLanguageId != 0 && _ime.IsComposing)
         {
@@ -277,14 +278,19 @@ public sealed partial class SuggestionCoordinator
     /// focus event, as when a chat app switches conversations in the same composer. What was
     /// offered or remembered for the old conversation is dropped, as upstream does.
     /// </summary>
-    private void AdoptIdentity(FocusedField field)
+    /// <param name="readAt">When <paramref name="field"/> was read, as a timestamp of the clock.</param>
+    private void AdoptIdentity(FocusedField field, long readAt)
     {
         string identity = FocusIdentity(field);
         if (_focusIdentity.Length == 0 || identity == _focusIdentity) return;
         // Only the same field in the same app. Another field changes through a focus event.
         if (!_focusIdentity.StartsWith($"{field.ProcessId}:{field.FieldId}:", StringComparison.Ordinal)) return;
+        // A request that read the field before the current identity was taken may carry the
+        // title from before it, and must not switch back to it.
+        if (readAt < _identityReadAt) return;
         _logger.LogInformation("The focused field's title or placeholder changed.");
         _focusIdentity = identity;
+        _identityReadAt = readAt;
         if (_session is not null)
         {
             ResetAcceptKeyState();
