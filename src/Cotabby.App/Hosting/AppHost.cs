@@ -327,7 +327,7 @@ public sealed class AppHost : IAsyncDisposable
         }
         else if (previous == EngineKind.Endpoint)
         {
-            LoadAfterEngineSwitch();
+            _ = LoadCachedModelAsync();
         }
         else
         {
@@ -349,18 +349,32 @@ public sealed class AppHost : IAsyncDisposable
         }
     }
 
-    private async void LoadAfterEngineSwitch()
+    /// <summary>
+    /// Loads the selected model if it is already on disk, at startup or after a switch back to the
+    /// local engine. Never downloads. The tray shows the load and how it ended. Called on the UI thread.
+    /// </summary>
+    public Task LoadCachedModelAsync() => LoadShowingStatusAsync(TryLoadCachedAsync);
+
+    /// <summary>
+    /// Loads the model picked by hand, which is on disk, as the tray's model menu does. The tray
+    /// shows the load and how it ended. Called on the UI thread.
+    /// </summary>
+    public Task LoadSelectedModelAsync() =>
+        LoadShowingStatusAsync(() => EnsureModelReadyAsync(null, CancellationToken.None));
+
+    /// <summary>Runs a model load with its passing status, and logs a failure. Never throws.</summary>
+    private async Task LoadShowingStatusAsync(Func<Task<bool>> load)
     {
         ModelStatusChanged?.Invoke("Loading model…");
         string? status;
         try
         {
-            bool loaded = await TryLoadCachedAsync();
+            bool loaded = await load();
             status = loaded ? null : "No model yet. Open Settings to download one.";
         }
         catch (Exception ex)
         {
-            LogError(ex, "Loading the model after switching engines failed.");
+            LogError(ex, "Loading the model failed.");
             status = "Model load failed: " + ex.Message;
         }
         // The endpoint may have been picked again while the model loaded. That switch frees it.
@@ -426,15 +440,11 @@ public sealed class AppHost : IAsyncDisposable
         return await LoadAsync(model).ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// The model a pick by hand changes and the model lists mark: while power switching is on, the
-    /// model chosen for the current power source when it names one, otherwise the active model.
-    /// </summary>
-    public string SelectedModelId =>
-        PowerSlotId() is { } slot && ModelCatalog.FindById(slot) is not null ? slot : ActiveModel().Id;
+    /// <inheritdoc cref="ModelSelection.SelectedModelId"/>
+    public string SelectedModelId => ModelSelection.Current(Settings).SelectedModelId;
 
     /// <summary>The model that runs: the loaded one, or the one the next load picks.</summary>
-    public string EffectiveModelId => Runtime.ActiveModel?.Id ?? (PowerSourceModel() ?? ActiveModel()).Id;
+    public string EffectiveModelId => Runtime.ActiveModel?.Id ?? ModelSelection.Current(Settings).ModelToLoad.Id;
 
     /// <summary>
     /// Records a model picked by hand. While power switching is on the pick goes into the current
@@ -443,12 +453,8 @@ public sealed class AppHost : IAsyncDisposable
     public void SelectModel(string id) => Update(s => PickModel(s, id));
 
     /// <summary>Writes a model picked by hand into <paramref name="settings"/>, as <see cref="SelectModel"/> does.</summary>
-    public static void PickModel(AppSettings settings, string id)
-    {
-        if (!settings.PowerModelSwitching) settings.ActiveModelId = id;
-        else if (PowerStatus.IsOnBattery) settings.BatteryModelId = id;
-        else settings.PluggedInModelId = id;
-    }
+    public static void PickModel(AppSettings settings, string id) =>
+        ModelSelection.Pick(settings, id, PowerStatus.IsOnBattery);
 
     private async Task<bool> LoadAsync(CotabbyModel model)
     {
@@ -466,32 +472,15 @@ public sealed class AppHost : IAsyncDisposable
     /// <summary>The model to load. A missing or unknown active model id is replaced and saved. Runs on the UI thread.</summary>
     private CotabbyModel ResolveActiveModel()
     {
-        var model = ActiveModel();
-        if (Settings.ActiveModelId != model.Id)
+        var selection = ModelSelection.Current(Settings);
+        var active = selection.ActiveModel;
+        if (Settings.ActiveModelId != active.Id)
         {
-            Settings.ActiveModelId = model.Id;
+            Settings.ActiveModelId = active.Id;
             ScheduleSave();
         }
-        return PowerSourceModel() ?? model;
+        return selection.ModelToLoad;
     }
-
-    /// <summary>The model the settings name outside power switching, or the first built-in one.</summary>
-    private CotabbyModel ActiveModel() =>
-        (Settings.ActiveModelId is { } id ? ModelCatalog.FindById(id) : null) ?? ModelCatalog.All[0];
-
-    /// <summary>The model id for the current power source, when that feature is on and the slot names one.</summary>
-    private string? PowerSlotId()
-    {
-        if (!Settings.PowerModelSwitching) return null;
-        var id = PowerStatus.IsOnBattery ? Settings.BatteryModelId : Settings.PluggedInModelId;
-        return id.Length > 0 ? id : null;
-    }
-
-    /// <summary>The model chosen for the current power source, when that feature is on and the file is present.</summary>
-    private CotabbyModel? PowerSourceModel() =>
-        PowerSlotId() is { } id && ModelCatalog.FindById(id) is { } model && ModelDownloader.IsCached(model)
-            ? model
-            : null;
 
     private void OnBatterySaverChanged(bool on)
     {

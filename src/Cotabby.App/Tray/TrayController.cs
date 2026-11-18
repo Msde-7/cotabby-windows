@@ -121,7 +121,7 @@ public sealed class TrayController : IDisposable
     }
 
     /// <summary>Shows a transient status such as a load failure. Null returns to the normal status.</summary>
-    public void SetStatus(string? text) => Application.Current.Dispatcher.Invoke(() =>
+    private void SetStatus(string? text) => Application.Current.Dispatcher.BeginInvoke(() =>
     {
         _statusOverride = text;
         Refresh();
@@ -166,7 +166,7 @@ public sealed class TrayController : IDisposable
         foreach (var model in ModelCatalog.Available())
         {
             var item = new MenuItem { Header = model.DisplayName, ToolTip = model.Subtitle, Tag = model.Id };
-            item.Click += (_, _) => _ = SwitchModelAsync(model.Id);
+            item.Click += (_, _) => SwitchModel(model.Id);
             _modelMenu.Items.Add(item);
         }
         // The check follows the model that actually runs, which power switching may have chosen.
@@ -186,7 +186,7 @@ public sealed class TrayController : IDisposable
         }
     }
 
-    private async Task SwitchModelAsync(string id)
+    private void SwitchModel(string id)
     {
         _host.SelectModel(id);
         if (ModelCatalog.FindById(id) is { } model && !ModelDownloader.IsCached(model))
@@ -195,16 +195,7 @@ public sealed class TrayController : IDisposable
             SettingsWindow.ShowOrFocus(_host);
             return;
         }
-        SetStatus("Loading model…");
-        try
-        {
-            await _host.EnsureModelReadyAsync(null, CancellationToken.None);
-            SetStatus(null);
-        }
-        catch (Exception ex)
-        {
-            SetStatus("Model load failed: " + ex.Message);
-        }
+        _ = _host.LoadSelectedModelAsync();
     }
 
     public void Dispose()

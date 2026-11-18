@@ -69,7 +69,7 @@ public partial class App : Application
             return;
         }
 
-        _ = LoadModelAsync(_host, _tray);
+        _ = _host.LoadCachedModelAsync();
 
         if (_host.Settings.ShowFirstRunWelcome)
         {
@@ -82,20 +82,6 @@ public partial class App : Application
         window.Show();
         window.Hide();
         return window;
-    }
-
-    private static async Task LoadModelAsync(AppHost host, TrayController tray)
-    {
-        tray.SetStatus("Loading model…");
-        try
-        {
-            bool loaded = await host.TryLoadCachedAsync();
-            tray.SetStatus(loaded ? null : "No model yet. Open Settings to download one.");
-        }
-        catch (Exception ex)
-        {
-            tray.SetStatus("Model load failed: " + ex.Message);
-        }
     }
 
     /// <summary>
