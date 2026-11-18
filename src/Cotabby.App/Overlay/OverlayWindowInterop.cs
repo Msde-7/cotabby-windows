@@ -15,6 +15,8 @@ internal static partial class OverlayWindowInterop
     private const int WS_EX_LAYERED = 0x00080000;
     private const int WS_EX_NOACTIVATE = 0x08000000;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOZORDER = 0x0004;
     private const uint SWP_NOACTIVATE = 0x0010;
     private const uint SWP_SHOWWINDOW = 0x0040;
     private const uint MONITOR_DEFAULTTONEAREST = 2;
@@ -44,6 +46,10 @@ internal static partial class OverlayWindowInterop
 
     public static void PlaceTopmost(IntPtr hwnd, double x, double y, double width, double height) =>
         SetWindowPos(hwnd, HWND_TOPMOST, (int)x, (int)y, (int)width, (int)height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+
+    /// <summary>Moves the window without sizing, showing or activating it.</summary>
+    public static void MoveTo(IntPtr hwnd, double x, double y) =>
+        SetWindowPos(hwnd, IntPtr.Zero, (int)x, (int)y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 
     /// <summary>Physical pixels per DIP on the monitor nearest the point.</summary>
     public static double DipScaleAt(double x, double y) =>

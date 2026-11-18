@@ -3,6 +3,7 @@ using Cotabby.App.Emoji;
 using Cotabby.App.Macros;
 using Cotabby.App.Overlay;
 using Cotabby.App.Settings;
+using Cotabby.App.UI.Controls;
 using Cotabby.Core.Context;
 using Cotabby.Core.Focus;
 using Cotabby.Core.History;
@@ -112,7 +113,7 @@ public sealed class AppHost : IAsyncDisposable
         // such as a dev build, does not repoint Open at Login to it. Defaults that stand in for a
         // file that could not be read are not the user's choice, so they leave the key alone.
         _launchAtLoginApplied = SettingsStore.CouldNotRead ? Settings.LaunchAtLogin : LaunchAtLogin.IsRegistered();
-        Runtime =_services.GetRequiredService<LlamaRuntimeManager>();
+        Runtime = _services.GetRequiredService<LlamaRuntimeManager>();
         Downloader = _services.GetRequiredService<ModelDownloader>();
         EndpointClient = _services.GetRequiredService<OpenAICompatibleApiClient>();
         EndpointCredentials = _services.GetRequiredService<IOpenAICompatibleCredentialStore>();
@@ -124,7 +125,7 @@ public sealed class AppHost : IAsyncDisposable
         {
             _logger.LogWarning("{Path} could not be read. Running on the defaults without saving over it.", SettingsStore.Path);
         }
-        _hook =_services.GetRequiredService<IKeyboardHook>();
+        _hook = _services.GetRequiredService<IKeyboardHook>();
         var focus = _services.GetRequiredService<IFocusTracker>();
         var inserter = _services.GetRequiredService<ITextInserter>();
 
@@ -393,6 +394,8 @@ public sealed class AppHost : IAsyncDisposable
     private void OnGlobalToggleKey(object? sender, KeyEventArgs args)
     {
         if (!args.Event.IsKeyDown || args.Event.IsRepeat || !Settings.GlobalToggle.Matches(args.Event)) return;
+        // A shortcut recorder in Cotabby's own window must see the key, so it can be bound again.
+        if (KeyRecorder.IsAnyRecording) return;
         args.Suppress = true;
         // Windows never sees the swallowed key, so the Alt or Win release that follows looks like
         // a lone tap and opens the menu bar or the Start menu. A key that does nothing, pressed

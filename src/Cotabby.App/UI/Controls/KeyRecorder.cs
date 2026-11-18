@@ -36,6 +36,9 @@ public sealed partial class KeyRecorder : Button
         [Key.CapsLock] = "Caps Lock",
     };
 
+    // The recorder that is recording, read by the keyboard hook's thread.
+    private static volatile KeyRecorder? _active;
+
     private string _idleText = "";
     private bool _recording;
 
@@ -46,7 +49,14 @@ public sealed partial class KeyRecorder : Button
         MinWidth = 44;
         Click += (_, _) => Begin();
         LostKeyboardFocus += (_, _) => End();
+        Unloaded += (_, _) => End();
     }
+
+    /// <summary>
+    /// True while a recorder waits for a key, so a global shortcut lets the key through to it
+    /// instead of acting on it.
+    /// </summary>
+    public static bool IsAnyRecording => _active is not null;
 
     /// <summary>Names the shortcut that already uses a binding, or returns null when it is free.</summary>
     public Func<KeyBinding, string?>? Conflict { get; init; }
@@ -63,6 +73,7 @@ public sealed partial class KeyRecorder : Button
     private void Begin()
     {
         _recording = true;
+        _active = this;
         Content = Prompt;
         SetResourceReference(BorderBrushProperty, "AccentBrush");
         Focus();
@@ -71,6 +82,7 @@ public sealed partial class KeyRecorder : Button
     private void End()
     {
         _recording = false;
+        if (_active == this) _active = null;
         Content = _idleText;
         ClearValue(BorderBrushProperty);
     }

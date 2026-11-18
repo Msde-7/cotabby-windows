@@ -123,12 +123,16 @@ public partial class GhostOverlayWindow : Window, IOverlayPresenter
         _field = field;
         _anchor = anchor;
         _anchorScale = OverlayWindowInterop.DipScaleAt(anchor.X, anchor.Y);
+        // A hidden window goes to the caret's monitor before it is laid out, so WPF measures the
+        // text at that monitor's scale and no scale change arrives once it shows.
+        if (!wasVisible && _source is not null) OverlayWindowInterop.MoveTo(_source.Handle, anchor.X, anchor.Y);
         _rightToLeft = TextDirectionDetector.IsRightToLeft(field?.PrecedingText);
         TabKeycapLabel.Text = HintLabel(field?.ProcessName);
         UseStyle(style);
         ApplyFont(anchor);
-        Visibility = Visibility.Visible;
         Render(text);
+        // Shown once it is sized and placed, so it never appears where the last suggestion was.
+        Visibility = Visibility.Visible;
         if (SuggestionFadeInPolicy.ShouldFadeIn(_fadeInEnabled, wasVisible, !SystemParameters.ClientAreaAnimation))
         {
             GhostRow.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, _fadeIn));

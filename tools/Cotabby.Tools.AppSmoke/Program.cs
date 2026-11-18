@@ -38,16 +38,17 @@ Process.Start(new ProcessStartInfo("notepad.exe", $"\"{scratchFile}\"") { UseShe
 Console.WriteLine("[smoke] Launched notepad.exe (may be Win11 stub → Store app, PID may not match).");
 
 // Windows 11 Notepad is a Store app and the launched PID is often a stub, so wait for a
-// Notepad window to appear in the foreground.
+// Notepad window showing the scratch file to appear. The name is matched without its
+// extension, which a title may leave out, and the GUID in it keeps it unique.
 IntPtr hwnd = IntPtr.Zero;
 for (int i = 0; i < 30 && hwnd == IntPtr.Zero; i++)
 {
     await Task.Delay(500);
-    hwnd = Win32.FindNotepadWindow();
+    hwnd = Win32.FindNotepadWindow(Path.GetFileNameWithoutExtension(scratchFile));
 }
 if (hwnd == IntPtr.Zero)
 {
-    Console.Error.WriteLine("[smoke] Could not find a Notepad top-level window after 15s.");
+    Console.Error.WriteLine("[smoke] Could not find the Notepad window with the scratch file after 15s.");
     return 3;
 }
 Console.WriteLine($"[smoke] Notepad HWND = 0x{(long)hwnd:X}.");
@@ -113,28 +114,41 @@ static partial class Win32
 
     public static int FindCotabbyPid() => Process.GetProcessesByName("Cotabby").FirstOrDefault()?.Id ?? 0;
 
-    public static IntPtr FindNotepadWindow()
+    /// <summary>
+    /// The visible window of a notepad.exe process whose title names the file, so typing never
+    /// goes into another Notepad document or an app that only has "Notepad" in its title, such
+    /// as Notepad++ or a browser tab. Both the classic and the Store Notepad run as notepad.exe
+    /// and put the file name in the title.
+    /// </summary>
+    public static IntPtr FindNotepadWindow(string fileName)
     {
-        // The window title matches both the classic and the Store Notepad. The class name
-        // "Notepad" matches only the classic one.
         IntPtr found = IntPtr.Zero;
         EnumWindows((hwnd, _) =>
         {
             if (!IsWindowVisible(hwnd)) return true;
-            var clsBuf = new System.Text.StringBuilder(256);
-            GetClassName(hwnd, clsBuf, clsBuf.Capacity);
-            var cls = clsBuf.ToString();
             var titleBuf = new System.Text.StringBuilder(512);
             GetWindowText(hwnd, titleBuf, titleBuf.Capacity);
-            var title = titleBuf.ToString();
-            if (cls == "Notepad" || title.Contains("Notepad", StringComparison.OrdinalIgnoreCase))
-            {
-                found = hwnd;
-                return false;
-            }
-            return true;
+            if (!titleBuf.ToString().Contains(fileName, StringComparison.OrdinalIgnoreCase)) return true;
+            GetWindowThreadProcessId(hwnd, out int pid);
+            if (!IsNotepad(pid)) return true;
+            found = hwnd;
+            return false;
         }, IntPtr.Zero);
         return found;
+    }
+
+    private static bool IsNotepad(int pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return process.ProcessName.Equals("notepad", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException)
+        {
+            // The process has exited.
+            return false;
+        }
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetWindowTextW")]
