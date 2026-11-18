@@ -63,6 +63,16 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
     private readonly SuggestionDismissalMemory _dismissals = new();
     private readonly SuggestionAnchorCache _anchors;
     private readonly ImeCompositionTracker _ime = new();
+
+    /// <summary>The field when the current composition began, or null while nothing composes.</summary>
+    private FocusedField? _compositionStart;
+
+    /// <summary>The least time between two reads of the input method's mode while keys are held for it.</summary>
+    private static readonly TimeSpan ImeReobserveInterval = TimeSpan.FromMilliseconds(250);
+
+    // When the mode was last read for held keys, and whether a read is under way. UI context only.
+    private long _imeObservedAt;
+    private bool _imeReobserving;
     private readonly SendOrPostCallback _handleEvent;
 
     private volatile SuggestionSettings _settings = SuggestionSettings.Default;

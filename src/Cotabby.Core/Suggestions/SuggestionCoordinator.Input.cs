@@ -18,6 +18,7 @@ public sealed partial class SuggestionCoordinator
             if (previousIdentity != _focusIdentity)
             {
                 _ime.Reset();
+                _compositionStart = null;
                 PrewarmField(field);
             }
             _ime.Observe(field?.ImeLanguageId ?? 0);
@@ -276,18 +277,25 @@ public sealed partial class SuggestionCoordinator
     /// </summary>
     private bool HoldsForComposition(KeyboardEvent ev)
     {
+        bool wasComposing = _ime.IsComposing;
         bool committed = _ime.Key(ev);
         if (_ime.IsComposing)
         {
+            // The field as it was before the composition. Reads while composing bring the composed
+            // text into the tracker's snapshot, and a commit that leaves the text as it is would
+            // then look like no change at all.
+            if (!wasComposing) _compositionStart = _focus.Current;
             if (_session is not null) CancelSession("the input method is composing");
             _prediction = null;
             _work.Cancel();
             ReobserveIme();
             return true;
         }
+        var start = _compositionStart;
+        _compositionStart = null;
         if (!committed) return false;
         // The commit replaces the composition in the field, which a key count cannot follow.
-        SetPublishBaseline(_focus.Current, awaitsChange: true);
+        SetPublishBaseline(start ?? _focus.Current, awaitsChange: true);
         SchedulePrediction(typed: null);
         return true;
     }
@@ -297,21 +305,35 @@ public sealed partial class SuggestionCoordinator
     /// a request is what normally reads it, so the hold would last until Enter or Escape after the
     /// user turned the input method off with the mouse or the language bar.
     /// </summary>
-    private void ReobserveIme() => _ = Task.Run(() =>
+    /// <remarks>
+    /// The focus tracker only reads the whole field, so a burst of composing keys shares one read
+    /// per <see cref="ImeReobserveInterval"/>. A key inside the interval reads at its end.
+    /// </remarks>
+    private void ReobserveIme()
     {
-        try
+        if (_imeReobserving) return;
+        _imeReobserving = true;
+        var wait = ImeReobserveInterval - _clock.GetElapsedTime(_imeObservedAt);
+        _ = Task.Run(async () =>
         {
-            if (_focus.Refresh() is not { } field) return;
+            FocusedField? field = null;
+            try
+            {
+                if (wait > TimeSpan.Zero) await Task.Delay(wait, _clock).ConfigureAwait(false);
+                field = _focus.Refresh();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Reading the input method state failed.");
+            }
             Post(() =>
             {
-                if (FocusIdentity(field) == _focusIdentity) _ime.Observe(field.ImeLanguageId);
+                _imeReobserving = false;
+                _imeObservedAt = _clock.GetTimestamp();
+                if (field is not null && FocusIdentity(field) == _focusIdentity) _ime.Observe(field.ImeLanguageId);
             });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Reading the input method state failed.");
-        }
-    });
+        });
+    }
 
     /// <summary>
     /// A typed letter the running generation agrees with keeps it going instead of starting over,

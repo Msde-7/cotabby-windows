@@ -86,6 +86,24 @@ public sealed class SuggestionCoordinatorParityTests : CoordinatorHarness
     }
 
     [Fact]
+    public async Task ACommitThatLeavesTheTextAsComposed_IsReadAtOnce()
+    {
+        Focus.Focus(Fields.Text("") with { ImeLanguageId = JapaneseIme });
+        // The app shows the composition in the field, so Enter commits it without changing the text.
+        Hook.Press(Keys.Char('k'));
+        Hook.Press(Keys.Char('a'));
+        await KeysHandled();
+        Focus.Append("ka");
+        await Settled();
+        int reads = Focus.Refreshes;
+
+        Hook.Press(Keys.Special(KeyKind.Enter));
+
+        await Eventually(() => !Engine.Requests.IsEmpty, "committing the composition asks for a suggestion");
+        Assert.True(Focus.Refreshes - reads <= 3, $"the request read the field {Focus.Refreshes - reads} times");
+    }
+
+    [Fact]
     public async Task AnInputMethodModeKey_CommitsTheComposition()
     {
         Focus.Focus(Fields.Text("") with { ImeLanguageId = JapaneseIme });
@@ -106,11 +124,27 @@ public sealed class SuggestionCoordinatorParityTests : CoordinatorHarness
 
         // Turned off from the language bar: no key, and no focus event.
         Focus.Replace(Focus.Current! with { ImeLanguageId = 0 });
+        int reads = Focus.Refreshes;
         Type("n");
+        await Eventually(() => Focus.Refreshes > reads, "the held key reads the input method's mode");
         await Settled();
         Type("o");
 
         await Eventually(() => !Engine.Requests.IsEmpty, "typing asks for suggestions again");
+    }
+
+    [Fact]
+    public async Task ABurstOfComposingKeys_ReadsTheInputMethodLessThanOncePerKey()
+    {
+        Focus.Focus(Fields.Text("") with { ImeLanguageId = JapaneseIme });
+        await Settled();
+        int reads = Focus.Refreshes;
+
+        Type("konnichiha");
+        await Settled();
+
+        Assert.InRange(Focus.Refreshes - reads, 1, 3);
+        Assert.Empty(Engine.Requests);
     }
 
     [Fact]
