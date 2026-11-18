@@ -103,7 +103,8 @@ public static class BaseCompletionPromptRenderer
             MinChars: 1,
             MaxChars: Math.Max(1, GraphemeString.CountOf(prefixText)),
             SectionTruncation.PreserveEnd,
-            PreservesWhitespace: true));
+            PreservesWhitespace: true,
+            LiveText: true));
 
         var kept = tokenBudget is { } tokens
             ? PromptSectionBudget.Allocate(sections, tokens, TokenCountEstimator.Estimate)

@@ -34,8 +34,25 @@ public static class SuggestionRequestFactory
     /// The last <paramref name="maxCharacters"/> characters, cut further to the last
     /// <paramref name="maxWords"/> words. The cut keeps the original whitespace, since line breaks
     /// and the space before the caret matter to the continuation.
+    /// <para>
+    /// A long text is then cut a little later, at a <see cref="StableTextCut"/> anchor, so the
+    /// window's start holds still while the writer types and the model reuses the prompt it
+    /// already evaluated. Text at the character limit counts as cut, since the caller may have
+    /// handed over only the tail of a longer document.
+    /// </para>
     /// </summary>
     public static string Prefix(string preceding, int maxCharacters = MaxPrefixChars, int maxWords = MaxPrefixWords)
+    {
+        string window = BudgetWindow(preceding, maxCharacters, maxWords);
+        if (window.Length == 0 || (window.Length == preceding.Length && preceding.Length < maxCharacters))
+        {
+            return window;
+        }
+        int start = preceding.Length - window.Length;
+        return preceding[StableTextCut.WindowStart(preceding, start, maxAdvance: window.Length / 4)..];
+    }
+
+    private static string BudgetWindow(string preceding, int maxCharacters, int maxWords)
     {
         if (maxCharacters <= 0 || maxWords <= 0) return "";
         string window = preceding.Length <= maxCharacters

@@ -19,6 +19,10 @@ public enum SectionTruncation
 /// <param name="Truncation">Which end survives shortening.</param>
 /// <param name="PreservesWhitespace">Live editor text must keep its exact caret boundary. Reference
 /// notes trim their edges, but opting in keeps spaces and newlines and counts them against the budget.</param>
+/// <param name="LiveText">The text the writer is typing, which grows by a character with every
+/// keystroke. The model reuses the prompt it evaluated last up to the first changed character, so
+/// nothing else may move with it: a cut lands on a <see cref="StableTextCut"/> anchor and ends the
+/// fill, and the budget left after the whole text is rounded down to a 64th of the total.</param>
 public sealed record PromptSection(
     string Name,
     string Content,
@@ -26,7 +30,8 @@ public sealed record PromptSection(
     int MinChars,
     int MaxChars,
     SectionTruncation Truncation,
-    bool PreservesWhitespace = false);
+    bool PreservesWhitespace = false,
+    bool LiveText = false);
 
 /// <summary>
 /// Budget allocator for the base-model prompt. Each section declares a priority and a character
@@ -53,6 +58,7 @@ public static class PromptSectionBudget
         IReadOnlyList<PromptSection> sections, int totalTokens, Func<string, int> estimate)
     {
         int remainingTokens = Math.Max(0, totalTokens);
+        int liveStep = Math.Max(1, totalTokens / 64);
         var kept = new PromptSection?[sections.Count];
         foreach (int index in FillOrder(sections))
         {
@@ -63,15 +69,24 @@ public static class PromptSectionBudget
             int contentTokens = Math.Max(1, estimated);
             double charsPerToken = (double)content.Count / contentTokens;
             int remainingChars = (int)Math.Floor(remainingTokens * charsPerToken);
-            int cap = Math.Min(Math.Min(section.MaxChars, content.Count), remainingChars);
+            int wanted = Math.Min(section.MaxChars, content.Count);
+            int cap = Math.Min(wanted, remainingChars);
             if (cap < section.MinChars) continue;
-            string truncated = AllocatedContent(section, content, cap);
+            bool budgetCut = cap < wanted;
+            string truncated = AllocatedContent(section, content, cap, section.LiveText && budgetCut);
             if (truncated.Length == 0) continue;
             kept[index] = section with { Content = truncated };
             // A truncated slice can be token-denser than the section average, so floor at zero.
             // Over-deduction must never read as a hard stop for a section that would still fit.
             int used = ReferenceEquals(truncated, section.Content) ? estimated : estimate(truncated);
             remainingTokens = Math.Max(0, remainingTokens - used);
+            if (section.LiveText)
+            {
+                // What the live text leaves changes with every keystroke. Sections filled from it
+                // would be cut one character differently each time, and each such change makes the
+                // model evaluate everything after it again.
+                remainingTokens = budgetCut ? 0 : remainingTokens / liveStep * liveStep;
+            }
         }
         return kept.OfType<PromptSection>().ToList();
     }
@@ -87,9 +102,15 @@ public static class PromptSectionBudget
         return mode == SectionTruncation.PreserveStart ? text.Prefix(chars) : text.Suffix(chars);
     }
 
-    private static string AllocatedContent(PromptSection section, GraphemeString content, int characterCap)
+    private static string AllocatedContent(PromptSection section, GraphemeString content, int characterCap, bool anchored)
     {
         string text = Truncate(content, characterCap, section.Truncation);
+        if (anchored && section.Truncation == SectionTruncation.PreserveEnd && text.Length > 0)
+        {
+            // The cut moves only when the budget's own cut passes an anchor, not on every keystroke.
+            int start = content.Text.Length - text.Length;
+            text = content.Text[StableTextCut.WindowStart(content.Text, start, maxAdvance: text.Length / 4)..];
+        }
         return section.PreservesWhitespace ? text : ScalarSets.TrimWhitespaceAndNewlines(text);
     }
 
