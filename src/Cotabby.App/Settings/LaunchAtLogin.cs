@@ -48,6 +48,39 @@ public static class LaunchAtLogin
         }
     }
 
+    /// <summary>
+    /// Whether the Run key starts a Cotabby that is still on disk, or null when the registry cannot
+    /// be read. An entry left pointing into a build folder that was cleaned or moved counts as not
+    /// registered, so the startup check points it at this copy. One naming another copy that
+    /// exists, such as an installed build seen from a dev build, is left alone.
+    /// </summary>
+    public static bool? IsRegisteredToExistingApp()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: false);
+            return key?.GetValue(ValueName) is string value && TargetPath(value) is { } exe && File.Exists(exe);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The program a Run value starts: the quoted path, or the text up to the first space.</summary>
+    public static string? TargetPath(string value)
+    {
+        value = value.Trim();
+        if (value.StartsWith('"'))
+        {
+            int end = value.IndexOf('"', 1);
+            return end > 1 ? value[1..end] : null;
+        }
+        int space = value.IndexOf(' ');
+        var path = space < 0 ? value : value[..space];
+        return path.Length > 0 ? path : null;
+    }
+
     private static string? ResolveLaunchTarget()
     {
         // Under `dotnet run` the main module is dotnet.exe, so fall back to Cotabby.exe next to

@@ -239,8 +239,12 @@ public partial class WelcomeWindow : Window
             return;
         }
 
-        _modelCts?.Cancel();
-        _modelCts = new CancellationTokenSource();
+        // A copy of this window that was closed during its download leaves the download running.
+        // Following it shows its progress, where starting a second one would fail.
+        var running = _host.RunningSetupDownload is { } current && current.ModelId == modelId && !current.Completion.IsCompleted
+            ? current
+            : null;
+        if (_modelCts != running?.Cancellation) _modelCts?.Cancel();
         var seq = ++_ensureSeq;
         _lastEnsureFor = modelId;
         _ensureBusy = true;
@@ -249,7 +253,7 @@ public partial class WelcomeWindow : Window
         _modelPercent = null;
         UpdateModelStatusUi();
 
-        var progress = new Progress<ModelDownloader.Progress>(p =>
+        void OnProgress(object? sender, ModelDownloader.Progress p)
         {
             if (seq != _ensureSeq) return;
             if (p.TotalBytes is long total && total > 0)
@@ -257,14 +261,21 @@ public partial class WelcomeWindow : Window
                 _modelPercent = (int)(p.BytesDownloaded * 100 / total);
             }
             UpdateModelStatusUi();
-        });
+        }
 
-        var cts = _modelCts;
-        var ensure = _host.EnsureModelReadyAsync(progress, cts.Token);
-        _host.RunningSetupDownload = new AppHost.SetupDownload(modelId, cts, ensure);
+        var download = running;
+        if (download is null)
+        {
+            var cts = new CancellationTokenSource();
+            var progress = new Progress<ModelDownloader.Progress>();
+            download = new AppHost.SetupDownload(modelId, cts, _host.EnsureModelReadyAsync(progress, cts.Token), progress);
+            _host.RunningSetupDownload = download;
+        }
+        _modelCts = download.Cancellation;
+        download.Progress.ProgressChanged += OnProgress;
         try
         {
-            await ensure;
+            await download.Completion;
             if (seq == _ensureSeq)
             {
                 _modelReadyFor = modelId;
@@ -283,7 +294,11 @@ public partial class WelcomeWindow : Window
                 _ensureBusy = false;
             }
         }
-        if (_host.RunningSetupDownload?.Cancellation == cts) _host.RunningSetupDownload = null;
+        finally
+        {
+            download.Progress.ProgressChanged -= OnProgress;
+        }
+        if (ReferenceEquals(_host.RunningSetupDownload, download)) _host.RunningSetupDownload = null;
         UpdateModelStatusUi();
     }
 

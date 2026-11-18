@@ -68,6 +68,9 @@ public sealed class AppHost : IAsyncDisposable
 
     /// <summary>Fires when a timed pause ends, so focus tracking starts again.</summary>
     private readonly Timer _pauseEndTimer;
+    /// <summary>Guards the timers against a change arriving after shutdown disposed them.</summary>
+    private readonly object _timerGate = new();
+    private bool _disposed;
     /// <summary>Whether focus should be tracked, as last applied. Read by the background switch.</summary>
     private volatile bool _focusTracked = true;
 
@@ -108,7 +111,9 @@ public sealed class AppHost : IAsyncDisposable
     /// </summary>
     public event Action? SetupDownloadChanged;
 
-    public sealed record SetupDownload(string ModelId, CancellationTokenSource Cancellation, Task Completion);
+    /// <summary>A first-run download. A reopened first-run window follows its <see cref="Progress"/> instead of starting another.</summary>
+    public sealed record SetupDownload(
+        string ModelId, CancellationTokenSource Cancellation, Task Completion, Progress<ModelDownloader.Progress> Progress);
 
     /// <summary>Raised on the UI thread after settings were applied or a model was loaded, so open windows and the tray can refresh.</summary>
     public event Action? SettingsApplied;
@@ -149,8 +154,11 @@ public sealed class AppHost : IAsyncDisposable
         Settings = SettingsStore.Load();
         // The Run key is written only where it disagrees with the setting, so running another copy,
         // such as a dev build, does not repoint Open at Login to it. Defaults that stand in for a
-        // file that could not be read are not the user's choice, so they leave the key alone.
-        _launchAtLoginApplied = SettingsStore.CouldNotRead ? Settings.LaunchAtLogin : LaunchAtLogin.IsRegistered();
+        // file that could not be read are not the user's choice, so they leave the key alone. An
+        // entry whose program is gone, such as a cleaned build folder, is pointed at this copy.
+        _launchAtLoginApplied = SettingsStore.CouldNotRead ? Settings.LaunchAtLogin
+            : Settings.LaunchAtLogin ? LaunchAtLogin.IsRegisteredToExistingApp()
+            : LaunchAtLogin.IsRegistered();
         Runtime = new LlamaRuntimeManager(loggers.CreateLogger<LlamaRuntimeManager>(), loggers);
         Downloader = new ModelDownloader(_http, loggers.CreateLogger<ModelDownloader>());
         EndpointClient = new OpenAICompatibleApiClient();
@@ -235,7 +243,10 @@ public sealed class AppHost : IAsyncDisposable
     private void ScheduleSave()
     {
         _savePending = true;
-        _saveTimer.Change(SaveDelay, Timeout.InfiniteTimeSpan);
+        lock (_timerGate)
+        {
+            if (!_disposed) _saveTimer.Change(SaveDelay, Timeout.InfiniteTimeSpan);
+        }
     }
 
     private void SavePending()
@@ -352,7 +363,10 @@ public sealed class AppHost : IAsyncDisposable
         var pauseEnds = Settings.Enabled && pause?.Until is { } until
             ? TimeSpan.FromTicks(Math.Min((until - now).Ticks, TimeSpan.FromHours(1).Ticks)) + TimeSpan.FromMilliseconds(100)
             : Timeout.InfiniteTimeSpan;
-        _pauseEndTimer.Change(pauseEnds, Timeout.InfiniteTimeSpan);
+        lock (_timerGate)
+        {
+            if (!_disposed) _pauseEndTimer.Change(pauseEnds, Timeout.InfiniteTimeSpan);
+        }
 
         if (track == _focusTracked) return;
         _focusTracked = track;
@@ -584,8 +598,12 @@ public sealed class AppHost : IAsyncDisposable
 
         Step("save settings", () =>
         {
-            _saveTimer.Dispose();
-            _pauseEndTimer.Dispose();
+            lock (_timerGate)
+            {
+                _disposed = true;
+                _saveTimer.Dispose();
+                _pauseEndTimer.Dispose();
+            }
             SaveSettings();
         });
         Step("unsubscribe", () =>

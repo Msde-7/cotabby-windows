@@ -18,13 +18,19 @@ public sealed class FileLoggerProvider : ILoggerProvider
     private readonly string[] _paths;
     private StreamWriter? _writer;
 
+    /// <summary>How long after a failed rotation the next one is tried.</summary>
+    private static readonly TimeSpan RotationRetryDelay = TimeSpan.FromMinutes(1);
+    private readonly TimeProvider _time;
+    private DateTimeOffset _rotationRetryAt = DateTimeOffset.MinValue;
+
     /// <summary>
     /// Opens the log. Never throws: when another process holds the file the log goes to
     /// cotabby.alt.log, and when that fails too, nowhere.
     /// </summary>
-    public FileLoggerProvider(string path, long maxBytes = DefaultMaxBytes)
+    public FileLoggerProvider(string path, long maxBytes = DefaultMaxBytes, TimeProvider? time = null)
     {
         _maxBytes = maxBytes;
+        _time = time ?? TimeProvider.System;
         _paths = [path, Path.ChangeExtension(path, ".alt.log")];
         try
         {
@@ -67,7 +73,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
             {
                 writer.WriteLine(line);
                 // A tray app can run for weeks, so the log is also rotated while it runs.
-                if (writer.BaseStream.Position < _maxBytes) return;
+                if (writer.BaseStream.Position < _maxBytes || !RotationDue) return;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -101,7 +107,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
         try
         {
             // The log is for diagnosing recent sessions, so it starts over once it has grown large.
-            if (File.Exists(path) && new FileInfo(path).Length >= _maxBytes) Rotate(path);
+            if (File.Exists(path) && new FileInfo(path).Length >= _maxBytes && RotationDue) Rotate(path);
             return new StreamWriter(new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read))
             {
                 AutoFlush = true,
@@ -113,7 +119,10 @@ public sealed class FileLoggerProvider : ILoggerProvider
         }
     }
 
-    private static void Rotate(string path)
+    /// <summary>False for a while after a rotation failed, so a held file is not closed and reopened for every line.</summary>
+    private bool RotationDue => _time.GetUtcNow() >= _rotationRetryAt;
+
+    private void Rotate(string path)
     {
         try
         {
@@ -122,6 +131,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // Another process holds the file. It keeps growing until a later rotation can rename it.
+            _rotationRetryAt = _time.GetUtcNow() + RotationRetryDelay;
         }
     }
 

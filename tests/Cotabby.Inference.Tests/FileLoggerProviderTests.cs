@@ -87,6 +87,38 @@ public sealed class FileLoggerProviderTests : IDisposable
     }
 
     [Fact]
+    public void FailedRotation_IsRetriedOnlyAfterAWhile()
+    {
+        var time = new ManualTime();
+        File.WriteAllText(LogPath, new string('x', 200));
+        string oldLog = Path.ChangeExtension(LogPath, ".old.log");
+        // Another process reads the log without letting it be renamed.
+        var held = new FileStream(LogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+
+        using var provider = new FileLoggerProvider(LogPath, maxBytes: 100, time);
+        var logger = provider.CreateLogger("Test");
+        logger.LogInformation("while held");
+        held.Dispose();
+
+        // The file can be renamed now, but each line must not try again.
+        logger.LogInformation("released");
+        Assert.False(File.Exists(oldLog));
+
+        time.Advance(TimeSpan.FromMinutes(2));
+        logger.LogInformation("later");
+        Assert.True(File.Exists(oldLog));
+    }
+
+    private sealed class ManualTime : TimeProvider
+    {
+        private DateTimeOffset _now = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        public override DateTimeOffset GetUtcNow() => _now;
+
+        public void Advance(TimeSpan by) => _now += by;
+    }
+
+    [Fact]
     public void LongSession_RotatesOnceTheLogGrowsLarge()
     {
         using (var provider = new FileLoggerProvider(LogPath, maxBytes: 1000))
