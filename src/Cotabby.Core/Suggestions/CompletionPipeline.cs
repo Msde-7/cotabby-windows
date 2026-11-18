@@ -37,10 +37,23 @@ public static class CompletionPipeline
             PromptTokenBudget.ForRequest(PromptTokenBudget.Configured(EndpointContextWindowTokens), request.MaxTokens),
             forEndpoint: true);
 
-    public static SuggestionNormalizationResult Normalize(string raw, string prompt, SuggestionRequest request)
+    public static SuggestionNormalizationResult Normalize(string raw, string prompt, SuggestionRequest request) =>
+        new CompletionNormalizer(prompt, request).Normalize(raw);
+}
+
+/// <summary>
+/// <see cref="CompletionPipeline.Normalize"/> for one request, with the prompt, the caret text and
+/// the screen text split once. A streamed completion is normalized again for every token, and
+/// splitting a long field and its screen text each time cost about a millisecond per token.
+/// </summary>
+public sealed class CompletionNormalizer
+{
+    private readonly SuggestionNormalizationContext _text;
+    private readonly Lazy<ContextEchoGuard.Prepared> _echo;
+
+    public CompletionNormalizer(string prompt, SuggestionRequest request)
     {
-        var normalized = SuggestionTextNormalizer.NormalizeDetailed(
-            raw,
+        _text = new SuggestionNormalizationContext(
             new SuggestionNormalizationRequest(
                 Prompt: prompt,
                 PrecedingText: request.Prefix,
@@ -48,7 +61,16 @@ public static class CompletionPipeline
                 IsMultiLineEnabled: !request.SingleLine,
                 WordRange: request.WordRange));
         // Text that only continues the screen or the prompt's own notes is no suggestion, however clean it is.
-        string shownContext = string.Join('\n', new[] { request.ScreenContext, request.LanguageInstruction }.Concat(request.SurfaceLines));
-        return normalized with { Text = ContextEchoGuard.Trim(normalized.Text, shownContext, request.Prefix) };
+        _echo = new(() => ContextEchoGuard.Prepare(
+            string.Join('\n', new[] { request.ScreenContext, request.LanguageInstruction }.Concat(request.SurfaceLines)),
+            request.Prefix));
+    }
+
+    public SuggestionNormalizationResult Normalize(string raw)
+    {
+        var normalized = SuggestionTextNormalizer.NormalizeDetailed(raw, _text);
+        return normalized.Text.Length == 0
+            ? normalized
+            : normalized with { Text = ContextEchoGuard.Trim(normalized.Text, _echo.Value) };
     }
 }

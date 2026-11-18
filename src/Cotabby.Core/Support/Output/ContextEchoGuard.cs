@@ -21,18 +21,49 @@ public static class ContextEchoGuard
     /// </summary>
     public const int MinCopiedRun = 6;
 
-    /// <summary>The completion cut before the first copied part, or unchanged when nothing was copied.</summary>
-    public static string Trim(string completion, string context, string precedingText)
+    /// <summary>
+    /// The context and the user's own text split into words once, for checking every partial of
+    /// one streamed completion against them.
+    /// </summary>
+    public sealed class Prepared
     {
-        if (completion.Length == 0 || string.IsNullOrWhiteSpace(context)) return completion;
+        private readonly Lazy<List<string>> _ownWords;
 
-        var screenLines = context.Split('\n')
-            .Select(Words)
-            .Where(words => words.Count > 0)
-            .ToList();
-        var screenWords = screenLines.SelectMany(line => line.Select(w => w.Text)).ToList();
-        var ownWords = Words(precedingText).Select(w => w.Text).ToList();
-        var screenLineKeys = screenLines.Select(LineKey).ToHashSet(StringComparer.Ordinal);
+        internal Prepared(string context, string precedingText)
+        {
+            IsEmpty = string.IsNullOrWhiteSpace(context);
+            var screenLines = IsEmpty
+                ? []
+                : context.Split('\n').Select(Words).Where(words => words.Count > 0).ToList();
+            ScreenWords = screenLines.SelectMany(line => line.Select(w => w.Text)).ToList();
+            ScreenLineKeys = screenLines.Select(LineKey).ToHashSet(StringComparer.Ordinal);
+            // Needed only once a run matches the screen, which most completions never do.
+            _ownWords = new(() => Words(precedingText).Select(w => w.Text).ToList());
+        }
+
+        internal bool IsEmpty { get; }
+
+        internal List<string> ScreenWords { get; }
+
+        internal HashSet<string> ScreenLineKeys { get; }
+
+        internal List<string> OwnWords => _ownWords.Value;
+    }
+
+    /// <summary>Splits <paramref name="context"/> and <paramref name="precedingText"/> for <see cref="Trim(string, Prepared)"/>.</summary>
+    public static Prepared Prepare(string context, string precedingText) => new(context, precedingText);
+
+    /// <summary>The completion cut before the first copied part, or unchanged when nothing was copied.</summary>
+    public static string Trim(string completion, string context, string precedingText) =>
+        Trim(completion, Prepare(context, precedingText));
+
+    /// <summary><see cref="Trim(string, string, string)"/> against a context split once per request.</summary>
+    public static string Trim(string completion, Prepared prepared)
+    {
+        if (completion.Length == 0 || prepared.IsEmpty) return completion;
+
+        var screenWords = prepared.ScreenWords;
+        var screenLineKeys = prepared.ScreenLineKeys;
 
         int cut = completion.Length;
         int lineStart = 0;
@@ -45,7 +76,7 @@ public static class ContextEchoGuard
             // or name copied whole is a fair use of the screen.
             bool wholeLine = words.Count > 0 && screenLineKeys.Contains(LineKey(words))
                 && (!firstLine || words.Any(w => w.Text.All(char.IsDigit)));
-            if (wholeLine && !ContainsRun(ownWords, words.Select(w => w.Text).ToList(), 0, words.Count))
+            if (wholeLine && !ContainsRun(prepared.OwnWords, words.Select(w => w.Text).ToList(), 0, words.Count))
             {
                 cut = Math.Min(cut, firstLine ? lineStart + words[0].Start : Math.Max(0, lineStart - 1));
                 break;
@@ -56,7 +87,7 @@ public static class ContextEchoGuard
             {
                 int length = CopiedRunLength(texts, i);
                 if (length == 0) break;
-                if (ContainsRun(screenWords, texts, i, length) && !ContainsRun(ownWords, texts, i, length))
+                if (ContainsRun(screenWords, texts, i, length) && !ContainsRun(prepared.OwnWords, texts, i, length))
                 {
                     cut = Math.Min(cut, lineStart + words[i].Start);
                     break;
@@ -88,6 +119,7 @@ public static class ContextEchoGuard
         var current = new StringBuilder();
         int start = 0;
         int i = 0;
+        Span<char> lowered = stackalloc char[2];
         foreach (var rune in text.EnumerateRunes())
         {
             if (IsUnspacedCharacter(rune))
@@ -98,7 +130,8 @@ public static class ContextEchoGuard
             else if (Rune.IsLetterOrDigit(rune))
             {
                 if (current.Length == 0) start = i;
-                current.Append(Rune.ToLowerInvariant(rune).ToString());
+                // Appended as UTF-16 units, so a long screen text costs no string per letter.
+                current.Append(lowered[..Rune.ToLowerInvariant(rune).EncodeToUtf16(lowered)]);
             }
             else
             {

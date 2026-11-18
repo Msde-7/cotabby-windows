@@ -57,6 +57,47 @@ public sealed record SuggestionNormalizationRequest(
     SuggestionWordRange? WordRange = null);
 
 /// <summary>
+/// What normalizing reads from one request, derived once. A streamed completion is normalized
+/// again for every partial, and deriving these from a long caret text and prompt each time cost
+/// about a millisecond and half a megabyte per token.
+/// </summary>
+public sealed class SuggestionNormalizationContext
+{
+    /// <summary>Words before the caret a leading echo is looked for in.</summary>
+    internal const int EchoSearchWords = 15;
+
+    private readonly Lazy<List<string>> _precedingTailWords;
+    private readonly Lazy<string?> _copiedRunTail;
+
+    public SuggestionNormalizationContext(SuggestionNormalizationRequest request)
+    {
+        Request = request;
+        Prompt = SuggestionTextNormalizer.NormalizeLineEndings(request.Prompt);
+        PrecedingText = SuggestionTextNormalizer.NormalizeLineEndings(request.PrecedingText);
+        _precedingTailWords = new(() =>
+        {
+            var words = GraphemeString.Words(request.PrecedingText);
+            return words.GetRange(Math.Max(0, words.Count - EchoSearchWords), Math.Min(words.Count, EchoSearchWords));
+        });
+        _copiedRunTail = new(() => CompletionContentPolicy.CopiedRunTail(request.PrecedingText));
+    }
+
+    public SuggestionNormalizationRequest Request { get; }
+
+    /// <summary>The prompt with the line endings the output is compared in.</summary>
+    internal string Prompt { get; }
+
+    /// <summary>The caret text with the line endings the output is compared in.</summary>
+    internal string PrecedingText { get; }
+
+    /// <summary>The last <see cref="EchoSearchWords"/> whitespace-separated words before the caret.</summary>
+    internal List<string> PrecedingTailWords => _precedingTailWords.Value;
+
+    /// <summary>The words before the caret a completion must not repeat, or null when there are too few.</summary>
+    internal string? CopiedRunTail => _copiedRunTail.Value;
+}
+
+/// <summary>
 /// Outcome of normalizing one raw completion. <c>Suppression</c> is null whenever <c>Text</c> is
 /// non-empty.
 /// </summary>
@@ -102,8 +143,17 @@ public static partial class SuggestionTextNormalizer
     /// specific cause.
     /// </summary>
     public static SuggestionNormalizationResult NormalizeDetailed(
-        string rawSuggestion, SuggestionNormalizationRequest request)
+        string rawSuggestion, SuggestionNormalizationRequest request) =>
+        NormalizeDetailed(rawSuggestion, new SuggestionNormalizationContext(request));
+
+    /// <summary>
+    /// <see cref="NormalizeDetailed(string, SuggestionNormalizationRequest)"/> with what the request
+    /// gives already derived, for normalizing many partials of one completion.
+    /// </summary>
+    public static SuggestionNormalizationResult NormalizeDetailed(
+        string rawSuggestion, SuggestionNormalizationContext context)
     {
+        var request = context.Request;
         bool rawHadContent = !ScalarSets.IsBlank(rawSuggestion);
         // Upstream deletes every CR. Windows hosts such as RichEdit break lines with a lone CR, which
         // reaches the prompt and can come back in the output, so CRLF and a lone CR become LF.
@@ -113,7 +163,7 @@ public static partial class SuggestionTextNormalizer
         // (a hallucinated new turn) is truncated.
         normalized = ControlTokenMarkers.Sanitize(normalized);
         normalized = StripThinkBlocks(normalized);
-        normalized = StripPromptEcho(normalized, request);
+        normalized = StripPromptEcho(normalized, context);
         normalized = ScalarSets.Trim(normalized, IsControlOrNewline);
 
         // Small models often emit leading newlines before the continuation. They are trimmed before
@@ -153,7 +203,7 @@ public static partial class SuggestionTextNormalizer
         // Strip leading words that repeat the tail of the preceding text. A full collapse here
         // means the model only re-emitted the preceding text.
         string beforeEchoStrip = normalized;
-        normalized = StripEchoPrefix(normalized, request.PrecedingText);
+        normalized = StripEchoPrefix(normalized, context.PrecedingTailWords);
         bool collapsedByEcho = beforeEchoStrip.Length > 0 && normalized.Length == 0;
 
         // Space management runs after echo suppression because stripping echoed words can expose a
@@ -170,7 +220,7 @@ public static partial class SuggestionTextNormalizer
             return new(string.Empty, SuppressionForEmptyResult(collapsedByEcho, rawHadContent, normalized));
         }
 
-        if (CompletionContentPolicy.Rejection(normalized, request.PrecedingText) is { } rejection)
+        if (CompletionContentPolicy.Rejection(normalized, request.PrecedingText, context.CopiedRunTail) is { } rejection)
         {
             return new(string.Empty, rejection);
         }
@@ -184,16 +234,16 @@ public static partial class SuggestionTextNormalizer
     }
 
     /// <summary>Removes an echoed prompt, then an echoed caret prefix, from the front of the output.</summary>
-    private static string StripPromptEcho(string text, SuggestionNormalizationRequest request)
+    private static string StripPromptEcho(string text, SuggestionNormalizationContext context)
     {
         // The output's line endings are already normalized, so the inputs are compared the same way.
         string normalized = text;
-        string prompt = NormalizeLineEndings(request.Prompt);
+        string prompt = context.Prompt;
         if (prompt.Length > 0 && normalized.StartsWith(prompt, StringComparison.Ordinal))
         {
             normalized = ScalarSets.Trim(normalized[prompt.Length..], IsControlOrNewline);
         }
-        string precedingText = NormalizeLineEndings(request.PrecedingText);
+        string precedingText = context.PrecedingText;
         if (precedingText.Length > 0 && normalized.StartsWith(precedingText, StringComparison.Ordinal))
         {
             normalized = normalized[precedingText.Length..];
@@ -201,7 +251,7 @@ public static partial class SuggestionTextNormalizer
         return normalized;
     }
 
-    private static string NormalizeLineEndings(string text) =>
+    internal static string NormalizeLineEndings(string text) =>
         text.Contains('\r') ? text.Replace("\r\n", "\n").Replace('\r', '\n') : text;
 
     /// <summary>
@@ -234,15 +284,15 @@ public static partial class SuggestionTextNormalizer
     /// then strips that overlap. Returns empty if the entire suggestion is echoed. Every offset in
     /// the preceding tail is tried, so "hi i like" + "i like to eat" finds the two-word overlap.
     /// </summary>
-    private static string StripEchoPrefix(string suggestion, string precedingText)
+    /// <param name="precedingWords">The last words before the caret, at most <see cref="SuggestionNormalizationContext.EchoSearchWords"/>.</param>
+    private static string StripEchoPrefix(string suggestion, List<string> precedingWords)
     {
         var suggestionWords = new GraphemeString(suggestion).Split(g => g.IsWhitespace);
         if (suggestionWords.Count == 0) return suggestion;
-        var precedingWords = GraphemeString.Words(precedingText);
         if (precedingWords.Count == 0) return suggestion;
 
         // If the model echoes 15 or more words the empty-result guard should drop the suggestion.
-        int maxSearchDepth = Math.Min(precedingWords.Count, 15);
+        int maxSearchDepth = Math.Min(precedingWords.Count, SuggestionNormalizationContext.EchoSearchWords);
         int bestOverlap = 0;
         for (int offset = 1; offset <= Math.Min(maxSearchDepth, suggestionWords.Count); offset++)
         {

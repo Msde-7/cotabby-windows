@@ -43,7 +43,11 @@ public static partial class CompletionContentPolicy
     [GeneratedRegex(@"</?[a-zA-Z][a-zA-Z0-9]*(\s[^<>]*)?>")]
     private static partial Regex HtmlTag();
 
-    public static CompletionSuppressionReason? Rejection(string completion, string precedingText)
+    public static CompletionSuppressionReason? Rejection(string completion, string precedingText) =>
+        Rejection(completion, precedingText, CopiedRunTail(precedingText));
+
+    /// <param name="copiedRunTail"><see cref="CopiedRunTail"/> of <paramref name="precedingText"/>, derived once per request.</param>
+    internal static CompletionSuppressionReason? Rejection(string completion, string precedingText, string? copiedRunTail)
     {
         if (!HasWordContent(completion)) return CompletionSuppressionReason.NoWordContent;
         if (StartsWithClosingPunctuationAfterSpace(completion, precedingText))
@@ -52,7 +56,7 @@ public static partial class CompletionContentPolicy
         }
         if (LooksLikeScaffolding(completion, precedingText)) return CompletionSuppressionReason.Scaffolding;
         if (IsRepetitive(completion)) return CompletionSuppressionReason.RepetitiveContent;
-        if (CopiesPrecedingText(completion, precedingText)) return CompletionSuppressionReason.CopiesPrecedingText;
+        if (CopiesPrecedingText(completion, copiedRunTail)) return CompletionSuppressionReason.CopiesPrecedingText;
         return null;
     }
 
@@ -78,18 +82,29 @@ public static partial class CompletionContentPolicy
     /// in order. Punctuation and case are ignored so "s." matches "s". Four words are enough that
     /// ordinary shared phrasing ("thanks for the") never trips it.
     /// </summary>
-    private static bool CopiesPrecedingText(string completion, string precedingText)
+    private static bool CopiesPrecedingText(string completion, string? tail)
     {
-        var words = ContentWords(completion);
-        var recent = ContentWords(new GraphemeString(precedingText).Suffix(CopySearchWindow));
         const int run = CopiedRunWords;
-        if (words.Count < run || recent.Count < run) return false;
-        string tail = string.Join(' ', recent.GetRange(recent.Count - run, run));
+        if (tail is null) return false;
+        var words = ContentWords(completion);
+        if (words.Count < run) return false;
         for (int start = 0; start <= words.Count - run; start++)
         {
             if (string.Join(' ', words.GetRange(start, run)) == tail) return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// The last <see cref="CopiedRunWords"/> words before the caret, joined by spaces, or null when
+    /// fewer are within <see cref="CopySearchWindow"/> characters.
+    /// </summary>
+    internal static string? CopiedRunTail(string precedingText)
+    {
+        var recent = ContentWords(new GraphemeString(precedingText).Suffix(CopySearchWindow));
+        return recent.Count < CopiedRunWords
+            ? null
+            : string.Join(' ', recent.GetRange(recent.Count - CopiedRunWords, CopiedRunWords));
     }
 
     private static List<string> ContentWords(string text)

@@ -97,13 +97,15 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
         var options = OptionsFor(request);
         string prompt = RenderPrompt(request, core);
         if (prompt.Length == 0) return string.Empty;
+        // Every partial and the final text are normalized against the same request.
+        var normalizer = new CompletionNormalizer(prompt, request);
         if (onPartial is not null)
         {
             options = options with
             {
                 OnPartial = raw =>
                 {
-                    string text = CompletionPipeline.Normalize(raw, prompt, request).Text;
+                    string text = normalizer.Normalize(raw).Text;
                     if (text.Length > 0) onPartial(text);
                 },
             };
@@ -131,7 +133,7 @@ public sealed class LlamaSuggestionEngine : ISuggestionEngine
 
         if (ct.IsCancellationRequested) return string.Empty;
 
-        var normalized = CompletionPipeline.Normalize(raw, prompt, request);
+        var normalized = normalizer.Normalize(raw);
 
         if (normalized.Suppression is { } suppression && suppression != CompletionSuppressionReason.EmptyGeneration)
         {
