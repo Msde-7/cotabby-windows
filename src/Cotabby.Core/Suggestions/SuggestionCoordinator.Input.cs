@@ -53,6 +53,7 @@ public sealed partial class SuggestionCoordinator
             {
                 // Suppressing here is the only way to eat the key before the host sees it.
                 args.Suppress = true;
+                BeginTypingHold();
                 // The accept is queued before the work is cancelled. Cancelling can end a streamed
                 // request at once, and its cleanup must not reach the UI context ahead of the accept.
                 PostAccept(all, ev.IsRepeat);
@@ -69,12 +70,75 @@ public sealed partial class SuggestionCoordinator
             return;
         }
 
+        if (ev.Kind == KeyKind.Character && !ev.HasNonShiftModifier && HoldsTyping())
+        {
+            // The accepted text has not reached the host yet. Upstream inserts inside its event
+            // tap, so the next key always lands after it; here the key waits its turn instead.
+            args.Suppress = true;
+            Interlocked.Increment(ref _heldEdits);
+            Post(() => ReplayHeldKey(ev));
+            return;
+        }
+
         if (SynchronizationContext.Current == _ui) HandleEvent(ev);
         else _ui.Post(_handleEvent, ev);
     }
 
     // Kept out of OnKeyEvent so its locals are not captured, which would allocate on every hook callback.
-    private void PostAccept(bool all, bool isRepeat) => Post(() => Accept(all, isRepeat));
+    private void PostAccept(bool all, bool isRepeat) => Post(() =>
+    {
+        Accept(all, isRepeat);
+        // Accept chains its edit synchronously, so the hold ends once that edit has been sent.
+        Chain(() =>
+        {
+            EndTypingHold();
+            return Task.CompletedTask;
+        });
+    });
+
+    /// <summary>
+    /// True while an accept or a held key has not been sent to the host, so a typed key would
+    /// land ahead of it. A hold that runs past <see cref="MaxTypingHold"/> lets keys through again.
+    /// </summary>
+    private bool HoldsTyping() =>
+        Volatile.Read(ref _heldEdits) > 0 && _clock.GetTimestamp() < Volatile.Read(ref _typingHoldEndsAt);
+
+    private void BeginTypingHold()
+    {
+        Interlocked.Increment(ref _heldEdits);
+        Volatile.Write(
+            ref _typingHoldEndsAt, _clock.GetTimestamp() + (long)(MaxTypingHold.TotalSeconds * _clock.TimestampFrequency));
+    }
+
+    private void EndTypingHold() => Interlocked.Decrement(ref _heldEdits);
+
+    /// <summary>Sends a key held back during an accept once the edits before it are done, then handles it as typed.</summary>
+    private void ReplayHeldKey(KeyboardEvent ev)
+    {
+        var fallback = _sessionField ?? _focus.Current;
+        string text = ev.Character.ToString();
+        Chain(async () =>
+        {
+            try
+            {
+                if ((_focus.Refresh() ?? fallback) is { } target
+                    && await _inserter.InsertAsync(target, text, CancellationToken.None).ConfigureAwait(false))
+                {
+                    return;
+                }
+                _logger.LogWarning("A key held during an accept could not be sent.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "A key held during an accept could not be sent.");
+            }
+            finally
+            {
+                EndTypingHold();
+            }
+        });
+        HandleEvent(ev);
+    }
 
     private void HandleEvent(KeyboardEvent ev)
     {

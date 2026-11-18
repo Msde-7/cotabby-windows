@@ -108,15 +108,23 @@ internal sealed class FakeFocus : IFocusTracker, ITextInserter
         lock (_gate) _field = _field! with { CaretRect = caret };
     }
 
-    public Task<bool> InsertAsync(FocusedField target, string text, CancellationToken ct)
+    /// <summary>When set, insertions wait here before they land, like a slow host.</summary>
+    public TaskCompletionSource? InsertGate { get; set; }
+
+    /// <summary>When true, edits are accepted but never show in the field, like a host that drops them.</summary>
+    public bool IgnoresEdits { get; set; }
+
+    public async Task<bool> InsertAsync(FocusedField target, string text, CancellationToken ct)
     {
+        if (InsertGate is { } gate) await gate.Task.WaitAsync(ct);
         lock (_gate) Insertions.Add(text);
-        Append(text);
-        return Task.FromResult(true);
+        if (!IgnoresEdits) Append(text);
+        return true;
     }
 
     public Task<bool> ReplaceAsync(FocusedField target, int deleteCount, string text, CancellationToken ct)
     {
+        if (IgnoresEdits) return Task.FromResult(true);
         lock (_gate)
         {
             var updated = _field!.Text[..^deleteCount] + text;

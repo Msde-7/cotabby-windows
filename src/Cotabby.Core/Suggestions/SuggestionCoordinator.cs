@@ -42,6 +42,9 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
 
     private static readonly TimeSpan GenerationWatchdog = TimeSpan.FromSeconds(10);
 
+    /// <summary>The longest typed keys are held back behind an accept the host has not received.</summary>
+    private static readonly TimeSpan MaxTypingHold = TimeSpan.FromSeconds(1);
+
     /// <summary>How long the accept key stays owned after the last chunk while the continuation generates.</summary>
     private static readonly TimeSpan PostExhaustionWindow = TimeSpan.FromMilliseconds(800);
 
@@ -94,6 +97,10 @@ public sealed partial class SuggestionCoordinator : IAsyncDisposable
     /// <summary>Text an automatic fix was last applied to. It stops a fix the host ignored from repeating.</summary>
     private volatile string? _lastAutoFixedText;
     private Task _insertChain = Task.CompletedTask;
+
+    // Accepts and held keys not sent to the host yet, read on the hook thread, and when the hold lapses.
+    private int _heldEdits;
+    private long _typingHoldEndsAt;
     private bool _disposed;
 
     // What the field looked like at the last read, plus how many characters the

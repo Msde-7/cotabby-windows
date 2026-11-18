@@ -58,9 +58,11 @@ public sealed partial class SuggestionCoordinator
         string insertion = AcceptanceChunker.InsertionChunk(chunk, expected);
         if (exhausted && settings.AddSpaceAfterAccept) insertion = AcceptanceChunker.AppendingTrailingSpace(insertion);
         var accepted = new AcceptedChunk(
-            session.RequestId, field, expected, chunk, insertion, exhausted, firstChunk, _pendingInsertChars);
+            session.RequestId, field, expected, chunk, insertion, exhausted, firstChunk, _pendingInsertChars, _keySequence);
         _expectedPreceding = expected + insertion;
         _pendingInsertChars += insertion.Length;
+        // The next key is counted against a read taken before this insertion.
+        if (_publishBaseline is not null) _expectedDelta += insertion.Length;
 
         if (exhausted)
         {
@@ -95,7 +97,7 @@ public sealed partial class SuggestionCoordinator
     /// <summary>One accept, decided on the UI context and carried out on the thread pool.</summary>
     private sealed record AcceptedChunk(
         string RequestId, FocusedField OfferedIn, string ExpectedPreceding, string Chunk, string Insertion,
-        bool Exhausted, bool FirstChunk, int PendingBefore);
+        bool Exhausted, bool FirstChunk, int PendingBefore, long KeySequence);
 
     private async Task InsertAcceptedAsync(AcceptedChunk accepted)
     {
@@ -131,6 +133,8 @@ public sealed partial class SuggestionCoordinator
                 Post(() =>
                 {
                     _lastAcceptedTail = new AcceptedTail(accepted.Chunk, field.PrecedingText);
+                    // A key typed since then already counted this insertion and asked for its own prediction.
+                    if (_keySequence != accepted.KeySequence) return;
                     SetPublishBaseline(field, accepted.Insertion.Length);
                     SchedulePrediction(typed: null);
                 });
